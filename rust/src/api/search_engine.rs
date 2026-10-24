@@ -3166,7 +3166,7 @@ pub(crate) const LINE_TEXT_VERSION: u32 = 2;
 /// תקרת אורך טוקן (בבייטים של UTF-8) לכל האנליזטורים — אינדוקס ושאילתה
 /// כאחד. 128 בייט ≈ 64 אותיות עבריות: פי כמה מכל מילה לגיטימית (כולל
 /// גרשיים וניקוד), ומתחת לכל ריצת-זבל אמיתית (base64 שזלג לקורפוס).
-const MAX_TOKEN_BYTES: usize = 128;
+pub(crate) const MAX_TOKEN_BYTES: usize = 128;
 
 /// Upper bound on distinct dictionary terms collected for highlighting an
 /// advanced (regex) query. Bounds work when a pattern (e.g. partial match)

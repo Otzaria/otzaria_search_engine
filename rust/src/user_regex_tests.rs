@@ -191,24 +191,39 @@ fn line_view_breaks_at_script_tags_like_the_index() {
 
 #[test]
 fn fixed_words_of_a_line_pattern_become_required_clauses() {
-    let plan = parse(r"/שמע \S+ ישראל/").unwrap().line.unwrap();
+    // A whole term as itself, one only contained in a term as `*text*`.
+    let clauses = |raw: &str| -> Vec<Vec<String>> {
+        let plan = parse(raw).unwrap().line.unwrap();
+        plan.clauses
+            .into_iter()
+            .map(|c| {
+                c.into_iter()
+                    .map(|f| match f.whole {
+                        true => f.text,
+                        false => format!("*{}*", f.text),
+                    })
+                    .collect()
+            })
+            .collect()
+    };
+    assert_eq!(clauses(r"/שמע \S+ ישראל/"), [["שמע"], ["ישראל"]]);
     assert_eq!(
-        plan.clauses,
-        vec![
-            vec![Fragment {
-                text: "שמע".into(),
-                whole: true
-            }],
-            vec![Fragment {
-                text: "ישראל".into(),
-                whole: true
-            }],
-        ]
+        clauses(r"/(משה|אהרן)\W+\S*ות/"),
+        [vec!["*משה*", "*אהרן*"], vec!["*ות*"]]
     );
-    let plan = parse(r"/(משה|אהרן)\W+\S*ות/").unwrap().line.unwrap();
-    assert_eq!(plan.clauses.len(), 2, "{:?}", plan.clauses);
-    assert_eq!(plan.clauses[0].len(), 2);
-    assert!(!plan.clauses[1][0].whole);
+    // Terms as the tokenizer makes them: `''` is `"`, and `""` splits a word.
+    assert_eq!(clauses("/א .* ז''ל/"), [["ז\"ל"]]);
+    assert_eq!(clauses("/א .* ג\"\"דה/"), [["דה"]]);
+    assert_eq!(clauses(r#"/א\W.*ג""דה/"#), [["דה"]]);
+    assert_eq!(clauses(r#"/א\W.*ג""דה\S/"#), [["*דה*"]]);
+    assert_eq!(clauses(r"/שבת\.ויאמר .* תוס',/"), [["שבתויאמר"], ["תוס"]]);
+    // A pattern edge bounds a word only where a word boundary is implied there.
+    assert_eq!(clauses("/שבת .* תוס'/"), [["שבת"], ["*תוס*"]]);
+    assert_eq!(clauses(r"/\.שבת .* זה\./"), [["*שבת*"], ["*זה*"]]);
+    assert_eq!(
+        clauses("/(רמב''ם|ש''ך) .* זה/"),
+        [vec!["*רמב\"ם*", "*ש\"ך*"], vec!["זה"]]
+    );
     assert!(parse(r"/^\S+\s\S+$/")
         .unwrap()
         .line
@@ -454,6 +469,288 @@ fn a_cross_space_pattern_finds_words_with_characters_the_index_drops() {
     );
     assert_eq!(count(&engine, r"/יב\[ע\]ר\W+את/", &[]), 1);
     assert_eq!(count(&engine, r"/פרק\W+3\.14\W/", &[]), 1);
+    assert_eq!(count(&engine, r"/כי\W+יב\[/", &[]), 1);
+}
+
+/// The lines a pattern finds, through the stream, the count and the count by book, which agree.
+fn found_lines(
+    engine: &SearchEngine,
+    books: &[TestBook<'_>],
+    raw: &str,
+    facets: &[&str],
+) -> Vec<String> {
+    let found = events(engine, raw, facets, &Arc::new(AtomicBool::new(false)));
+    let end = last(&found);
+    let total = end.total_count.unwrap();
+    let mut lines: Vec<String> = results(&found)
+        .iter()
+        .map(|r| {
+            let book = books.iter().find(|b| b.path == r.file_path).unwrap();
+            book.lines[r.segment as usize].to_string()
+        })
+        .collect();
+    lines.sort();
+    assert_eq!(lines.len(), total as usize, "{raw}");
+    assert_eq!(count(engine, raw, facets), total, "{raw}");
+    let by_book = engine
+        .count_by_book_user_regex(
+            raw.to_string(),
+            facets.iter().map(|f| f.to_string()).collect(),
+            &UserRegexCancellationToken::new(),
+        )
+        .unwrap()
+        .counts;
+    assert_eq!(Some(&by_book), end.book_counts.as_ref(), "{raw}");
+    lines
+}
+
+#[test]
+fn a_line_pattern_finds_words_glued_by_quotes_and_numerals() {
+    let glued = [
+        "תורה אור שבת\"ת",
+        "תורה אור שבת'ת",
+        "תורה אור שבת״ת",
+        "תורה אור שבת”ת",
+        "תורה אור שבת'",
+        "תורה אור שבת׳",
+        "תורה אור שבת²",
+        "תורה אור שבת זה",
+        "<b>תורה</b> אור <i>שבת\"ת</i>",
+        "תּוֹרָה אוֹר שַׁבָּת\"ת",
+    ];
+    let left = ["ב\"שבת אור זה", "ה'שבת אור זה", "ב²שבת אור זה"];
+    let others = [
+        "תורה אור שבתאי",
+        "תורה אור מחשבת",
+        "תורה אור שבת_ת",
+        "א ב רמב''ם",
+        "א ב רמב׳׳ם",
+        "א ב רמב\"ם",
+        "א ב ג\"\"דה",
+        "רמב''ם אמר זה",
+        "ש''ך אמר זה",
+        "תוס' ד\"ה שבת זה",
+    ];
+    let books = vec![
+        TestBook {
+            title: "ספר ש",
+            topics: "/תנך/תורה",
+            path: "q.txt".into(),
+            order: 0,
+            lines: glued.iter().chain(&left).chain(&others).copied().collect(),
+        },
+        TestBook {
+            title: "ספר נ",
+            topics: "/תנך/נביאים",
+            path: "n.txt".into(),
+            order: 1,
+            lines: vec!["תורה נביא שבת\"ת", "תורה נביא שבת", "נביא שבתאי"],
+        },
+    ];
+    let dir = TempDir::new().unwrap();
+    let engine = stored_engine(dir.path(), &books);
+    let prophets = ["תורה נביא שבת\"ת", "תורה נביא שבת"];
+    let right_edge: Vec<&str> = glued.iter().chain(&prophets).copied().collect();
+    let contained: Vec<&str> = right_edge
+        .iter()
+        .copied()
+        .chain(["תורה אור מחשבת"])
+        .collect();
+    let cases: [(&str, Vec<&str>); 10] = [
+        ("/תורה .* שבת/", right_edge.clone()),
+        (r"/תורה .* שבת\b/", right_edge.clone()),
+        ("/^תורה .* שבת$/", right_edge.clone()),
+        (r"/תורה\W.*שבת/", contained),
+        ("/שבת .* זה/", left.to_vec()),
+        ("/א .* רמב''ם/", vec!["א ב רמב''ם", "א ב רמב׳׳ם"]),
+        (r"/א\W.*רמב''ם/", vec!["א ב רמב''ם", "א ב רמב׳׳ם"]),
+        ("/א .* ג\"\"דה/", vec!["א ב ג\"\"דה"]),
+        (
+            "/(רמב''ם|ש''ך) .* זה/",
+            vec!["רמב''ם אמר זה", "ש''ך אמר זה"],
+        ),
+        ("/תוס' .* זה/", vec!["תוס' ד\"ה שבת זה"]),
+    ];
+    for (raw, expected) in cases {
+        let plan = parse(raw).unwrap().line.unwrap();
+        assert!(
+            !plan.clauses.is_empty(),
+            "{raw}: narrowed by its fixed words"
+        );
+        let mut expected: Vec<String> = expected.iter().map(|l| l.to_string()).collect();
+        expected.sort();
+        let found = found_lines(&engine, &books, raw, &[]);
+        assert_eq!(found, expected, "{raw}");
+        let matcher = prepare_user_regex_matcher(raw.to_string()).unwrap();
+        for line in books.iter().flat_map(|b| b.lines.iter()) {
+            assert_eq!(
+                !matcher.find_matches(line.to_string()).is_empty(),
+                found.iter().any(|f| f == line),
+                "{raw}: the book view and the search disagree on {line:?}"
+            );
+        }
+    }
+
+    let raw = "/תורה .* שבת/";
+    let mut in_prophets: Vec<String> = prophets.iter().map(|l| l.to_string()).collect();
+    in_prophets.sort();
+    assert_eq!(
+        found_lines(&engine, &books, raw, &["/תנך/נביאים"]),
+        in_prophets
+    );
+    let facets = engine
+        .get_facet_counts_user_regex(
+            raw.to_string(),
+            Vec::new(),
+            "/תנך".to_string(),
+            &UserRegexCancellationToken::new(),
+        )
+        .unwrap();
+    let mut counts: Vec<(String, u64)> = facets
+        .counts
+        .into_iter()
+        .map(|f| (f.path, f.count))
+        .collect();
+    counts.sort();
+    assert_eq!(
+        counts,
+        vec![
+            ("/תנך/נביאים".to_string(), 2),
+            ("/תנך/תורה".to_string(), glued.len() as u64)
+        ]
+    );
+}
+
+fn xorshift(state: &mut u64) -> u64 {
+    let mut x = *state;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    *state = x;
+    x
+}
+
+/// Lines of words joined by spaces, quotes, a numeral the regex does not count as a word
+/// character, and characters the index splits on.
+fn glued_corpus(seed: u64, lines: usize, words: &[&str]) -> Vec<String> {
+    const GLUE: &[&str] = &[
+        " ", " ", " ", " ", " ", " ", " ", " ", " ", " ", "\"", "'", "״", "׳", "''", "\"\"", "²",
+        ",", "_",
+    ];
+    let mut state = seed;
+    let mut pick = |n: usize| (xorshift(&mut state) % n as u64) as usize;
+    (0..lines)
+        .map(|_| {
+            let mut line = String::new();
+            for i in 0..3 + pick(6) {
+                if i > 0 {
+                    line.push_str(GLUE[pick(GLUE.len())]);
+                }
+                line.push_str(words[pick(words.len())]);
+            }
+            line
+        })
+        .collect()
+}
+
+/// Every line the pattern matches when read whole is found through its candidate lines.
+#[test]
+fn line_candidates_never_drop_a_verified_line() {
+    let words = [
+        "תורה",
+        "אור",
+        "שבת",
+        "זה",
+        "רמב",
+        "ם",
+        "ג",
+        "דה",
+        "ויאמר",
+        "ב",
+        "ה",
+        "מחשבת",
+        "שבתאי",
+        "אמר",
+        "כי",
+        "יב",
+        "ער",
+        "רמב''ם",
+        "רמב׳׳ם",
+        "רמב\"ם",
+        "ג\"\"דה",
+        "ה'שבת",
+        "ב\"שבת",
+        "שבת'",
+        "שבת²",
+        "תוס'",
+    ];
+    let patterns = [
+        "/תורה .* שבת/",
+        r"/תורה .* שבת\b/",
+        "/שבת .* זה/",
+        r"/תורה\W.*שבת/",
+        "/אור .* רמב''ם/",
+        "/אור .* רמב\"ם/",
+        "/ג\"\"דה .* אור/",
+        "/(רמב''ם|שבת) .* אור/",
+        r"/זה \S+ שבת/",
+        r"/שבת\W+זה/",
+        "/ויאמר .* שבת'/",
+        "/שבת' .* אור/",
+        r"/אור \S*שבת .*/",
+        "/אמר .* שבת²/",
+        "/תוס' .* שבת/",
+        "/אור .* תוס'/",
+        "/שבת_זה .* אור/",
+        "/ה'שבת .* זה/",
+        "/ב\"שבת .* זה/",
+        "/תורה''אור .* זה/",
+        "/מחשבת .*/",
+    ];
+    let large = ["תורה", "שבת", "אור", "זה"];
+    for (lines, words, patterns) in [
+        (3_000, &words[..], &patterns[..]),
+        (12_000, &large[..], &patterns[..4]),
+    ] {
+        let corpus = glued_corpus(0x5EED_F1E3, lines, words);
+        let books = [TestBook {
+            title: "ספר",
+            topics: "/t",
+            path: "g.txt".into(),
+            order: 0,
+            lines: corpus.iter().map(String::as_str).collect(),
+        }];
+        let dir = TempDir::new().unwrap();
+        let engine = stored_engine(dir.path(), &books);
+        let searcher = engine.searcher_for_tests();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (order_epoch, order) = engine.order_tables_for_tests();
+        let ctx = LineSearch {
+            searcher: &searcher,
+            schema: searcher.schema(),
+            scope: None,
+            facets: Vec::new(),
+            cancel: &cancel,
+            max_hits: MAX_LINE_HITS,
+            order,
+            order_epoch,
+        };
+        for raw in patterns {
+            let plan = parse(raw).unwrap().line.unwrap();
+            let query = candidate_query(&ctx, &plan).unwrap();
+            let query = query.unwrap_or_else(|| panic!("{raw}: narrowed by its fixed words"));
+            let candidates = searcher.search(query.as_ref(), &Count).unwrap() as u32;
+            let expected = corpus
+                .iter()
+                .filter(|l| plan.is_match(&LineView::of(l, false).text))
+                .count() as u32;
+            println!("{raw:<28} {expected:>5} of {candidates:>5} candidates");
+            assert_eq!(count(&engine, raw, &[]), expected, "{raw}");
+            if words.len() == large.len() {
+                assert!(candidates > CANDIDATE_FETCH_LIMIT, "{raw}: {candidates}");
+            }
+        }
+    }
 }
 
 #[test]
