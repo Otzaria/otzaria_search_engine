@@ -37,6 +37,7 @@
 //! to, for cross-checking parity. The patterns intentionally diverge from the
 //! Dart where it was wrong or wasteful for this nikud-free index (see above).
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use unicode_segmentation::UnicodeSegmentation;
@@ -795,6 +796,90 @@ pub(crate) fn is_nikud_mark(c: char) -> bool {
 #[inline]
 pub(crate) fn is_taam_mark(c: char) -> bool {
     is_attached_mark(c) && !is_nikud_mark(c)
+}
+
+/// Unicode canonical combining class of a word mark ([`is_word_mark`]); 0 for every
+/// other char, CGJ (U+034F) included. Arm order matters: the first match wins.
+pub(crate) fn mark_combining_class(c: char) -> u8 {
+    match c {
+        '\u{05B0}' => 10,
+        '\u{05B1}' => 11,
+        '\u{05B2}' => 12,
+        '\u{05B3}' => 13,
+        '\u{05B4}' => 14,
+        '\u{05B5}' => 15,
+        '\u{05B6}' => 16,
+        '\u{05B7}' => 17,
+        '\u{05B8}' | '\u{05C7}' => 18,
+        '\u{05B9}' | '\u{05BA}' => 19,
+        '\u{05BB}' => 20,
+        '\u{05BC}' => 21,
+        '\u{05BD}' => 22,
+        '\u{05BF}' => 23,
+        '\u{05C1}' => 24,
+        '\u{05C2}' => 25,
+        '\u{0591}'
+        | '\u{0596}'
+        | '\u{059B}'
+        | '\u{05A2}'..='\u{05A7}'
+        | '\u{05AA}'
+        | '\u{05C5}' => 220,
+        '\u{059A}' | '\u{05AD}' => 222,
+        '\u{05AE}' => 228,
+        '\u{0592}'..='\u{05AF}' | '\u{05C4}' => 230,
+        '\u{0334}'..='\u{0338}' => 1,
+        '\u{0321}' | '\u{0322}' | '\u{0327}' | '\u{0328}' => 202,
+        '\u{031B}' => 216,
+        '\u{0316}'..='\u{0319}'
+        | '\u{031C}'..='\u{0320}'
+        | '\u{0323}'..='\u{0326}'
+        | '\u{0329}'..='\u{0333}'
+        | '\u{0339}'..='\u{033C}'
+        | '\u{0347}'..='\u{0349}'
+        | '\u{034D}'
+        | '\u{034E}'
+        | '\u{0353}'..='\u{0356}'
+        | '\u{0359}'
+        | '\u{035A}' => 220,
+        '\u{0315}' | '\u{031A}' | '\u{0358}' => 232,
+        '\u{035C}' | '\u{035F}' | '\u{0362}' => 233,
+        '\u{035D}' | '\u{035E}' | '\u{0360}' | '\u{0361}' => 234,
+        '\u{0345}' => 240,
+        '\u{0300}'..='\u{034E}' | '\u{0350}'..='\u{036F}' => 230,
+        _ => 0,
+    }
+}
+
+/// `s` with every run of marks stably sorted by [`mark_combining_class`], as NFC orders
+/// them, so canonically-equivalent spellings (דגש+קמץ / קמץ+דגש) are one term.
+pub(crate) fn canonical_mark_order(s: &str) -> Cow<'_, str> {
+    let mut prev = 0;
+    let in_order = s.chars().all(|c| {
+        let class = mark_combining_class(c);
+        let ok = class == 0 || prev <= class;
+        prev = class;
+        ok
+    });
+    if in_order {
+        return Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut run: Vec<(u8, char)> = Vec::new();
+    let flush = |run: &mut Vec<(u8, char)>, out: &mut String| {
+        run.sort_by_key(|&(class, _)| class);
+        out.extend(run.drain(..).map(|(_, mark)| mark));
+    };
+    for c in s.chars() {
+        match mark_combining_class(c) {
+            0 => {
+                flush(&mut run, &mut out);
+                out.push(c);
+            }
+            class => run.push((class, c)),
+        }
+    }
+    flush(&mut run, &mut out);
+    Cow::Owned(out)
 }
 
 /// האם השורה נושאת סימן צמוד כלשהו — בדיקת-הכניסה הזולה של צינור האינדוקס
@@ -2245,8 +2330,8 @@ fn word_to_pattern(root: &str, flags: &WordFlags) -> String {
 // The vocalized field (`textVocalized`) indexes surface forms WITH their
 // attached marks, so a vocalized query compiles to a whole-term regex over
 // that dictionary. The matching contract is "הוקלד → חייב; לא הוקלד →
-// חופשי": every typed mark of an enabled class must appear, in order; any
-// other attached mark in the term is free. A base letter therefore becomes
+// חופשי": every typed mark of an enabled class must appear, in canonical
+// order; any other attached mark in the term is free. A base letter therefore becomes
 // `X[marks]*` and a required mark `m[marks]*` — the free class overlaps the
 // required mark, which is harmless under DFA acceptance.
 
@@ -2259,8 +2344,10 @@ fn word_to_pattern(root: &str, flags: &WordFlags) -> String {
 pub(crate) const VOC_FREE_MARKS: &str = "[\u{0300}-\u{036F}\u{0591}-\u{05C7}]*";
 
 /// Whole-term pattern for one vocalized query token: typed marks of an
-/// enabled class are required in order, everything else is free.
+/// enabled class are required in canonical order (as the tokenizer indexes
+/// them), everything else is free.
 pub(crate) fn vocalized_token_pattern(token: &str, voc: &VocalizedFlags) -> String {
+    let token = canonical_mark_order(token);
     let mut out = String::with_capacity(token.len() * 4);
     for c in token.chars() {
         if is_general_combining_mark(c) {
@@ -3444,6 +3531,74 @@ mod tests {
         let both = VocalizedFlags::new(true, true);
         assert!(!vocalized_token_pattern(word, &nikud_only).contains('\u{05A3}'));
         assert!(vocalized_token_pattern(word, &both).contains('\u{05A3}'));
+    }
+
+    #[test]
+    fn mark_combining_class_matches_unicode() {
+        use unicode_normalization_alignments::char::canonical_combining_class;
+        for cp in (0x0300u32..=0x036F).chain(0x0591..=0x05C7) {
+            let c = char::from_u32(cp).unwrap();
+            assert_eq!(
+                mark_combining_class(c),
+                canonical_combining_class(c),
+                "U+{cp:04X}"
+            );
+        }
+        assert_eq!(mark_combining_class('א'), 0);
+        assert_eq!(mark_combining_class('\u{05BE}'), 0);
+    }
+
+    #[test]
+    fn canonical_mark_order_sorts_runs_stably() {
+        assert_eq!(
+            canonical_mark_order("ב\u{05BC}\u{05B8}"),
+            "ב\u{05B8}\u{05BC}"
+        );
+        assert_eq!(
+            canonical_mark_order("ש\u{05C1}\u{05BC}\u{05B8}"),
+            "ש\u{05B8}\u{05BC}\u{05C1}"
+        );
+        // Same-class accents (230) keep their order; the dagesh moves before both.
+        assert_eq!(
+            canonical_mark_order("ב\u{0599}\u{0592}\u{05BC}"),
+            "ב\u{05BC}\u{0599}\u{0592}"
+        );
+        // CGJ (class 0) is a barrier: marks never cross it.
+        assert_eq!(
+            canonical_mark_order("ב\u{05BC}\u{034F}\u{05B8}"),
+            "ב\u{05BC}\u{034F}\u{05B8}"
+        );
+        assert_eq!(
+            canonical_mark_order("ס\u{0307}\u{0323}"),
+            "ס\u{0323}\u{0307}"
+        );
+        // Each run sorts on its own.
+        assert_eq!(
+            canonical_mark_order("ב\u{05BC}\u{05B8}ר\u{05B8}ש\u{05C1}\u{05B4}"),
+            "ב\u{05B8}\u{05BC}ר\u{05B8}ש\u{05B4}\u{05C1}"
+        );
+        for sorted in [
+            "",
+            "ברא",
+            "ב\u{05B8}\u{05BC}רָא",
+            "ב\u{05BC}\u{034F}\u{05B8}",
+        ] {
+            assert!(matches!(canonical_mark_order(sorted), Cow::Borrowed(_)));
+        }
+    }
+
+    #[test]
+    fn vocalized_token_pattern_is_mark_order_insensitive() {
+        for voc in [
+            VocalizedFlags::new(true, false),
+            VocalizedFlags::new(true, true),
+        ] {
+            let canonical = vocalized_token_pattern("ב\u{05B8}\u{05BC}\u{05A3}רָא", &voc);
+            for typed in ["ב\u{05BC}\u{05B8}\u{05A3}רָא", "ב\u{05A3}\u{05BC}\u{05B8}רָא"] {
+                assert_eq!(vocalized_token_pattern(typed, &voc), canonical, "{voc:?}");
+            }
+            assert!(accepts(&canonical, "ב\u{05B8}\u{05BC}\u{05A3}רָא"));
+        }
     }
 
     fn gram_group() -> String {

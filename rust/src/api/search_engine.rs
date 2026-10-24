@@ -26389,6 +26389,139 @@ mod tests {
         assert!(exact_only.is_empty());
     }
 
+    #[test]
+    fn vocalized_mark_order_is_canonical() {
+        // דגש (ccc 21) לפני קמץ (ccc 18) שקול קנונית לקמץ לפני דגש.
+        const DAGESH_FIRST: &str = "ב\u{05BC}\u{05B8}רָא";
+        const QAMATS_FIRST: &str = "ב\u{05B8}\u{05BC}רָא";
+        // מונח (ccc 220) לפני הדגש והקמץ.
+        const TAAM_FIRST: &str = "ב\u{05A3}\u{05BC}\u{05B8}רָא";
+        let lines = [
+            format!("{DAGESH_FIRST} אֱלֹהִים"),
+            format!("{QAMATS_FIRST} אֱלֹהִים"),
+            "\u{FB31}\u{05B8}רָא אֱלֹהִים".to_string(),
+            format!("{TAAM_FIRST} אֱלֹהִים"),
+            "ברא אלהים".to_string(),
+        ];
+        let (mut engine, _dir) = make_engine();
+        engine
+            .add_text_book_placed(
+                "ספר".to_string(),
+                "/x".to_string(),
+                "/books/order.txt".to_string(),
+                1,
+                DEFAULT_GENERATION_ORDER,
+                lines.join("\n"),
+                None,
+                TextStorage::InIndex,
+                None,
+            )
+            .unwrap();
+        engine.commit().unwrap();
+
+        let segments = |hits: Vec<SearchResult>| {
+            let mut segments: Vec<u64> = hits.iter().map(|h| h.segment).collect();
+            segments.sort();
+            segments
+        };
+        let exact = |query: &str, taamim: bool| {
+            engine
+                .search_exact(
+                    query.to_string(),
+                    vec![],
+                    20,
+                    0,
+                    ResultsOrder::Catalogue,
+                    true,
+                    taamim,
+                    None,
+                    None,
+                )
+                .unwrap()
+        };
+        let all_marked = vec![0, 1, 2, 3];
+        for query in [DAGESH_FIRST, QAMATS_FIRST, "\u{FB31}\u{05B8}רָא"] {
+            let hits = exact(query, false);
+            for hit in &hits {
+                let source = &lines[hit.segment as usize];
+                let word = source.split(' ').next().unwrap();
+                let word = hebrew_query::fold_presentation_forms(word);
+                assert!(
+                    hit.text.contains(&format!("<font color=red>{word}</font>")),
+                    "query {query:?}, text: {}",
+                    hit.text
+                );
+            }
+            assert_eq!(segments(hits), all_marked, "query {query:?}");
+            assert_eq!(
+                segments(exact(&format!("{query} אֱלֹהִים"), false)),
+                all_marked,
+                "phrase {query:?}"
+            );
+            assert_eq!(
+                engine
+                    .count_exact(query.to_string(), vec![], true, false, None)
+                    .unwrap(),
+                4,
+                "count {query:?}"
+            );
+            let fuzzy = engine
+                .search_fuzzy(
+                    query.to_string(),
+                    vec![],
+                    20,
+                    0,
+                    0,
+                    ResultsOrder::Catalogue,
+                    true,
+                    false,
+                    None,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(segments(fuzzy), all_marked, "fuzzy {query:?}");
+            let advanced = search_advanced_default(
+                &engine,
+                query.to_string(),
+                vec![],
+                20,
+                0,
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                ResultsOrder::Catalogue,
+                true,
+                false,
+                SearchScope::WordDistance,
+            )
+            .unwrap();
+            assert_eq!(segments(advanced), all_marked, "advanced {query:?}");
+        }
+        // עם טעמים: המונח שהוקלד נדרש בכל סדר שבו הוקלד.
+        for query in [
+            TAAM_FIRST,
+            "ב\u{05BC}\u{05A3}\u{05B8}רָא",
+            "ב\u{05B8}\u{05BC}\u{05A3}רָא",
+        ] {
+            assert_eq!(segments(exact(query, true)), vec![3], "taamim {query:?}");
+        }
+        assert_eq!(segments(exact(QAMATS_FIRST, true)), all_marked);
+        // התוצאה מציגה את השורה בסדר הסימנים שבמקור.
+        let hits = exact(DAGESH_FIRST, false);
+        let qamats_line = hits.iter().find(|h| h.segment == 1).unwrap();
+        assert!(
+            qamats_line.text.contains(QAMATS_FIRST),
+            "{}",
+            qamats_line.text
+        );
+        assert!(
+            !qamats_line.text.contains(DAGESH_FIRST),
+            "{}",
+            qamats_line.text
+        );
+    }
+
     // ── SearchScope: "באותה פסקה" / "תחת אותה כותרת" ─────────────────────
 
     /// ספר עם שתי כותרות משנה: תחת "סימן א" המילים "מתכוין" ו"מתעסק"
