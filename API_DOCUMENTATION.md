@@ -213,7 +213,8 @@ a pattern `crossSpace`, as does a sequence word that names no letter (`/שמע .
 patterns match whole terms; in term patterns, wildcards cover Hebrew letters, Latin `a-z`,
 digits and quotes. A `crossSpace` match starts and ends on a word boundary when that edge
 of the pattern is a letter, and is matched against the line as the app's
-`cleanLineForSearch` sees it (tags removed, a breaking tag as a space; nikud removed;
+`cleanLineForSearch` sees it (tags removed, a breaking tag as a space, as is a `<sup>` or
+`<sub>` unless it wraps one letter inside a word; nikud removed;
 maqaf/paseq/`|` as a space; whitespace collapsed), lowercased, quotes as ASCII. Footnote
 text stays in the line, as it does in the index. It never continues onto the
 next line.

@@ -3153,14 +3153,15 @@ const TANTIVY_INDEX_VERSION: &str = "0.26.2";
 /// the documents the index stores, which is the text every semantic chunk key is computed
 /// from. Version 1: the text is split on `\n`; every line becomes one document, a blank one
 /// included, whose `text` is [`normalize_text_for_indexing`] of it; and a line that starts
-/// with `<h` opens a new section and belongs to it.
+/// with `<h` opens a new section and belongs to it. Version 2: sup/sub tags separate words
+/// ([`crate::hebrew_query::tag_breaks_word`]).
 ///
 /// Declared to the semantic sidecar as `text.line_text_version`, the half of a vector set's
 /// identity that only this crate can know. A change to any of the four — another split, a
 /// normalization that keeps or drops something else, another rule for sections — changes
 /// the text a line's key is computed from, so it is a new version, even where the schema
 /// does not change.
-pub(crate) const LINE_TEXT_VERSION: u32 = 1;
+pub(crate) const LINE_TEXT_VERSION: u32 = 2;
 
 /// תקרת אורך טוקן (בבייטים של UTF-8) לכל האנליזטורים — אינדוקס ושאילתה
 /// כאחד. 128 בייט ≈ 64 אותיות עבריות: פי כמה מכל מילה לגיטימית (כולל
@@ -19077,7 +19078,7 @@ mod tests {
             let mut metadata = index_metadata(
                 INDEX_SCHEMA_VERSION,
                 Some(ChunkKeyRecipe {
-                    line_text_version: 1,
+                    line_text_version: LINE_TEXT_VERSION,
                     key_version: 1,
                     chunking_identity: identity,
                 }),
@@ -19720,6 +19721,222 @@ mod tests {
                 .replace("</font>", "");
             assert!(plain.contains("המורים כי"), "stored text: {plain}");
         }
+    }
+
+    #[test]
+    fn sup_marker_keeps_neighbouring_words_searchable() {
+        let lines = [
+            "תורה<sup>30</sup> המשך",
+            "תורה.<sup>30</sup> המשך",
+            "תורה<sup>א</sup> מסוף",
+            "תורה<sub>30</sub> המשך",
+            "גוף <sup class=\"footnote-marker\">א</sup><i class=\"footnote\">הרי זה</i> סוף",
+            "יְהוֹנָתָן בֶּן־גֵּרְשֹׁם בֶּן־מְ<sup>נַ</sup>שֶּׁה",
+        ];
+        let (mut engine, _dir) = make_engine();
+        engine
+            .add_text_book_placed(
+                "הערות".to_string(),
+                "/root".to_string(),
+                "/books/notes.txt".to_string(),
+                1,
+                DEFAULT_GENERATION_ORDER,
+                lines.join("\n"),
+                None,
+                TextStorage::InIndex,
+                None,
+            )
+            .unwrap();
+        engine.commit().unwrap();
+
+        let segments = |results: Vec<SearchResult>| {
+            let mut segments: Vec<u64> = results.iter().map(|r| r.segment).collect();
+            segments.sort_unstable();
+            segments
+        };
+        let exact = |query: &str| {
+            let q = query.to_string();
+            let found = segments(
+                engine
+                    .search_exact(
+                        q.clone(),
+                        vec![],
+                        10,
+                        0,
+                        ResultsOrder::Catalogue,
+                        false,
+                        false,
+                        None,
+                        None,
+                    )
+                    .unwrap(),
+            );
+            let page = engine
+                .search_and_count_exact(
+                    q.clone(),
+                    vec![],
+                    10,
+                    0,
+                    ResultsOrder::Catalogue,
+                    false,
+                    false,
+                    None,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(segments(page.results), found, "{query}");
+            assert_eq!(page.total_count as usize, found.len(), "{query}");
+            let count = engine
+                .count_exact(q.clone(), vec![], false, false, None)
+                .unwrap();
+            assert_eq!(count as usize, found.len(), "{query}");
+            let by_book = engine
+                .count_by_book_exact(q, vec![], false, false, None)
+                .unwrap();
+            assert_eq!(
+                by_book.values().sum::<u32>() as usize,
+                found.len(),
+                "{query}"
+            );
+            found
+        };
+        let fuzzy = |query: &str, distance: u8| {
+            let q = query.to_string();
+            let found = segments(
+                engine
+                    .search_fuzzy(
+                        q.clone(),
+                        vec![],
+                        10,
+                        0,
+                        distance,
+                        ResultsOrder::Catalogue,
+                        false,
+                        false,
+                        None,
+                        None,
+                    )
+                    .unwrap(),
+            );
+            let page = engine
+                .search_and_count_fuzzy(
+                    q.clone(),
+                    vec![],
+                    10,
+                    0,
+                    distance,
+                    ResultsOrder::Catalogue,
+                    false,
+                    false,
+                    None,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(segments(page.results), found, "{query}");
+            assert_eq!(page.total_count as usize, found.len(), "{query}");
+            let count = engine
+                .count_fuzzy(q.clone(), vec![], distance, false, false, None)
+                .unwrap();
+            assert_eq!(count as usize, found.len(), "{query}");
+            let by_book = engine
+                .count_by_book_fuzzy(q, vec![], distance, false, false, None)
+                .unwrap();
+            assert_eq!(
+                by_book.values().sum::<u32>() as usize,
+                found.len(),
+                "{query}"
+            );
+            found
+        };
+        let raw = |term: &str| {
+            let terms = vec![term.to_string()];
+            let found = segments(
+                engine
+                    .search(
+                        terms.clone(),
+                        vec![],
+                        10,
+                        0,
+                        0,
+                        100,
+                        ResultsOrder::Catalogue,
+                        None,
+                        None,
+                    )
+                    .unwrap(),
+            );
+            let page = engine
+                .search_and_count(
+                    terms.clone(),
+                    vec![],
+                    10,
+                    0,
+                    0,
+                    100,
+                    ResultsOrder::Catalogue,
+                    None,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(segments(page.results), found, "{term}");
+            assert_eq!(page.total_count as usize, found.len(), "{term}");
+            assert_eq!(
+                engine.count(terms.clone(), &[], 0, 100).unwrap() as usize,
+                found.len()
+            );
+            let by_book = engine.count_by_book(terms, vec![], 0, 100).unwrap();
+            assert_eq!(
+                by_book.values().sum::<u32>() as usize,
+                found.len(),
+                "{term}"
+            );
+            found
+        };
+
+        assert_eq!(exact("תורה"), [0, 1, 2, 3]);
+        assert_eq!(raw("תורה"), [0, 1, 2, 3]);
+        assert_eq!(fuzzy("תורה", 1), [0, 1, 2, 3]);
+        assert_eq!(exact("הרי"), [4]);
+        assert_eq!(raw("הרי"), [4]);
+        assert!(exact("אהרי").is_empty());
+        assert!(raw("אהרי").is_empty());
+        assert!(fuzzy("אהרן", 1).is_empty());
+        // The marker is a word of its own, merged with neither neighbour.
+        assert_eq!(exact("30"), [0, 1, 3]);
+        assert_eq!(exact("תורה 30 המשך"), [0, 1, 3]);
+        assert!(exact("תורה30").is_empty());
+        assert!(exact("30המשך").is_empty());
+        // A hanging letter stays inside its word.
+        assert_eq!(exact("מנשה"), [5]);
+        assert_eq!(fuzzy("מנשה", 1), [5]);
+
+        let text = |query: &str| {
+            engine
+                .search_exact(
+                    query.to_string(),
+                    vec![],
+                    10,
+                    0,
+                    ResultsOrder::Catalogue,
+                    false,
+                    false,
+                    None,
+                    None,
+                )
+                .unwrap()
+                .remove(0)
+                .text
+        };
+        assert!(
+            text("הרי").contains("א <font color=red>הרי</font> זה"),
+            "{}",
+            text("הרי")
+        );
+        assert!(
+            text("גוף").contains("<font color=red>גוף</font> א הרי"),
+            "{}",
+            text("גוף")
+        );
     }
 
     #[test]

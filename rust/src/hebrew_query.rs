@@ -978,44 +978,152 @@ pub(crate) const BREAKING_TAG_NAMES: &[&str] = &[
     "ul",
 ];
 
-/// האם תוכן תג (`body` — התווים שבין `<` ל-`>`) הוא תג שבירה: `/` פותח
-/// אופציונלי, שם באדישות לרישיות, ואחריו רק תו שאינו אות/ספרה (או כלום).
-pub(crate) fn is_breaking_tag(body: &[char]) -> bool {
-    let mut idx = 0;
-    if idx < body.len() && body[idx] == '/' {
-        idx += 1;
-    }
-    let start = idx;
-    while idx < body.len() && body[idx].is_ascii_alphanumeric() {
-        idx += 1;
-    }
-    // השם הארוך ביותר בן 10 תווים (figcaption) — חריגה היא לא-תג מהר.
-    if idx == start || idx - start > 10 {
-        return false;
-    }
-    let name: String = body[start..idx]
-        .iter()
-        .map(|c| c.to_ascii_lowercase())
-        .collect();
-    BREAKING_TAG_NAMES.contains(&name.as_str())
+/// sup/sub: their content is read as its own word, so their tags separate words
+/// ([`tag_breaks_word`]) — otherwise `תורה<sup>30</sup>` would index as `תורה30`.
+pub(crate) const SCRIPT_TAG_NAMES: &[&str] = &["sub", "sup"];
+
+/// The tag's name and whether it closes, for a body (the text between `<` and `>`) of
+/// an optional `/` and an ASCII alphanumeric name of at most 10 characters.
+fn tag_name(body: &str) -> Option<(bool, &str)> {
+    let (closing, name) = match body.strip_prefix('/') {
+        Some(name) => (true, name),
+        None => (false, body),
+    };
+    let len = name.bytes().take_while(u8::is_ascii_alphanumeric).count();
+    (1..=10).contains(&len).then(|| (closing, &name[..len]))
 }
 
-/// [`is_breaking_tag`] over the tag's text.
-fn is_breaking_tag_str(body: &str) -> bool {
-    let name = body.strip_prefix('/').unwrap_or(body).as_bytes();
-    let len = name
-        .iter()
-        .position(|b| !b.is_ascii_alphanumeric())
-        .unwrap_or(name.len());
-    if len == 0 || len > 10 {
+fn is_listed(names: &[&str], name: &str) -> bool {
+    names.iter().any(|listed| listed.eq_ignore_ascii_case(name))
+}
+
+fn is_hebrew_letter(c: char) -> bool {
+    matches!(c, '\u{05D0}'..='\u{05EA}')
+}
+
+/// Whether the tag `source[lt..=gt]` separates words: block tags and sup/sub do, except
+/// a sup/sub around one letter inside a word (a hanging letter, `מְ<sup>נַ</sup>שֶּׁה`).
+pub(crate) fn tag_breaks_word(source: &str, lt: usize, gt: usize) -> bool {
+    let Some((closing, name)) = tag_name(&source[lt + 1..gt]) else {
+        return false;
+    };
+    if is_listed(BREAKING_TAG_NAMES, name) {
+        return true;
+    }
+    if !is_listed(SCRIPT_TAG_NAMES, name) {
         return false;
     }
-    let mut lower = [0u8; 10];
-    for (to, from) in lower.iter_mut().zip(&name[..len]) {
-        *to = from.to_ascii_lowercase();
+    let open = if closing {
+        script_open_before(source, lt)
+    } else {
+        Some((lt, gt))
+    };
+    !open.is_some_and(|(lt, gt)| is_word_internal_script(source, lt, gt))
+}
+
+/// The tag that ends right before the lone letter (and its marks) preceding `lt`.
+fn script_open_before(source: &str, lt: usize) -> Option<(usize, usize)> {
+    let mut before = source[..lt].trim_end_matches(is_attached_mark).chars();
+    before.next_back().filter(|&c| is_hebrew_letter(c))?;
+    let gt = before.as_str().len().checked_sub(1)?;
+    if source.as_bytes()[gt] != b'>' {
+        return None;
     }
-    let lower = std::str::from_utf8(&lower[..len]).expect("ASCII");
-    BREAKING_TAG_NAMES.contains(&lower)
+    let lt = source[..gt].rfind('<')?;
+    (!source[lt + 1..gt].contains('>')).then_some((lt, gt))
+}
+
+/// Whether the open tag `source[lt..=gt]` wraps one letter (with marks) between letters.
+fn is_word_internal_script(source: &str, lt: usize, gt: usize) -> bool {
+    let Some((false, name)) = tag_name(&source[lt + 1..gt]) else {
+        return false;
+    };
+    let joined = |c: char| is_hebrew_letter(c) || is_attached_mark(c);
+    if !source[..lt].chars().next_back().is_some_and(joined) {
+        return false;
+    }
+    let mut content = source[gt + 1..].chars();
+    if !content.next().is_some_and(is_hebrew_letter) {
+        return false;
+    }
+    let Some(close) = content
+        .as_str()
+        .trim_start_matches(is_attached_mark)
+        .strip_prefix('<')
+    else {
+        return false;
+    };
+    let Some(close_gt) = close.find('>') else {
+        return false;
+    };
+    matches!(tag_name(&close[..close_gt]), Some((true, closing)) if closing.eq_ignore_ascii_case(name))
+        && close[close_gt + 1..]
+            .chars()
+            .next()
+            .is_some_and(is_hebrew_letter)
+}
+
+/// [`tag_breaks_word`] over a char vector, written apart so the reference scan checks it.
+#[cfg(test)]
+fn tag_breaks_word_chars(chars: &[char], lt: usize, gt: usize) -> bool {
+    let name_of = |lt: usize, gt: usize| -> Option<(bool, String)> {
+        let body = &chars[lt + 1..gt];
+        let closing = body.first() == Some(&'/');
+        let name: String = body[usize::from(closing)..]
+            .iter()
+            .take_while(|c| c.is_ascii_alphanumeric())
+            .map(|c| c.to_ascii_lowercase())
+            .collect();
+        (1..=10).contains(&name.len()).then_some((closing, name))
+    };
+    let Some((closing, name)) = name_of(lt, gt) else {
+        return false;
+    };
+    if BREAKING_TAG_NAMES.contains(&name.as_str()) {
+        return true;
+    }
+    if !SCRIPT_TAG_NAMES.contains(&name.as_str()) {
+        return false;
+    }
+    let letter = |i: usize| chars.get(i).is_some_and(|&c| is_hebrew_letter(c));
+    let mark = |i: usize| chars.get(i).is_some_and(|&c| is_attached_mark(c));
+    let (open_lt, open_gt) = if closing {
+        let mut i = lt;
+        while i > 0 && mark(i - 1) {
+            i -= 1;
+        }
+        if i < 2 || !letter(i - 1) || chars[i - 2] != '>' {
+            return true;
+        }
+        let open_gt = i - 2;
+        let Some(open_lt) = chars[..open_gt].iter().rposition(|&c| c == '<') else {
+            return true;
+        };
+        if chars[open_lt + 1..open_gt].contains(&'>') {
+            return true;
+        }
+        (open_lt, open_gt)
+    } else {
+        (lt, gt)
+    };
+    if name_of(open_lt, open_gt) != Some((false, name.clone()))
+        || open_lt == 0
+        || !(letter(open_lt - 1) || mark(open_lt - 1))
+        || !letter(open_gt + 1)
+    {
+        return true;
+    }
+    let mut i = open_gt + 2;
+    while mark(i) {
+        i += 1;
+    }
+    if chars.get(i) != Some(&'<') {
+        return true;
+    }
+    let Some(close_gt) = chars[i..].iter().position(|&c| c == '>').map(|p| i + p) else {
+        return true;
+    };
+    name_of(i, close_gt) != Some((true, name)) || !letter(close_gt + 1)
 }
 
 /// The whitespace entities [`strip_html_for_indexing`] turns into a space.
@@ -1041,7 +1149,7 @@ fn for_each_html_stripped_piece(text: &str, mut f: impl FnMut(&str)) {
         let (replacement, next) = match bytes[i] {
             b'<' => match bytes[i + 1..].iter().position(|&b| b == b'>') {
                 Some(close) => {
-                    let breaking = is_breaking_tag_str(&text[i + 1..i + 1 + close]);
+                    let breaking = tag_breaks_word(text, i, i + 1 + close);
                     (if breaking { " " } else { "" }, i + close + 2)
                 }
                 None => ("<", i + 1),
@@ -1130,7 +1238,7 @@ pub(crate) fn strip_html_for_indexing_reference(text: &str) -> String {
             '<' => {
                 // `<[^>]*>` — find the closing `>`; drop the whole span.
                 if let Some(close) = chars[i + 1..].iter().position(|&c| c == '>') {
-                    if is_breaking_tag(&chars[i + 1..i + 1 + close]) {
+                    if tag_breaks_word_chars(&chars, i, i + 1 + close) {
                         out.push(' ');
                     }
                     i += close + 2; // past the '>'
@@ -3041,6 +3149,46 @@ mod tests {
     }
 
     #[test]
+    fn strip_html_script_tags_are_word_boundaries() {
+        for (html, stripped) in [
+            ("תורה<sup>30</sup> המשך", "תורה 30  המשך"),
+            ("תורה<sub>30</sub> המשך", "תורה 30  המשך"),
+            ("תורה<sup>א</sup> מסוף", "תורה א  מסוף"),
+            ("תורה.<sup>30</sup>", "תורה. 30 "),
+            ("תורה&nbsp;<sup>30</sup>&nbsp;המשך", "תורה  30  המשך"),
+            ("תורה<sup class=\"x\">30</sup>המשך", "תורה 30 המשך"),
+            ("תורה<SUP>30</SUP>המשך", "תורה 30 המשך"),
+            ("תורה<b><sup>30</sup></b>המשך", "תורה 30 המשך"),
+            ("תורה<sup>30המשך", "תורה 30המשך"),
+            ("תּוֹרָה<sup>30</sup>הֶמְשֵׁךְ", "תּוֹרָה 30 הֶמְשֵׁךְ"),
+            ("תחלה<sup>31</sup>א", "תחלה 31 א"),
+            (
+                "גוף<sup class=\"footnote-marker\">א</sup><i class=\"footnote\">הרי זה</i>",
+                "גוף א הרי זה",
+            ),
+            // A name that only starts with sup/sub is an inline tag.
+            ("א<supx>ב", "אב"),
+            ("מי<b>לה</b>", "מילה"),
+            // A hanging letter inside a word stays part of it.
+            ("מְ<sup>נַ</sup>שֶּׁה", "מְנַשֶּׁה"),
+            ("מִיָּ֑<sup>עַ</sup>ר", "מִיָּ֑עַר"),
+            ("ו<sup>ג</sup>וש", "וגוש"),
+            ("ו<SUB>ג</SUB>וש", "וגוש"),
+            ("ו<sup>ג</sub>וש", "ו ג וש"),
+            ("ו<sup>גד</sup>וש", "ו גד וש"),
+            ("ו <sup>ג</sup>וש", "ו  ג וש"),
+            ("ו<sup>ג</sup> וש", "ו ג  וש"),
+        ] {
+            assert_eq!(strip_html_for_indexing(html), stripped, "{html:?}");
+            assert_eq!(
+                strip_html_for_indexing_reference(html),
+                stripped,
+                "{html:?}"
+            );
+        }
+    }
+
+    #[test]
     fn strip_attached_marks_keeps_separators() {
         assert_eq!(strip_attached_marks("שָׁלוֹם"), "שלום");
         assert_eq!(strip_attached_marks("בְּרֵאשִׁית"), "בראשית");
@@ -3072,6 +3220,13 @@ mod tests {
             "<h2 class=\"x\">",
             "<figcaption>",
             "<span>",
+            "<sup>",
+            "</sup>",
+            "<SUP class=\"footnote-marker\">",
+            "<sub>",
+            "</sub>",
+            "<sup>ב</sup>",
+            "ב\u{05B7}",
             "&",
             ";",
             "&amp;",

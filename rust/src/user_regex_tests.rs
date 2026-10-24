@@ -174,6 +174,22 @@ fn line_view_folds_like_clean_line_for_search_and_maps_back() {
 }
 
 #[test]
+fn line_view_breaks_at_script_tags_like_the_index() {
+    let source = "😀 תורה<sup>30</sup>הרי מְ<sup>נַ</sup>שֶּׁה";
+    let view = LineView::of(source, true);
+    assert_eq!(view.text, "😀 תורה 30 הרי מנשה");
+    let units: Vec<u16> = source.encode_utf16().collect();
+    let source_of = |word: &str| {
+        let at = view.text.find(word).unwrap();
+        let (start, end) = view.source_range(&(at..at + word.len()));
+        String::from_utf16(&units[start as usize..end as usize]).unwrap()
+    };
+    assert_eq!(source_of("30"), "30");
+    assert_eq!(source_of("הרי"), "הרי");
+    assert_eq!(source_of("מנשה"), "מְ<sup>נַ</sup>שֶּׁה");
+}
+
+#[test]
 fn fixed_words_of_a_line_pattern_become_required_clauses() {
     let plan = parse(r"/שמע \S+ ישראל/").unwrap().line.unwrap();
     assert_eq!(

@@ -44,7 +44,7 @@ use crate::book_order::{book_number_of, OrderKind, OrderTables};
 use crate::doc_store::DocumentLoader;
 use crate::gap_phrase::Proximity;
 use crate::hebrew_query::{
-    fold_presentation_form, is_invisible_char, is_word_mark, BREAKING_TAG_NAMES,
+    fold_presentation_form, is_invisible_char, is_word_mark, tag_breaks_word,
 };
 use crate::highlight_matcher::{Match, PreparedHighlightMatcher, Range};
 use crate::line_source::{self, FrameDecoder, RawRow, Source};
@@ -248,16 +248,6 @@ fn fold_pattern(raw: &str) -> String {
         }
     }
     out
-}
-
-/// [`crate::hebrew_query::is_breaking_tag`] on the text between `<` and `>`, without collecting it.
-fn is_breaking_tag_name(body: &str) -> bool {
-    let body = body.strip_prefix('/').unwrap_or(body);
-    let len = body.bytes().take_while(u8::is_ascii_alphanumeric).count();
-    (1..=10).contains(&len)
-        && BREAKING_TAG_NAMES
-            .iter()
-            .any(|name| name.eq_ignore_ascii_case(&body[..len]))
 }
 
 /// What `cleanLineForSearch` deletes: the whole nikud/cantillation block (sof pasuq too),
@@ -990,7 +980,7 @@ impl LineView {
                 let rest = &source[byte..];
                 if let Some(close) = rest.find('>') {
                     let end16 = utf16 + units(&rest[..=close]);
-                    if is_breaking_tag_name(&rest[1..close]) {
+                    if tag_breaks_word(source, byte, byte + close) {
                         pending = Some(pending.map_or((utf16, end16), |(s, _)| (s, end16)));
                     }
                     byte += close + 1;
