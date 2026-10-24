@@ -213,7 +213,8 @@ a pattern `crossSpace`, as does a sequence word that names no letter (`/שמע .
 patterns match whole terms; in term patterns, wildcards cover Hebrew letters, Latin `a-z`,
 digits and quotes. A `crossSpace` match starts and ends on a word boundary when that edge
 of the pattern is a letter, and is matched against the line as the app's
-`cleanLineForSearch` sees it (tags removed, a breaking tag as a space; nikud removed;
+`cleanLineForSearch` sees it (tags removed, a breaking tag as a space, as is a `<sup>` or
+`<sub>` unless it wraps one letter inside a word; nikud removed;
 maqaf/paseq/`|` as a space; whitespace collapsed), lowercased, quotes as ASCII. Footnote
 text stays in the line, as it does in the index. It never continues onto the
 next line.
@@ -679,7 +680,7 @@ Checks whether an existing index is compatible with the current search engine sc
 
 The engine writes an `otzaria_index_meta.json` sidecar file next to compatible indexes when they are opened. For older indexes without that sidecar, this function falls back to Tantivy's `meta.json` and verifies its full schema against the schemas this engine reads.
 
-This engine reads and creates schema version 5: the `chunkKey` column, `text`/`textVocalized` kept out of the store, and the fields official books' library text is read and checked by (`lineCheck`, `textStored`, `textVocalizedStored`), and the fields a phrase that continues onto the next line is found by (`lineFirst`, `lineLast`, `lineEdge`). A version 4 index stores its text where this engine does not read it, and is `rebuild_required`; so is a version 5 index without those fields, since the check compares the index's whole Tantivy schema, not only the version its metadata declares.
+This engine reads and creates schema version 8 only. Version 8 has the fields of version 7 and changes the terms of `text` (`<sup>` and `<sub>` separate words) and of `textVocalized` (marks in canonical order, without CGJ), so an index of version 7 or older is `rebuild_required`. The check compares the index's whole Tantivy schema as well as the version its metadata declares, so an index without the fields of its version is rebuilt too. An index without metadata whose schema is that of version 7 cannot be told from version 8, and is `legacy_compatible`.
 
 **Parameters:**
 - `path` (String): File system path of the Tantivy index directory
@@ -689,7 +690,7 @@ This engine reads and creates schema version 5: the `chunkKey` column, `text`/`t
 Common `status` values:
 - `compatible`: Otzaria metadata exists, declares a schema version this engine reads, and the index has that version's schema
 - `legacy_compatible`: Otzaria metadata is missing, but the full Tantivy schema is one this engine reads
-- `rebuild_required`: The index schema is older than version 5, or is not the schema its version has, and should be rebuilt
+- `rebuild_required`: The index schema is older than version 8, or is not the schema its version has, and should be rebuilt
 - `engine_too_old`: The index schema is newer than this engine supports
 - `missing_index`: The index directory does not exist
 - `invalid_index_path`: The given path is not a valid directory path
@@ -848,7 +849,7 @@ class IndexCompatibility {
   bool compatible;             // Whether the current engine can use this index
   String status;               // Machine-readable status
   int? foundSchemaVersion;     // Version found in metadata, when known
-  int requiredSchemaVersion;   // Version this engine creates (it also reads 4)
+  int requiredSchemaVersion;   // Version this engine creates and reads (8)
   String engineVersion;        // Rust engine package version
   String metadataPath;         // Expected otzaria_index_meta.json path
   String? reason;              // Human-readable detail for non-trivial states

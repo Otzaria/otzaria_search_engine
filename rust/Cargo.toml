@@ -140,6 +140,9 @@ otzaria-semantic-search = { git = "https://github.com/Otzaria/otzaria-semantic-s
 # ש-RegExp של Dart תומך בו ו-`regex` לא — בבדיקות מהדרים אותן עם backtracking
 # כמו בצד ה-Dart.
 fancy-regex = "0.14"
+# Checks the hardcoded combining-class table against Unicode; already in the
+# lockfile through `tokenizers`.
+unicode-normalization-alignments = "0.1.12"
 
 # Vendored copy of tantivy-fst 0.5.0 whose only local change raises the
 # regex-DFA STATE_LIMIT from 1 000 to 8 192 (see vendor/tantivy-fst/README.md).

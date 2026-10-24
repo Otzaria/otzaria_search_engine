@@ -44,7 +44,7 @@ use crate::book_order::{book_number_of, OrderKind, OrderTables};
 use crate::doc_store::DocumentLoader;
 use crate::gap_phrase::Proximity;
 use crate::hebrew_query::{
-    fold_presentation_form, is_invisible_char, is_word_mark, BREAKING_TAG_NAMES,
+    fold_presentation_form, is_invisible_char, is_word_mark, tag_breaks_word,
 };
 use crate::highlight_matcher::{Match, PreparedHighlightMatcher, Range};
 use crate::line_source::{self, FrameDecoder, RawRow, Source};
@@ -114,11 +114,12 @@ pub(crate) struct TermPart {
     verify: Option<Regex>,
 }
 
-/// A fixed word every match of a line pattern contains.
+/// A fixed word every match of a line pattern contains, as the tokenizer makes it a term.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Fragment {
     pub(crate) text: String,
-    /// The fragment is a whole token: one term, rather than terms containing it.
+    /// Bounded on both sides in the pattern: a whole term, or one glued to others by
+    /// [`GLUE`]; otherwise only contained in a term.
     pub(crate) whole: bool,
 }
 
@@ -248,16 +249,6 @@ fn fold_pattern(raw: &str) -> String {
         }
     }
     out
-}
-
-/// [`crate::hebrew_query::is_breaking_tag`] on the text between `<` and `>`, without collecting it.
-fn is_breaking_tag_name(body: &str) -> bool {
-    let body = body.strip_prefix('/').unwrap_or(body);
-    let len = body.bytes().take_while(u8::is_ascii_alphanumeric).count();
-    (1..=10).contains(&len)
-        && BREAKING_TAG_NAMES
-            .iter()
-            .any(|name| name.eq_ignore_ascii_case(&body[..len]))
 }
 
 /// What `cleanLineForSearch` deletes: the whole nikud/cantillation block (sof pasuq too),
@@ -850,17 +841,12 @@ fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_' || is_word_mark(c)
 }
 
-fn is_term_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '"' || c == '\''
-}
-
-/// The fixed words of a line pattern's top level, as AND-ed clauses. A run of literal
-/// characters between two non-term characters (or a pattern edge) is a whole term; one
-/// touching a wildcard is only contained in a term. A top-level group whose every branch
-/// is a fixed word contributes their OR.
+/// The fixed words of a line pattern's top level, as AND-ed clauses: each term of a run of
+/// literal characters, whole when the run lies between two characters that end a term (or
+/// a pattern edge), and the OR of a top-level group whose every branch is a fixed word.
 fn required_clauses(elements: &[Hir]) -> Vec<Vec<Fragment>> {
     fn flush(run: &mut String, left: bool, right: bool, clauses: &mut Vec<Vec<Fragment>>) {
-        if let Some(fragment) = fragment(run, left, right) {
+        for fragment in fragments(run, left, right) {
             if !clauses.iter().any(|c| c.len() == 1 && c[0] == fragment) {
                 clauses.push(vec![fragment]);
             }
@@ -869,66 +855,98 @@ fn required_clauses(elements: &[Hir]) -> Vec<Vec<Fragment>> {
     }
     let mut clauses: Vec<Vec<Fragment>> = Vec::new();
     let mut run = String::new();
-    let mut left_bounded = true;
+    // A pattern edge bounds a run only where `line_plan` implies a word boundary.
+    let edge = |c: Option<char>| c.is_some_and(is_word_char);
+    let mut left_bounded = edge(
+        elements
+            .first()
+            .and_then(literal_text)
+            .and_then(|t| t.chars().next()),
+    );
     for element in elements {
-        if let Some(text) = literal_text(element) {
-            let c = text.chars().next().unwrap_or(' ');
-            if is_term_char(c) {
-                run.extend(c.to_lowercase());
-            } else if crate::hebrew_tokenizer::is_transparent(c) {
-                // The tokenizer drops it inside a term (`יב[ע]ר` is `יבער`), so no edge here.
-                flush(&mut run, left_bounded, false, &mut clauses);
-                left_bounded = false;
-            } else {
-                flush(&mut run, left_bounded, true, &mut clauses);
-                left_bounded = true;
+        let bounding = match literal_text(element) {
+            Some(text) => {
+                let c = text.chars().next().unwrap_or(' ');
+                if crate::hebrew_tokenizer::continues_token(c) {
+                    run.extend(c.to_lowercase());
+                    continue;
+                }
+                true
             }
-            continue;
-        }
-        if is_separator(element) {
-            flush(&mut run, left_bounded, true, &mut clauses);
-            left_bounded = true;
-            continue;
-        }
-        flush(&mut run, left_bounded, false, &mut clauses);
-        left_bounded = false;
-        if let Some(any) = alternatives(element) {
-            clauses.push(any);
+            None => is_separator(element),
+        };
+        flush(&mut run, left_bounded, bounding, &mut clauses);
+        left_bounded = bounding;
+        if !bounding {
+            if let Some(any) = alternatives(element) {
+                clauses.push(any);
+            }
         }
     }
-    flush(&mut run, left_bounded, true, &mut clauses);
+    let right_bounded = edge(run.chars().next_back());
+    flush(&mut run, left_bounded, right_bounded, &mut clauses);
     clauses
 }
 
-/// The literal branches of a group required at least once, each only contained in a term.
+/// The literal branches of a group required at least once: the longest term of each.
 fn alternatives(hir: &Hir) -> Option<Vec<Fragment>> {
     match hir.kind() {
         HirKind::Repetition(rep) if rep.min >= 1 => alternatives(&rep.sub),
         HirKind::Capture(capture) => alternatives(&capture.sub),
-        HirKind::Alternation(subs) => {
-            let mut out = Vec::new();
-            for sub in subs {
-                let text = literal_text(sub)?;
-                let longest = text
-                    .split(|c: char| !is_term_char(c))
-                    .max_by_key(|piece| piece.chars().count())?;
-                out.push(fragment(&longest.to_lowercase(), false, false)?);
-            }
-            Some(out)
-        }
+        HirKind::Alternation(subs) => subs
+            .iter()
+            .map(|sub| {
+                fragments(&literal_text(sub)?.to_lowercase(), false, false)
+                    .into_iter()
+                    .max_by_key(|f| f.text.chars().count())
+            })
+            .collect(),
         _ => None,
     }
 }
 
-fn fragment(run: &str, left: bool, right: bool) -> Option<Fragment> {
-    let trimmed_left = run.trim_start_matches(['"', '\'']);
-    let trimmed = trimmed_left.trim_end_matches(['"', '\'']);
-    let whole = left && right && trimmed.len() == run.len();
-    (trimmed.chars().count() >= 2).then(|| Fragment {
-        text: trimmed.to_string(),
-        whole,
-    })
+/// The terms the index makes of `run`, without edge quotes; `left`/`right` say the run is
+/// bounded there. The tokenizer folds `''` to `"`, and a run like `""` splits it.
+fn fragments(run: &str, left: bool, right: bool) -> Vec<Fragment> {
+    use tantivy::tokenizer::{TokenStream, Tokenizer};
+    let mut tokenizer = crate::hebrew_tokenizer::HebrewTokenizer::default();
+    let mut stream = tokenizer.token_stream(run);
+    let mut tokens = Vec::new();
+    while stream.advance() {
+        tokens.push(stream.token().text.clone());
+    }
+    let last = tokens.len().saturating_sub(1);
+    tokens
+        .iter()
+        .enumerate()
+        .filter_map(|(i, token)| {
+            let text = token.trim_matches(['"', '\'']);
+            // A longer term is not indexed (`RemoveLongFilter`): no term could contain it.
+            let indexed = text.len() < crate::api::search_engine::MAX_TOKEN_BYTES;
+            (text.chars().count() >= 2 && indexed).then(|| Fragment {
+                text: text.to_string(),
+                whole: (left || i > 0) && (right || i < last),
+            })
+        })
+        .collect()
 }
+
+/// What can glue a word to another in a term while the line pattern still sees a word
+/// boundary between them: a quote, or a character the tokenizer keeps in a word but `\w`
+/// does not match (a numeral like `²`).
+static GLUE: Lazy<ClassUnicode> = Lazy::new(|| {
+    let mut glue = ClassUnicode::new(
+        ('\0'..=char::MAX)
+            .filter(|&c| crate::hebrew_tokenizer::is_word_char(c))
+            .map(|c| ClassUnicodeRange::new(c, c)),
+    );
+    glue.difference(&WORD_CLASS);
+    glue.union(&ClassUnicode::new([
+        ClassUnicodeRange::new('"', '"'),
+        ClassUnicodeRange::new('\'', '\''),
+    ]));
+    glue
+});
 
 impl LinePlan {
     pub(crate) fn is_match(&self, view: &str) -> bool {
@@ -990,7 +1008,7 @@ impl LineView {
                 let rest = &source[byte..];
                 if let Some(close) = rest.find('>') {
                     let end16 = utf16 + units(&rest[..=close]);
-                    if is_breaking_tag_name(&rest[1..close]) {
+                    if tag_breaks_word(source, byte, byte + close) {
                         pending = Some(pending.map_or((utf16, end16), |(s, _)| (s, end16)));
                     }
                     byte += close + 1;
@@ -1761,37 +1779,26 @@ fn candidate_query(
         let mut postings = 0u64;
         let mut selective = true;
         for fragment in clause {
-            if fragment.whole {
-                let term = Term::from_field_text(text_field, &fragment.text);
-                postings += ctx
-                    .searcher
-                    .segment_readers()
-                    .iter()
-                    .map(|r| {
-                        r.inverted_index(text_field)
-                            .ok()
-                            .and_then(|i| i.doc_freq(&term).ok())
-                            .unwrap_or(0) as u64
-                    })
-                    .sum::<u64>();
-                terms.insert(fragment.text.clone());
+            // A word glued by a character the index drops (`יב[ע]ר` is `יבער`) is not found.
+            let part = if fragment.whole {
+                glued_part(&fragment.text)?
             } else {
-                let part = contains_part(&fragment.text)?;
-                let found = collect_part_terms(
-                    ctx.searcher,
-                    text_field,
-                    &part,
-                    CLAUSE_MAX_TERMS,
-                    CLAUSE_POSTINGS_CAP,
-                    ctx.cancel,
-                )?;
-                if found.truncated {
-                    selective = false;
-                    break;
-                }
-                postings += found.postings;
-                terms.extend(found.terms.iter().cloned());
+                contains_part(&fragment.text)?
+            };
+            let found = collect_part_terms(
+                ctx.searcher,
+                text_field,
+                &part,
+                CLAUSE_MAX_TERMS,
+                CLAUSE_POSTINGS_CAP,
+                ctx.cancel,
+            )?;
+            if found.truncated {
+                selective = false;
+                break;
             }
+            postings += found.postings;
+            terms.extend(found.terms.iter().cloned());
             if postings > CLAUSE_POSTINGS_CAP {
                 selective = false;
                 break;
@@ -1817,21 +1824,46 @@ fn candidate_query(
     Ok(Some(Box::new(BooleanQuery::new(must))))
 }
 
-/// `.*fragment.*` as a term part.
-fn contains_part(fragment: &str) -> anyhow::Result<TermPart> {
-    let any = Hir::repetition(Repetition {
+fn any_text() -> Hir {
+    Hir::repetition(Repetition {
         min: 0,
         max: None,
         greedy: true,
         sub: Box::new(Hir::class(Class::Unicode(ClassUnicode::new([
             ClassUnicodeRange::new('\0', char::MAX),
         ])))),
-    });
-    let hir = Hir::concat(vec![
-        any.clone(),
+    })
+}
+
+/// `.*fragment.*` as a term part.
+fn contains_part(fragment: &str) -> anyhow::Result<TermPart> {
+    literal_part(Hir::concat(vec![
+        any_text(),
         Hir::literal(fragment.as_bytes().to_vec()),
-        any,
-    ]);
+        any_text(),
+    ]))
+}
+
+/// `(?:.*[glue])?fragment(?:[glue].*)?` as a term part: the term `fragment`, or one that
+/// [`GLUE`] joins it to.
+fn glued_part(fragment: &str) -> anyhow::Result<TermPart> {
+    let glue = || Hir::class(Class::Unicode(GLUE.clone()));
+    let optional = |subs| {
+        Hir::repetition(Repetition {
+            min: 0,
+            max: Some(1),
+            greedy: true,
+            sub: Box::new(Hir::concat(subs)),
+        })
+    };
+    literal_part(Hir::concat(vec![
+        optional(vec![any_text(), glue()]),
+        Hir::literal(fragment.as_bytes().to_vec()),
+        optional(vec![glue(), any_text()]),
+    ]))
+}
+
+fn literal_part(hir: Hir) -> anyhow::Result<TermPart> {
     let automaton = compile_user_term_automaton(&hir).map_err(|e| anyhow::anyhow!(e))?;
     Ok(TermPart {
         pattern: hir.to_string(),

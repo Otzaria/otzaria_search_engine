@@ -19,7 +19,7 @@ use once_cell::sync::Lazy;
 use crate::hebrew_query::{
     affix_arms, aramaic_root_variants, generate_spelling_variations, is_word_mark,
     normalize_for_index, split_query_words, word_flags_at, WordFlags, BREAKING_TAG_NAMES,
-    MAX_SPELLING_BRANCHES,
+    MAX_SPELLING_BRANCHES, SCRIPT_TAG_NAMES,
 };
 use crate::hebrew_tokenizer::continues_token;
 
@@ -154,9 +154,10 @@ fn is_markup_char(c: char) -> bool {
 
 /// גוף תג שבירה, בלי `<`: `/` פותח אופציונלי, שם מהרשימה המשותפת עם
 /// האינדוקס, ואחרי השם `>` מיד או תו לא-אלפאנומרי ואז שאר התג. הארוכים
-/// קודם, שגם `pre` וגם `p` ייבחנו בסדר שממצה את החלופות.
+/// קודם, שגם `pre` וגם `p` ייבחנו בסדר שממצה את החלופות. sup/sub תמיד שוברים
+/// כאן — חריג האות התלויה (`מְ<sup>נַ</sup>שֶּׁה`) של האינדוקס אינו ממודל.
 static BREAKING_TAG_BODY: Lazy<String> = Lazy::new(|| {
-    let mut names: Vec<&str> = BREAKING_TAG_NAMES.to_vec();
+    let mut names: Vec<&str> = [BREAKING_TAG_NAMES, SCRIPT_TAG_NAMES].concat();
     names.sort_by(|a, b| b.len().cmp(&a.len()).then(a.cmp(b)));
     format!(
         "/?(?:{names})(?:[^>a-zA-Z0-9][^>]*)?>",
@@ -1266,6 +1267,34 @@ mod tests {
         // תג שבירה בתוך מילה מפצל אותה — `זר<br>עך` הם שני טוקנים באינדקס,
         // ולכן המילה `זרעך` אינה מודגשת שם.
         assert_eq!(min_matching_distance("תדע זרעך", "תדע זר<br>עך", 4), None);
+    }
+
+    #[test]
+    fn script_tag_between_the_words_is_a_separator() {
+        for text in [
+            "תדע<sup>12</sup>זרעך",
+            "תדע<sup class=\"footnote-marker\">א</sup><i class=\"footnote\">זרעך",
+            "תדע<SUB>30</SUB> זרעך",
+        ] {
+            assert_eq!(
+                min_matching_distance("תדע זרעך", text, 2),
+                Some(1),
+                "טקסט {text:?}: תוכן התג הוא מילה בין המילים"
+            );
+        }
+        assert_eq!(
+            min_matching_distance("תדע זרעך", "תדע<sup></sup>זרעך", 2),
+            Some(0)
+        );
+        assert_eq!(min_matching_distance("תדע זרעך", "תדע<supx>זרעך", 2), None);
+        // The in-book literal pattern's separator, compiled case-insensitive as Dart does.
+        let separator = fancy_regex::Regex::new(&format!("(?i)^(?:{})$", *WORD_SEPARATOR)).unwrap();
+        for tag in ["<sup>", "</SUP>", "<sub class=\"x\">", "</sub><i>"] {
+            assert!(separator.is_match(tag).unwrap(), "{tag:?}");
+        }
+        for tag in ["<supx>", "<span>", "<small>", "<strong>", "<s>"] {
+            assert!(!separator.is_match(tag).unwrap(), "{tag:?}");
+        }
     }
 
     #[test]

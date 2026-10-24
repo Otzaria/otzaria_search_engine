@@ -83,6 +83,18 @@ Future<void> main() async {
       expect(regex.hasMatch('תדע<b>זרעך'), isFalse);
     });
 
+    test('תג sup הוא גבול מילה, ואות תלויה נשארת בתוך המילה', () {
+      // תוכן ה-sup (סימן הערה) הוא מילה משלו באינדוקס, ואינו נדבק לשכנותיו.
+      const note =
+          'גוף<sup class="footnote-marker">א</sup><i class="footnote">הרי זה</i>';
+      expect(_PreparedPattern(_pattern('הרי זה')).hasMatch(note), isTrue);
+      expect(_PreparedPattern(_pattern('אהרי')).hasMatch(note), isFalse);
+      expect(
+        _PreparedPattern(_pattern('מנשה')).hasMatch('מְ<sup>נַ</sup>שֶּׁה'),
+        isTrue,
+      );
+    });
+
     test('מרווח מותאם מאפשר מילים ביניים עד הגבול', () {
       final hl = _pattern('כל היום', spacing: {'0-1': '1'});
       final regex = _PreparedPattern(hl);

@@ -893,14 +893,26 @@ fn line_note_bodies_are_indexed_like_the_apps_rehydrated_text() {
         Some(expected_hash)
     );
 
-    // Words found only in footnotes, at the end, after a marker and at an offset.
-    for word in ["זרזיר", "קורקבן", "חרטום", "תמנון", "ינשוף"] {
+    // Words found only in footnotes, at the end, after a marker and at an offset; a body's
+    // first word too, which the marker's sup keeps apart from the marker's letter.
+    for word in [
+        "זרזיר",
+        "קורקבן",
+        "חרטום",
+        "תמנון",
+        "ינשוף",
+        "ראשונה",
+        "שנייה",
+        "מוקדמת",
+        "בתמונה",
+    ] {
         let hits = hit_books(&by_engine, word);
         assert_eq!(hits.len(), 1, "{word}");
         assert_eq!(hits[0].0, "id:21", "{word}");
         let highlighted = format!("<font color=red>{word}</font>");
         assert!(hits[0].1.contains(&highlighted), "{word}");
     }
+    assert!(hit_books(&by_engine, "אראשונה").is_empty());
 }
 
 /// Turns a notes fixture into the release shape: every line and every `line_note` body a
@@ -1141,7 +1153,7 @@ fn without_line_note_or_outside_the_library_the_rows_are_indexed_as_they_are() {
         .map(|(path, _)| path)
         .collect();
     books.sort();
-    assert_eq!(books, ["db:att:21", "id:21"]);
+    assert_eq!(books, ["db:att:21", "db:att:21", "id:21", "id:21"]);
 
     let rows = notes_fixture_books().swap_remove(0).2;
     let text = rows.join("\n");
