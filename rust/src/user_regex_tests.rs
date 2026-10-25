@@ -1898,3 +1898,325 @@ fn a_commit_discards_the_partial_hits_of_a_cancelled_scan() {
     assert!(!last(&found).truncated);
     assert!(results(&found).is_empty());
 }
+
+fn legacy_candidate_query(
+    ctx: &LineSearch<'_>,
+    plan: &LinePlan,
+) -> anyhow::Result<Option<Box<dyn Query>>> {
+    let text_field = ctx.schema.get_field("text")?;
+    let mut clauses: Vec<(u64, Box<dyn Query>)> = Vec::new();
+    for clause in &plan.clauses {
+        let mut terms: HashSet<String> = HashSet::new();
+        let mut postings = 0u64;
+        let mut selective = true;
+        for fragment in clause {
+            // A word glued by a character the index drops (`יב[ע]ר` is `יבער`) is not found.
+            let part = if fragment.whole {
+                glued_part(&fragment.text)?
+            } else {
+                contains_part(&fragment.text)?
+            };
+            let found = collect_part_terms(
+                ctx.searcher,
+                text_field,
+                &part,
+                CLAUSE_MAX_TERMS,
+                CLAUSE_POSTINGS_CAP,
+                ctx.cancel,
+            )?;
+            if found.truncated {
+                selective = false;
+                break;
+            }
+            postings += found.postings;
+            terms.extend(found.terms.iter().cloned());
+            if postings > CLAUSE_POSTINGS_CAP {
+                selective = false;
+                break;
+            }
+        }
+        if !selective {
+            continue;
+        }
+        let query: Box<dyn Query> = Box::new(TermSetQuery::new(
+            terms.iter().map(|t| Term::from_field_text(text_field, t)),
+        ));
+        clauses.push((postings, query));
+    }
+    if clauses.is_empty() {
+        return Ok(None);
+    }
+    clauses.sort_by_key(|(postings, _)| *postings);
+    let mut must: Vec<(Occur, Box<dyn Query>)> =
+        clauses.into_iter().map(|(_, q)| (Occur::Must, q)).collect();
+    if let Some(scope) = &ctx.scope {
+        must.push((Occur::Must, scope.box_clone()));
+    }
+    Ok(Some(Box::new(BooleanQuery::new(must))))
+}
+
+#[test]
+fn batched_line_terms_preserve_segment_budgets_quotes_and_cache() {
+    use tantivy::schema::{SchemaBuilder, STRING};
+    use tantivy::{doc, Index, ReloadPolicy};
+    let mut builder = SchemaBuilder::new();
+    let field = builder.add_text_field("text", STRING);
+    let index = Index::create_in_ram(builder.build());
+    let mut writer = index.writer_with_num_threads(1, 15_000_000).unwrap();
+    writer.set_merge_policy(Box::new(tantivy::indexer::NoMergePolicy));
+    for words in [
+        &["שבת", "ה'שבת", "שבת'אור", "רמב\"ם", "תורה", "ספר"][..],
+        &["שבת", "שבת", "שבת²אור", "רמבם", "ספרים", "אלף"][..],
+    ] {
+        for word in words {
+            writer.add_document(doc!(field => *word)).unwrap();
+        }
+        writer.commit().unwrap();
+    }
+    let reader: tantivy::IndexReader = index
+        .reader_builder()
+        .reload_policy(ReloadPolicy::Manual)
+        .try_into()
+        .unwrap();
+    let searcher = reader.searcher();
+    assert_eq!(searcher.segment_readers().len(), 2);
+    let cancel = AtomicBool::new(false);
+    let mut literals: Vec<String> = ["שבת", "ספר", "רמבם", "נעדר"]
+        .iter()
+        .map(|literal| literal.to_string())
+        .collect();
+    literals.extend((0..60).map(|i| format!("נעדר{i}")));
+    literals.extend([
+        "א".repeat(LINE_TERM_BATCH_LITERAL_BYTES),
+        "budget fallback".to_string(),
+    ]);
+    let parts: Vec<_> = literals
+        .iter()
+        .enumerate()
+        .map(|(i, literal)| {
+            if i == 1 {
+                contains_part(literal).unwrap()
+            } else {
+                glued_part(literal).unwrap()
+            }
+        })
+        .collect();
+    let literals: Vec<_> = literals.iter().map(String::as_str).collect();
+    for (max_terms, postings_budget) in [(100, 1000), (1, 1000), (3, 1000), (100, 1), (100, 3)] {
+        TERM_CACHE.lock().unwrap().clear();
+        let expected: Vec<_> = parts
+            .iter()
+            .map(|part| {
+                collect_part_terms(&searcher, field, part, max_terms, postings_budget, &cancel)
+                    .unwrap()
+            })
+            .collect();
+        TERM_CACHE.lock().unwrap().clear();
+        let actual = collect_line_terms(
+            &searcher,
+            field,
+            &parts,
+            &literals,
+            max_terms,
+            postings_budget,
+            &cancel,
+        )
+        .unwrap();
+        for (expected, actual) in expected.iter().zip(&actual) {
+            assert_eq!(
+                (&expected.terms, expected.postings, expected.truncated),
+                (&actual.terms, actual.postings, actual.truncated)
+            );
+        }
+        let cached = collect_line_terms(
+            &searcher,
+            field,
+            &parts,
+            &literals,
+            max_terms,
+            postings_budget,
+            &cancel,
+        )
+        .unwrap();
+        for (expected, cached) in expected.iter().zip(&cached) {
+            assert_eq!(
+                (&expected.terms, expected.postings, expected.truncated),
+                (&cached.terms, cached.postings, cached.truncated)
+            );
+        }
+        TERM_CACHE.lock().unwrap().pop(&PartTermsKey::new(
+            &searcher,
+            field,
+            &parts[0],
+            max_terms,
+            postings_budget,
+        ));
+        let mixed = collect_line_terms(
+            &searcher,
+            field,
+            &parts,
+            &literals,
+            max_terms,
+            postings_budget,
+            &cancel,
+        )
+        .unwrap();
+        for (expected, actual) in expected.iter().zip(&mixed) {
+            assert_eq!(
+                (&expected.terms, expected.postings, expected.truncated),
+                (&actual.terms, actual.postings, actual.truncated)
+            );
+        }
+    }
+    cancel.store(true, Ordering::Relaxed);
+    assert!(
+        collect_line_terms(&searcher, field, &parts, &literals, 100, 1000, &cancel)
+            .err()
+            .expect("cancelled collection")
+            .to_string()
+            .contains(CANCELLED)
+    );
+}
+
+#[test]
+fn literal_prefilters_bound_common_prefix_batches_and_compile_input() {
+    for count in [21, 32, 64] {
+        let words: Vec<_> = (0..count)
+            .map(|i| format!("prefix{count}shared{i}"))
+            .collect();
+        let mut compile_time = Duration::ZERO;
+        for batch in words.chunks(LINE_TERM_BATCH_PARTS) {
+            let literals: Vec<_> = batch.iter().map(String::as_str).collect();
+            let started = Instant::now();
+            let dfa = line_literal_prefilter(&literals).expect("bounded literal batch compiles");
+            compile_time += started.elapsed();
+            let accepts = UserTermAutomaton(QuoteTransparent::from_arc(dfa));
+            for word in &literals {
+                assert!(accepts.matches(&format!("before{word}after")));
+            }
+            assert!(!accepts.matches("absent"));
+        }
+        println!(
+            "LITERAL_PREFILTER_COMPILE count={count} elapsed_us={}",
+            compile_time.as_micros()
+        );
+    }
+    assert!(line_literal_prefilter(&["a"; LINE_TERM_BATCH_PARTS + 1]).is_none());
+    let oversized = "א".repeat(LINE_TERM_BATCH_LITERAL_BYTES / 2 + 1);
+    assert!(line_literal_prefilter(&[&oversized, "b"]).is_none());
+}
+
+#[test]
+fn an_empty_required_line_clause_returns_an_empty_query() {
+    let dir = TempDir::new().unwrap();
+    let engine = stored_engine(dir.path(), &sample_books());
+    let searcher = engine.searcher_for_tests();
+    let cancel = AtomicBool::new(false);
+    let (order_epoch, order) = engine.order_tables_for_tests();
+    let ctx = LineSearch {
+        searcher: &searcher,
+        schema: searcher.schema(),
+        scope: None,
+        facets: Vec::new(),
+        cancel: &cancel,
+        max_hits: MAX_LINE_HITS,
+        order,
+        order_epoch,
+    };
+    let plan = parse("/נעדרלחלוטין .* ישראל/").unwrap().line.unwrap();
+    let query = candidate_query(&ctx, &plan).unwrap().unwrap();
+    assert!(query.as_any().is::<tantivy::query::EmptyQuery>());
+    assert_eq!(searcher.search(query.as_ref(), &Count).unwrap(), 0);
+}
+
+#[test]
+#[ignore = "set OTZARIA_REGEX_BENCH_INDEX to an existing index; reads it without a writer"]
+fn benchmark_batched_line_candidates_against_individual_scans() {
+    let path = std::env::var("OTZARIA_REGEX_BENCH_INDEX").expect("OTZARIA_REGEX_BENCH_INDEX");
+    let path = Path::new(&path);
+    let engine =
+        SearchEngine::from_read_only_index(tantivy::Index::open_in_dir(path).unwrap(), path)
+            .unwrap();
+    let searcher = engine.searcher_for_tests();
+    let cancel = AtomicBool::new(false);
+    let (order_epoch, order) = engine.order_tables_for_tests();
+    let ctx = LineSearch {
+        searcher: &searcher,
+        schema: searcher.schema(),
+        scope: None,
+        facets: Vec::new(),
+        cancel: &cancel,
+        max_hits: MAX_LINE_HITS,
+        order,
+        order_epoch,
+    };
+    let patterns = [
+        "/תורה .* שבת/",
+        "/רב .* אמר/",
+        "/אמר .* כי יב/",
+        "/תוס' .* שבת/",
+        "/ר' .* אומר/",
+        "/תורה .* שבת .* אמר .* ישראל/",
+        "/נעדרלחלוטין .* תורה .* שבת .* ישראל/",
+    ];
+    for raw in patterns {
+        let plan = parse(raw).unwrap().line.unwrap();
+        let mut expected = None;
+        for cycle in 0..4 {
+            for batch in if cycle % 2 == 0 {
+                [false, true]
+            } else {
+                [true, false]
+            } {
+                TERM_CACHE.lock().unwrap().clear();
+                for warm in [false, true] {
+                    let started = Instant::now();
+                    let query = if batch {
+                        candidate_query(&ctx, &plan)
+                    } else {
+                        legacy_candidate_query(&ctx, &plan)
+                    }
+                    .unwrap()
+                    .unwrap();
+                    let prepare_us = started.elapsed().as_micros();
+                    let mut ids = searcher
+                        .search(query.as_ref(), &IdAddressCollector)
+                        .unwrap();
+                    ids.sort_unstable();
+                    if let Some(expected) = &expected {
+                        assert_eq!(expected, &ids, "{raw} batch={batch}");
+                    } else {
+                        expected = Some(ids.clone());
+                    }
+                    println!(
+                        "REGEX_BENCH {}",
+                        serde_json::json!({"pattern":raw,"cycle":cycle,"batch":batch,"prepare_us":prepare_us,"total_us":started.elapsed().as_micros(),"candidates":ids.len(),"docs":searcher.num_docs(),"segments":searcher.segment_readers().len(), "warm":warm})
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn script_letters_wrapped_in_transparent_tags_remain_searchable() {
+    let dir = TempDir::new().unwrap();
+    let book = TestBook {
+        title: "מנשה",
+        topics: "/תנך",
+        path: "script.txt".into(),
+        order: 0,
+        lines: vec![
+            "מ<b><sup>נ</sup></b>שה",
+            "מ<sup>נ</sup><b>שה</b>",
+            "מ<b><sub><i>נַ</i></sub></b>שה",
+            "מ<sup class=\"footnote-marker\">נ</sup>שה",
+            "מ<br><sup>נ</sup>שה",
+        ],
+    };
+    let engine = stored_engine(dir.path(), &[book]);
+    assert_eq!(count(&engine, "/מנשה/", &[]), 3);
+    let updates = events(&engine, "/מנשה/", &[], &Arc::new(AtomicBool::new(false)));
+    let ids: Vec<_> = results(&updates).iter().map(|hit| hit.id).collect();
+    assert_eq!(ids, [(1u64 << 32) + 1, (1u64 << 32) + 2, (1u64 << 32) + 3]);
+}

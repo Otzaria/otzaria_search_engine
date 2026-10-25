@@ -3141,14 +3141,13 @@ const INDEX_FORMAT: &str = "otzaria-search-index";
 // (see `derived_columns`); and the fields no longer index a quote-free twin beside a
 // quoted word (see `quote_expansion`). A version 5 index is rebuilt.
 //
-// v8: the fields of v7, other terms: `<sup>`/`<sub>` separate words in `text`, and
-// `textVocalized` keeps its marks in canonical order, without CGJ. A version 7 index is
-// rebuilt; one without metadata has v8's schema, so it reads as `legacy_compatible`.
-pub(crate) const INDEX_SCHEMA_VERSION: u32 = 8;
+// v9 keeps v7's fields, with canonical marks, no CGJ and contextual sup/sub boundaries.
+// One Hebrew hanging letter remains inside its word across transparent formatting.
+pub(crate) const INDEX_SCHEMA_VERSION: u32 = 9;
 /// The oldest schema version this engine opens, searches and writes to as it was built.
 /// Every version from it to [`INDEX_SCHEMA_VERSION`] is one this engine reads, each with
 /// the one schema [`schema_of_version`] gives it; an older one is `rebuild_required`.
-const MIN_READABLE_SCHEMA_VERSION: u32 = 8;
+const MIN_READABLE_SCHEMA_VERSION: u32 = 9;
 /// The column that holds each line's chunk key: see [`crate::semantic_keys`].
 const CHUNK_KEY_FIELD: &str = "chunkKey";
 const TANTIVY_INDEX_VERSION: &str = "0.26.2";
@@ -3165,7 +3164,8 @@ const TANTIVY_INDEX_VERSION: &str = "0.26.2";
 /// normalization that keeps or drops something else, another rule for sections — changes
 /// the text a line's key is computed from, so it is a new version, even where the schema
 /// does not change.
-pub(crate) const LINE_TEXT_VERSION: u32 = 2;
+/// Version 3: transparent formatting around or inside a hanging letter is ignored.
+pub(crate) const LINE_TEXT_VERSION: u32 = 3;
 
 /// תקרת אורך טוקן (בבייטים של UTF-8) לכל האנליזטורים — אינדוקס ושאילתה
 /// כאחד. 128 בייט ≈ 64 אותיות עבריות: פי כמה מכל מילה לגיטימית (כולל
@@ -4272,14 +4272,31 @@ fn check_legacy_tantivy_metadata(index_path: &Path, metadata_path: PathBuf) -> I
     };
 
     if let Some(version) = readable_schema_version(&tantivy_metadata) {
+        // Versions 7 through 9 have the same fields, but different text recipes.
+        if !tantivy_metadata
+            .get("segments")
+            .and_then(JsonValue::as_array)
+            .is_some_and(Vec::is_empty)
+        {
+            return compatibility(
+                false,
+                "rebuild_required",
+                None,
+                metadata_path,
+                Some(
+                    "otzaria metadata is missing: the text recipe of existing segments is unknown"
+                        .to_string(),
+                ),
+            );
+        }
         return compatibility(
             true,
             "legacy_compatible",
             Some(version),
             metadata_path,
             Some(format!(
-                "otzaria metadata is missing, but Tantivy schema matches the engine's schema \
-                 version {version}"
+                "otzaria metadata is missing, but the index has no segments and its Tantivy \
+                 schema matches the engine's schema version {version}"
             )),
         );
     }
@@ -18668,6 +18685,55 @@ mod tests {
     }
 
     #[test]
+    fn committed_terms_without_a_sidecar_require_rebuild_and_are_not_stamped() {
+        for version in [7, 8, INDEX_SCHEMA_VERSION] {
+            let (mut engine, dir) = make_engine();
+            add(&mut engine, 1, "מ<sup>נ</sup>שה", "/books/a.txt");
+            engine.commit().unwrap();
+            drop(engine);
+            write_metadata(&dir, &index_metadata(version, None));
+            fs::remove_file(index_metadata_path(dir.path())).unwrap();
+            let meta_path = dir.path().join("meta.json");
+            let before = fs::read(&meta_path).unwrap();
+
+            let compatibility = check_index_compatibility(dir_path_string(&dir));
+            assert!(!compatibility.compatible, "{version}");
+            assert_eq!(compatibility.status, "rebuild_required", "{version}");
+            assert_eq!(compatibility.found_schema_version, None, "{version}");
+            assert!(compatibility.reason.unwrap().contains("recipe"));
+            ensure_current_index_metadata(dir.path(), false).unwrap();
+            let reopened = SearchEngine::new(dir.path().to_str().unwrap());
+            assert!(!index_metadata_path(dir.path()).exists(), "{version}");
+            assert_eq!(fs::read(&meta_path).unwrap(), before, "{version}");
+            assert_eq!(reopened.index_reader.searcher().num_docs(), 1);
+        }
+    }
+
+    #[test]
+    fn missing_sidecar_with_an_unknown_segment_inventory_is_not_empty() {
+        let (engine, dir) = make_engine();
+        drop(engine);
+        fs::remove_file(index_metadata_path(dir.path())).unwrap();
+        let meta_path = dir.path().join("meta.json");
+        let original: JsonValue = serde_json::from_slice(&fs::read(&meta_path).unwrap()).unwrap();
+        for segments in [None, Some(JsonValue::Null), Some(json!([{}]))] {
+            let mut metadata = original.clone();
+            match segments {
+                Some(segments) => metadata["segments"] = segments,
+                None => {
+                    metadata.as_object_mut().unwrap().remove("segments");
+                }
+            }
+            fs::write(&meta_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+            let compatibility = check_index_compatibility(dir_path_string(&dir));
+            assert!(!compatibility.compatible, "{metadata}");
+            assert_eq!(compatibility.status, "rebuild_required");
+            ensure_current_index_metadata(dir.path(), true).unwrap();
+            assert!(!index_metadata_path(dir.path()).exists());
+        }
+    }
+
+    #[test]
     fn old_sidecar_schema_requires_rebuild() {
         let dir = TempDir::new().unwrap();
         let mut metadata = current_index_metadata();
@@ -18835,9 +18901,9 @@ mod tests {
     ]"#;
 
     /// The version 5 fields versions 6 and 7 change, and how; every other version 5 field is
-    /// unchanged, and version 8 has the fields of 7. No other version is one this engine reads.
+    /// unchanged, and version 9 has the fields of 7. No other version is one this engine reads.
     #[test]
-    fn version_8_is_version_5_with_its_disk_savings_and_stamps() {
+    fn version_9_is_version_5_with_its_disk_savings_and_stamps() {
         let released: Schema = serde_json::from_str(RELEASED_VERSION_5_SCHEMA).unwrap();
         let current = current_schema();
         assert_eq!(
@@ -18969,17 +19035,18 @@ mod tests {
         }
     }
 
-    /// A version 7 index has the fields of version 8 but not its terms, so its metadata is
-    /// what marks it for rebuilding.
+    /// Old text recipes keep the same fields, so their declared version requires rebuilding.
     #[test]
-    fn a_version_7_index_is_rebuilt() {
-        let fields = serde_json::to_value(current_schema()).unwrap();
-        let dir = index_of_schema(fields, Some(7));
-        let compatibility = check_index_compatibility(dir_path_string(&dir));
-        assert!(!compatibility.compatible);
-        assert_eq!(compatibility.status, "rebuild_required");
-        assert_eq!(compatibility.found_schema_version, Some(7));
-        assert_eq!(compatibility.required_schema_version, 8);
+    fn previous_text_recipe_versions_require_rebuilding_with_their_sidecars() {
+        for version in [7, 8] {
+            let fields = serde_json::to_value(current_schema()).unwrap();
+            let dir = index_of_schema(fields, Some(version));
+            let compatibility = check_index_compatibility(dir_path_string(&dir));
+            assert!(!compatibility.compatible, "{version}");
+            assert_eq!(compatibility.status, "rebuild_required");
+            assert_eq!(compatibility.found_schema_version, Some(version));
+            assert_eq!(compatibility.required_schema_version, 9);
+        }
     }
 
     /// An empty index of the schema `fields` (a `meta.json` schema array), with the metadata

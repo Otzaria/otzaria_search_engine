@@ -735,6 +735,26 @@ mod tests {
     }
 
     #[test]
+    fn hanging_letter_skips_transparent_tags_and_keeps_utf16_ranges() {
+        for word in [
+            "מ<b><sup>נ</sup></b>שה",
+            "מ<sup>נ</sup><b>שה</b>",
+            "מ<b><sub><i>נַ</i></sub></b>שה",
+        ] {
+            let data = format!("😀 {word}");
+            let found = matcher("מנשה", &[], 0).find_matches(&data, &[]);
+            assert_eq!(found.len(), 1, "{data}");
+            assert_eq!(found[0].start, 3);
+            let units: Vec<u16> = data.encode_utf16().collect();
+            let source = String::from_utf16(&units[found[0].start..found[0].end]).unwrap();
+            assert_eq!(
+                source.trim_end_matches("</b>"),
+                word.trim_end_matches("</b>")
+            );
+        }
+    }
+
+    #[test]
     fn quote_free_twins_share_positions_and_source_offsets() {
         let plan = matcher("רמבם אמר", &[], 0);
         let found = plan.find_matches("רמב״ם אמר", &[]);

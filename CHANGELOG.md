@@ -2,20 +2,22 @@
 
 ## Unreleased
 
-> Breaking for every existing index: schema 8 changes the terms that `text`
-> and `textVocalized` index, so an index built by 5.0.x (schema 7) is
-> `rebuild_required`. `LINE_TEXT_VERSION` is 2, so a vector set built for
-> 5.0.x is `artifactIncompatible` on `text.line_text_version` and must be
+> Breaking for every existing index: schema 9 changes the terms that `text`
+> and `textVocalized` index, so an index built by 5.0.x (schema 7), or by the
+> earlier PR #66 revision `67f3193` (schema 8), is `rebuild_required`.
+> `LINE_TEXT_VERSION` is 3, so vector sets with line-text version 1 or 2 are
+> `artifactIncompatible` on `text.line_text_version` and must be
 > built and published again, and the chunk-key column of an existing index
 > counts as absent until it is rebuilt.
 
 ### Breaking
 
-- **Index schema 8**: the fields of schema 7, with other terms. `text` splits
+- **Index schema 9**: the fields of schema 7, with other terms. `text` splits
   words at `<sup>` and `<sub>`, and `textVocalized` keeps each run of marks in
-  canonical order, without CGJ. A schema 7 index kept the old terms, and a
-  vocalized query, now always in canonical order, missed many of its marked
-  words, so it is rebuilt rather than read.
+  canonical order, without CGJ. A hanging Hebrew letter remains inside its
+  word even across transparent formatting. Schemas 7 and 8 cannot prove this
+  text recipe, so both are rebuilt, including builds pinned to an earlier SHA
+  of this unreleased PR.
 
 ### Fixed
 
@@ -25,7 +27,9 @@
   a hanging letter: a tag holding exactly one Hebrew letter (with its marks,
   or a presentation form of one) between two letters of a word, such as the
   raised letters of the Tanakh, stays inside the word. A tag whose attributes
-  mark it `footnote-marker` always separates. `LINE_TEXT_VERSION` is 2
+  mark it `footnote-marker` always separates. Transparent formatting around
+  or inside a hanging-letter tag does not interrupt the word; block tags and
+  whitespace still do. `LINE_TEXT_VERSION` is 3
   because the indexed line text changes.
 - **Vocalized search ignores the order of marks.** A query and a line that
   type the same nikud and cantillation in different orders match: the
@@ -40,6 +44,23 @@
   not `\w` (such as `²`) glues it to. `/ז''ל .* אמר/` and `/תוס' .* שבת/`
   found no line or too few before. A word glued to another by a character the
   index drops, such as `יב[ע]ר`, is still not found.
+- **An existing index without its sidecar is not assumed to use schema 9's
+  text recipe.** Matching field definitions alone cannot distinguish schema
+  older terms from schema 9's. The compatibility check now requires rebuilding
+  when committed segments exist or the segment inventory is unknown; opening
+  such an index does not silently write a version 9 sidecar. A new, empty index
+  still initializes normally. Callers must run the compatibility check before
+  opening an existing index.
+
+### Performance
+
+- **Line-regex fixed words share dictionary scans.** Up to 16 uncached fixed
+  fragments share each traversal, with the same per-fragment term and postings
+  budgets, cache identities and segment order. A fully cached required clause
+  known to be empty stops before a dictionary scan; an empty clause found by
+  the scan returns an empty query. A single uncached fragment keeps its previous
+  collector. Warm-cache calls can cost slightly more; this is a preparation
+  improvement for multi-fragment cache misses, not a blanket search speedup.
 
 ## 5.0.1 – 2026-10-20
 

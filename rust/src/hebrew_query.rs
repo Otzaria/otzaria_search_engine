@@ -1123,14 +1123,52 @@ pub(crate) fn tag_breaks_word(source: &str, lt: usize, gt: usize) -> bool {
 
 /// The tag that ends right before the lone letter (and its marks) preceding `lt`.
 fn script_open_before(source: &str, lt: usize) -> Option<(usize, usize)> {
-    let mut before = source[..lt].trim_end_matches(is_attached_mark).chars();
+    let mut before = trim_script_context_end(&source[..lt]).chars();
     before.next_back().filter(|&c| is_script_letter(c))?;
-    let gt = before.as_str().len().checked_sub(1)?;
+    let gt = trim_inline_end(before.as_str()).len().checked_sub(1)?;
     if source.as_bytes()[gt] != b'>' {
         return None;
     }
     let lt = source[..gt].rfind('<')?;
     (!source[lt + 1..gt].contains('>')).then_some((lt, gt))
+}
+
+fn is_inline_tag(body: &str) -> bool {
+    !tag_name(body).is_some_and(|(_, name)| {
+        is_listed(BREAKING_TAG_NAMES, name) || is_listed(SCRIPT_TAG_NAMES, name)
+    })
+}
+
+fn trim_inline_start(mut source: &str) -> &str {
+    while let Some(body) = source.strip_prefix('<') {
+        let Some(gt) = body.find('>') else { break };
+        if !is_inline_tag(&body[..gt]) {
+            break;
+        }
+        source = &body[gt + 1..];
+    }
+    source
+}
+
+fn trim_inline_end(mut source: &str) -> &str {
+    while let Some(body) = source.strip_suffix('>') {
+        let Some(lt) = body.rfind('<') else { break };
+        if body[lt + 1..].contains('>') || !is_inline_tag(&body[lt + 1..]) {
+            break;
+        }
+        source = &body[..lt];
+    }
+    source
+}
+
+fn trim_script_context_end(mut source: &str) -> &str {
+    loop {
+        let trimmed = trim_inline_end(source).trim_end_matches(is_attached_mark);
+        if trimmed.len() == source.len() {
+            return source;
+        }
+        source = trimmed;
+    }
 }
 
 /// The word `footnote-marker` in a tag's attributes, as inline_notes.rs finds the marker.
@@ -1151,25 +1189,33 @@ fn is_word_internal_script(source: &str, lt: usize, gt: usize) -> bool {
         return false;
     }
     let joined = |c: char| is_script_letter(c) || is_attached_mark(c);
-    if !source[..lt].chars().next_back().is_some_and(joined) {
+    if !trim_inline_end(&source[..lt])
+        .chars()
+        .next_back()
+        .is_some_and(joined)
+    {
         return false;
     }
-    let mut content = source[gt + 1..].chars();
+    let mut content = trim_inline_start(&source[gt + 1..]).chars();
     if !content.next().is_some_and(is_script_letter) {
         return false;
     }
-    let Some(close) = content
-        .as_str()
-        .trim_start_matches(is_attached_mark)
-        .strip_prefix('<')
-    else {
+    let mut rest = content.as_str();
+    loop {
+        let trimmed = trim_inline_start(rest).trim_start_matches(is_attached_mark);
+        if rest.len() == trimmed.len() {
+            break;
+        }
+        rest = trimmed;
+    }
+    let Some(close) = rest.strip_prefix('<') else {
         return false;
     };
     let Some(close_gt) = close.find('>') else {
         return false;
     };
     matches!(tag_name(&close[..close_gt]), Some((true, closing)) if closing.eq_ignore_ascii_case(name))
-        && close[close_gt + 1..]
+        && trim_inline_start(&close[close_gt + 1..])
             .chars()
             .next()
             .is_some_and(is_script_letter)
@@ -1206,15 +1252,55 @@ fn tag_breaks_word_chars(chars: &[char], lt: usize, gt: usize) -> bool {
         })
     };
     let mark = |i: usize| chars.get(i).is_some_and(|&c| is_attached_mark(c));
+    let inline = |lt, gt| {
+        !name_of(lt, gt).is_some_and(|(_, name)| {
+            BREAKING_TAG_NAMES.contains(&name.as_str()) || SCRIPT_TAG_NAMES.contains(&name.as_str())
+        })
+    };
+    let skip_start = |mut i: usize| {
+        while chars.get(i) == Some(&'<') {
+            let Some(gt) = chars[i..].iter().position(|&c| c == '>').map(|p| i + p) else {
+                break;
+            };
+            if !inline(i, gt) {
+                break;
+            }
+            i = gt + 1;
+        }
+        i
+    };
+    let skip_end = |mut i: usize| {
+        while i > 0 && chars[i - 1] == '>' {
+            let Some(lt) = chars[..i - 1].iter().rposition(|&c| c == '<') else {
+                break;
+            };
+            if chars[lt + 1..i - 1].contains(&'>') || !inline(lt, i - 1) {
+                break;
+            }
+            i = lt;
+        }
+        i
+    };
     let (open_lt, open_gt) = if closing {
         let mut i = lt;
-        while i > 0 && mark(i - 1) {
-            i -= 1;
+        loop {
+            let old = i;
+            i = skip_end(i);
+            while i > 0 && mark(i - 1) {
+                i -= 1;
+            }
+            if i == old {
+                break;
+            }
         }
-        if i < 2 || !letter(i - 1) || chars[i - 2] != '>' {
+        if i == 0 || !letter(i - 1) {
             return true;
         }
-        let open_gt = i - 2;
+        let i = skip_end(i - 1);
+        if i == 0 || chars[i - 1] != '>' {
+            return true;
+        }
+        let open_gt = i - 1;
         let Some(open_lt) = chars[..open_gt].iter().rposition(|&c| c == '<') else {
             return true;
         };
@@ -1236,17 +1322,26 @@ fn tag_breaks_word_chars(chars: &[char], lt: usize, gt: usize) -> bool {
             && (i == 0 || !word(attributes.get(i - 1)))
             && !word(attributes.get(i + marker.len()))
     });
+    let before = skip_end(open_lt);
+    let content = skip_start(open_gt + 1);
     if footnote
         || name_of(open_lt, open_gt) != Some((false, name.clone()))
-        || open_lt == 0
-        || !(letter(open_lt - 1) || mark(open_lt - 1))
-        || !letter(open_gt + 1)
+        || before == 0
+        || !(letter(before - 1) || mark(before - 1))
+        || !letter(content)
     {
         return true;
     }
-    let mut i = open_gt + 2;
-    while mark(i) {
-        i += 1;
+    let mut i = content + 1;
+    loop {
+        let old = i;
+        i = skip_start(i);
+        while mark(i) {
+            i += 1;
+        }
+        if i == old {
+            break;
+        }
     }
     if chars.get(i) != Some(&'<') {
         return true;
@@ -1254,7 +1349,7 @@ fn tag_breaks_word_chars(chars: &[char], lt: usize, gt: usize) -> bool {
     let Some(close_gt) = chars[i..].iter().position(|&c| c == '>').map(|p| i + p) else {
         return true;
     };
-    name_of(i, close_gt) != Some((true, name)) || !letter(close_gt + 1)
+    name_of(i, close_gt) != Some((true, name)) || !letter(skip_start(close_gt + 1))
 }
 
 /// The whitespace entities [`strip_html_for_indexing`] turns into a space.
@@ -3304,6 +3399,24 @@ mod tests {
             ("מי<b>לה</b>", "מילה"),
             // A hanging letter inside a word stays part of it.
             ("מְ<sup>נַ</sup>שֶּׁה", "מְנַשֶּׁה"),
+            ("מ<b><sup>נ</sup></b>שה", "מנשה"),
+            ("מ<sup>נ</sup><b>שה</b>", "מנשה"),
+            ("מ<b>נ</b>שה", "מנשה"),
+            ("מ<sup><b>נ</b></sup>שה", "מנשה"),
+            ("מ<b><sub><i>נַ</i></sub></b>שה", "מנַשה"),
+            ("מ<b><sup>שַׁ</sup></b>ה", "משַׁה"),
+            ("מ<b><sup>נ</sub></b>שה", "מ נ שה"),
+            ("מ<b><sup>נש</sup></b>ה", "מ נש ה"),
+            ("מ<b><sup>נ </sup></b>שה", "מ נ  שה"),
+            ("מ<b> <sup>נ</sup></b>שה", "מ  נ שה"),
+            ("מ<sup><b>נ<br></b></sup>שה", "מ נ  שה"),
+            ("מ<br><sup>נ</sup>שה", "מ  נ שה"),
+            ("מ<sup>נ</sup><br>שה", "מ נ  שה"),
+            ("מ<b><sup class=\"footnote-marker\">נ</sup></b>שה", "מ נ שה"),
+            (
+                "מ<b><SUP CLASS='x Footnote-Marker'><i>נ</i></SUP></b>שה",
+                "מ נ שה",
+            ),
             ("מִיָּ֑<sup>עַ</sup>ר", "מִיָּ֑עַר"),
             ("ו<sup>ג</sup>וש", "וגוש"),
             ("ו<SUB>ג</SUB>וש", "וגוש"),
@@ -3374,6 +3487,10 @@ mod tests {
             "<sub>",
             "</sub>",
             "<sup>ב</sup>",
+            "מ<b><sup>נ</sup></b>שה",
+            "מ<sup><b>נַ</b></sup>שה",
+            "מ<br><sup>נ</sup>שה",
+            "מ<sup>נ</sub>שה",
             "<sup class=\"footnote-marker\">ב</sup>",
             "ב\u{05B7}",
             "&",

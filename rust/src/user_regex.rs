@@ -589,7 +589,6 @@ fn verifies(verify: &Regex, term: &str) -> bool {
 }
 
 impl UserTermAutomaton {
-    #[cfg(test)]
     pub(crate) fn matches(&self, term: &str) -> bool {
         use tantivy_fst::Automaton;
         let mut state = self.start();
@@ -627,7 +626,7 @@ pub(crate) fn index_identity(searcher: &Searcher) -> u64 {
     crate::page_cache::snapshot_of(searcher)
 }
 
-#[derive(Hash, PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq)]
 struct PartTermsKey {
     index: u64,
     field: Field,
@@ -635,6 +634,25 @@ struct PartTermsKey {
     exact: String,
     max_terms: u32,
     postings_budget: u64,
+}
+
+impl PartTermsKey {
+    fn new(
+        searcher: &Searcher,
+        field: Field,
+        part: &TermPart,
+        max_terms: u32,
+        postings_budget: u64,
+    ) -> Self {
+        Self {
+            index: index_identity(searcher),
+            field,
+            relaxed: part.relaxed.clone(),
+            exact: part.pattern.clone(),
+            max_terms,
+            postings_budget,
+        }
+    }
 }
 
 /// A part's terms, their postings and whether they were truncated.
@@ -657,14 +675,7 @@ pub(crate) fn collect_part_terms(
     if cancel.load(Ordering::Relaxed) {
         anyhow::bail!(CANCELLED);
     }
-    let key = PartTermsKey {
-        index: index_identity(searcher),
-        field,
-        relaxed: part.relaxed.clone(),
-        exact: part.pattern.clone(),
-        max_terms,
-        postings_budget,
-    };
+    let key = PartTermsKey::new(searcher, field, part, max_terms, postings_budget);
     if let Some((terms, postings, truncated)) = TERM_CACHE.lock().unwrap().get(&key) {
         return Ok(PartTerms {
             terms: terms.clone(),
@@ -739,6 +750,183 @@ pub(crate) fn collect_part_terms(
         postings,
         truncated,
     })
+}
+
+/// Uncached fixed words share each dictionary walk; their budgets and cache entries stay separate.
+const LINE_TERM_BATCH_PARTS: usize = 16;
+const LINE_TERM_BATCH_LITERAL_BYTES: usize = 512;
+
+fn line_literal_prefilter(literals: &[&str]) -> Option<Arc<TermDfa>> {
+    if literals.is_empty()
+        || literals.len() > LINE_TERM_BATCH_PARTS
+        || literals.iter().map(|literal| literal.len()).sum::<usize>()
+            > LINE_TERM_BATCH_LITERAL_BYTES
+    {
+        return None;
+    }
+    let alternatives: Vec<_> = literals
+        .iter()
+        .map(|literal| regex::escape(literal))
+        .collect();
+    term_automaton::compile_pattern(&format!("(?s:.*(?:{}).*)", alternatives.join("|"))).ok()
+}
+
+fn collect_line_terms(
+    searcher: &Searcher,
+    field: Field,
+    parts: &[TermPart],
+    literals: &[&str],
+    max_terms: u32,
+    postings_budget: u64,
+    cancel: &AtomicBool,
+) -> anyhow::Result<Vec<PartTerms>> {
+    debug_assert_eq!(parts.len(), literals.len());
+    if cancel.load(Ordering::Relaxed) {
+        anyhow::bail!(CANCELLED);
+    }
+    let keys: Vec<_> = parts
+        .iter()
+        .map(|p| PartTermsKey::new(searcher, field, p, max_terms, postings_budget))
+        .collect();
+    let mut collected: Vec<Option<PartTerms>> = keys
+        .iter()
+        .map(|key| {
+            TERM_CACHE
+                .lock()
+                .unwrap()
+                .get(key)
+                .map(|(terms, postings, truncated)| PartTerms {
+                    terms: terms.clone(),
+                    postings: *postings,
+                    truncated: *truncated,
+                })
+        })
+        .collect();
+    let missing: Vec<_> = collected
+        .iter()
+        .enumerate()
+        .filter_map(|(i, value)| value.is_none().then_some(i))
+        .collect();
+    if missing.len() == 1 {
+        let i = missing[0];
+        collected[i] = Some(collect_part_terms(
+            searcher,
+            field,
+            &parts[i],
+            max_terms,
+            postings_budget,
+            cancel,
+        )?);
+    } else {
+        // Bound the simultaneous per-segment term buffers, as the cache bounds retained parts.
+        for missing in missing.chunks(LINE_TERM_BATCH_PARTS) {
+            if cancel.load(Ordering::Relaxed) {
+                anyhow::bail!(CANCELLED);
+            }
+            // Literal containment is a cheap superset; the original automata classify each hit.
+            let literals: Vec<_> = missing.iter().map(|&i| literals[i]).collect();
+            let Some(dfa) = line_literal_prefilter(&literals) else {
+                for &i in missing {
+                    collected[i] = Some(collect_part_terms(
+                        searcher,
+                        field,
+                        &parts[i],
+                        max_terms,
+                        postings_budget,
+                        cancel,
+                    )?);
+                }
+                continue;
+            };
+            use rayon::prelude::*;
+            let segments = searcher
+                .segment_readers()
+                .par_iter()
+                .map(|reader| -> anyhow::Result<_> {
+                    let inverted = reader.inverted_index(field)?;
+                    let mut found = vec![Vec::new(); missing.len()];
+                    let mut stopped = vec![false; missing.len()];
+                    let mut scanned = vec![0u64; missing.len()];
+                    let mut postings = vec![0u64; missing.len()];
+                    if cancel.load(Ordering::Relaxed) {
+                        anyhow::bail!(CANCELLED);
+                    }
+                    let mut stream = inverted
+                        .terms()
+                        .search(QuoteTransparent::from_arc(dfa.clone()))
+                        .into_stream()?;
+                    let mut visited = 0usize;
+                    while stream.advance() {
+                        visited += 1;
+                        if visited.is_multiple_of(4096) && cancel.load(Ordering::Relaxed) {
+                            anyhow::bail!(CANCELLED);
+                        }
+                        let Ok(term) = std::str::from_utf8(stream.key()) else {
+                            continue;
+                        };
+                        for local in 0..missing.len() {
+                            let part = &parts[missing[local]];
+                            if stopped[local] || !part.automaton.matches(term) {
+                                continue;
+                            }
+                            scanned[local] += 1;
+                            if scanned[local] > MAX_SCANNED_KEYS_PER_SEGMENT {
+                                stopped[local] = true;
+                                continue;
+                            }
+                            if part.verify.as_ref().is_some_and(|v| !verifies(v, term)) {
+                                continue;
+                            }
+                            let freq = u64::from(stream.value().doc_freq);
+                            found[local].push((term.to_string(), freq));
+                            postings[local] += freq;
+                            stopped[local] = found[local].len() >= max_terms as usize
+                                || postings[local] >= postings_budget;
+                        }
+                        if stopped.iter().all(|&done| done) {
+                            break;
+                        }
+                    }
+                    Ok((found, stopped))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            if cancel.load(Ordering::Relaxed) {
+                anyhow::bail!(CANCELLED);
+            }
+            for (local, &i) in missing.iter().enumerate() {
+                let mut set = HashSet::new();
+                let mut postings = 0;
+                let mut truncated = false;
+                'segments: for (found, stopped) in &segments {
+                    for (term, freq) in &found[local] {
+                        if set.len() >= max_terms as usize || postings >= postings_budget {
+                            truncated = true;
+                            break 'segments;
+                        }
+                        postings += freq;
+                        set.insert(term.clone());
+                    }
+                    truncated |= stopped[local];
+                }
+                let mut terms: Vec<_> = set.into_iter().collect();
+                terms.sort_unstable();
+                let terms = Arc::new(terms);
+                TERM_CACHE
+                    .lock()
+                    .unwrap()
+                    .put(keys[i].clone(), (terms.clone(), postings, truncated));
+                collected[i] = Some(PartTerms {
+                    terms,
+                    postings,
+                    truncated,
+                });
+            }
+        }
+    }
+    Ok(collected
+        .into_iter()
+        .map(|value| value.expect("all uncached parts collected"))
+        .collect())
 }
 
 /// The error text of a cancelled search.
@@ -1773,39 +1961,87 @@ fn candidate_query(
     plan: &LinePlan,
 ) -> anyhow::Result<Option<Box<dyn Query>>> {
     let text_field = ctx.schema.get_field("text")?;
+    let parts = plan
+        .clauses
+        .iter()
+        .flatten()
+        .map(|fragment| {
+            // A word glued by a character the index drops (`יב[ע]ר` is `יבער`) is not found.
+            if fragment.whole {
+                glued_part(&fragment.text)
+            } else {
+                contains_part(&fragment.text)
+            }
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    if ctx.cancel.load(Ordering::Relaxed) {
+        anyhow::bail!(CANCELLED);
+    }
+    let mut first = 0;
+    for clause in &plan.clauses {
+        let end = first + clause.len();
+        let keys: Vec<_> = parts[first..end]
+            .iter()
+            .map(|part| {
+                PartTermsKey::new(
+                    ctx.searcher,
+                    text_field,
+                    part,
+                    CLAUSE_MAX_TERMS,
+                    CLAUSE_POSTINGS_CAP,
+                )
+            })
+            .collect();
+        let known_empty = {
+            let cache = TERM_CACHE.lock().unwrap();
+            keys.iter().all(|key| {
+                cache
+                    .peek(key)
+                    .is_some_and(|(terms, _, truncated)| terms.is_empty() && !truncated)
+            })
+        };
+        if known_empty {
+            return Ok(Some(Box::new(tantivy::query::EmptyQuery)));
+        }
+        first = end;
+    }
+    let mut found = collect_line_terms(
+        ctx.searcher,
+        text_field,
+        &parts,
+        &plan
+            .clauses
+            .iter()
+            .flatten()
+            .map(|fragment| fragment.text.as_str())
+            .collect::<Vec<_>>(),
+        CLAUSE_MAX_TERMS,
+        CLAUSE_POSTINGS_CAP,
+        ctx.cancel,
+    )?
+    .into_iter();
     let mut clauses: Vec<(u64, Box<dyn Query>)> = Vec::new();
     for clause in &plan.clauses {
         let mut terms: HashSet<String> = HashSet::new();
         let mut postings = 0u64;
         let mut selective = true;
-        for fragment in clause {
-            // A word glued by a character the index drops (`יב[ע]ר` is `יבער`) is not found.
-            let part = if fragment.whole {
-                glued_part(&fragment.text)?
-            } else {
-                contains_part(&fragment.text)?
-            };
-            let found = collect_part_terms(
-                ctx.searcher,
-                text_field,
-                &part,
-                CLAUSE_MAX_TERMS,
-                CLAUSE_POSTINGS_CAP,
-                ctx.cancel,
-            )?;
+        for _ in clause {
+            let found = found.next().expect("one term collection per fragment");
             if found.truncated {
                 selective = false;
-                break;
+                continue;
             }
             postings += found.postings;
             terms.extend(found.terms.iter().cloned());
             if postings > CLAUSE_POSTINGS_CAP {
                 selective = false;
-                break;
             }
         }
         if !selective {
             continue;
+        }
+        if terms.is_empty() {
+            return Ok(Some(Box::new(tantivy::query::EmptyQuery)));
         }
         let query: Box<dyn Query> = Box::new(TermSetQuery::new(
             terms.iter().map(|t| Term::from_field_text(text_field, t)),
