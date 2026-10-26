@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 6.0.0 – 2026-10-26
 
 > Breaking for every existing index: schema 10 changes the terms that `text`
 > and `textVocalized` index, so an index built by 5.0.x (schema 7), or by the
@@ -19,6 +19,33 @@
   word even across transparent formatting and zero-width controls. Schemas 7
   through 9 cannot prove this text recipe, so all are rebuilt, including builds
   pinned to an earlier SHA of this unreleased PR.
+
+### Added
+
+- **`cancelRequestId`** (optional) on the lexical search calls, so a search
+  can be cancelled by its id between the phases of the query, with the search
+  caches left consistent.
+- **`searchSnapshot()`** returns an opaque id of the content, order,
+  dictionaries and text sources a search sees now, to tell whether a cached
+  result is still valid.
+- **`releaseMemory()`** drops the search and text caches that can be rebuilt,
+  for memory pressure.
+
+### Changed
+
+- **Explicit economy mode** (`setEconomyIndexing`): one preparation worker and
+  CPU thread, small spilling buffers and a 50MB writer; `false` restores normal
+  preparation. A mobile writer's 50MB default no longer implies it.
+- **Indexing preparation is bounded.** A book up to 32 MiB and 65,536 lines is
+  prepared by the original parallel whole-book pass; a larger one streams.
+  Four workers reserve at most 384 MiB of buffers together, and an oversized
+  book uses small document spools.
+- **Faster approximate highlighting**: the spellings of a term found once are
+  not searched again (10–45 ms saved), the spellings of all the words come in
+  one pass over each segment's dictionary, and the buffer of a word is reused
+  across a line.
+- Document diagnostics are batched by 64 KiB slabs, and the per-row global
+  source lock is gone.
 
 ### Fixed
 
@@ -55,6 +82,10 @@
   such an index does not silently write a version 10 sidecar. A new, empty index
   still initializes normally. Callers must run the compatibility check before
   opening an existing index.
+- A literal quoted input is kept when the spellings of a batch are expanded.
+- Empty grouped highlights are skipped, and every streamed note is validated.
+- The allocation for the first highlight mapping is bounded for markup-heavy
+  text.
 
 ### Performance
 
