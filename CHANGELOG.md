@@ -2,22 +2,23 @@
 
 ## Unreleased
 
-> Breaking for every existing index: schema 9 changes the terms that `text`
+> Breaking for every existing index: schema 10 changes the terms that `text`
 > and `textVocalized` index, so an index built by 5.0.x (schema 7), or by the
-> earlier PR #66 revision `67f3193` (schema 8), is `rebuild_required`.
-> `LINE_TEXT_VERSION` is 3, so vector sets with line-text version 1 or 2 are
+> earlier PR #66 revisions `67f3193` (schema 8) and `4bb3589` (schema 9),
+> is `rebuild_required`.
+> `LINE_TEXT_VERSION` is 4, so vector sets with line-text version 1, 2 or 3 are
 > `artifactIncompatible` on `text.line_text_version` and must be
 > built and published again, and the chunk-key column of an existing index
 > counts as absent until it is rebuilt.
 
 ### Breaking
 
-- **Index schema 9**: the fields of schema 7, with other terms. `text` splits
+- **Index schema 10**: the fields of schema 7, with other terms. `text` splits
   words at `<sup>` and `<sub>`, and `textVocalized` keeps each run of marks in
   canonical order, without CGJ. A hanging Hebrew letter remains inside its
-  word even across transparent formatting. Schemas 7 and 8 cannot prove this
-  text recipe, so both are rebuilt, including builds pinned to an earlier SHA
-  of this unreleased PR.
+  word even across transparent formatting and zero-width controls. Schemas 7
+  through 9 cannot prove this text recipe, so all are rebuilt, including builds
+  pinned to an earlier SHA of this unreleased PR.
 
 ### Fixed
 
@@ -28,9 +29,12 @@
   or a presentation form of one) between two letters of a word, such as the
   raised letters of the Tanakh, stays inside the word. A tag whose attributes
   mark it `footnote-marker` always separates. Transparent formatting around
-  or inside a hanging-letter tag does not interrupt the word; block tags and
-  whitespace still do. `LINE_TEXT_VERSION` is 3
-  because the indexed line text changes.
+  or inside a hanging-letter tag does not interrupt the word. Bidi/zero-width
+  controls, CGJ and varika are ignored in this context too, including when
+  interleaved with formatting. Attached marks require a preceding base letter;
+  a stray mark cannot turn a footnote into part of the following word. Block
+  tags, whitespace and footnote markers still separate words.
+  `LINE_TEXT_VERSION` is 4 because the indexed line text changes.
 - **Vocalized search ignores the order of marks.** A query and a line that
   type the same nikud and cantillation in different orders match: the
   tokenizer and the vocalized query pattern both put each run of marks in
@@ -44,11 +48,11 @@
   not `\w` (such as `²`) glues it to. `/ז''ל .* אמר/` and `/תוס' .* שבת/`
   found no line or too few before. A word glued to another by a character the
   index drops, such as `יב[ע]ר`, is still not found.
-- **An existing index without its sidecar is not assumed to use schema 9's
+- **An existing index without its sidecar is not assumed to use schema 10's
   text recipe.** Matching field definitions alone cannot distinguish schema
-  older terms from schema 9's. The compatibility check now requires rebuilding
+  older terms from schema 10's. The compatibility check now requires rebuilding
   when committed segments exist or the segment inventory is unknown; opening
-  such an index does not silently write a version 9 sidecar. A new, empty index
+  such an index does not silently write a version 10 sidecar. A new, empty index
   still initializes normally. Callers must run the compatibility check before
   opening an existing index.
 

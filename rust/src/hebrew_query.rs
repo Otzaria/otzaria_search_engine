@@ -1125,7 +1125,9 @@ pub(crate) fn tag_breaks_word(source: &str, lt: usize, gt: usize) -> bool {
 fn script_open_before(source: &str, lt: usize) -> Option<(usize, usize)> {
     let mut before = trim_script_context_end(&source[..lt]).chars();
     before.next_back().filter(|&c| is_script_letter(c))?;
-    let gt = trim_inline_end(before.as_str()).len().checked_sub(1)?;
+    let gt = trim_script_formatting_end(before.as_str())
+        .len()
+        .checked_sub(1)?;
     if source.as_bytes()[gt] != b'>' {
         return None;
     }
@@ -1139,8 +1141,20 @@ fn is_inline_tag(body: &str) -> bool {
     })
 }
 
-fn trim_inline_start(mut source: &str) -> &str {
-    while let Some(body) = source.strip_prefix('<') {
+/// Zero-width characters which neither text field keeps in a term. They must not
+/// change the classification of a neighbouring tag before the tokenizer drops them.
+fn is_script_invisible(c: char) -> bool {
+    is_invisible_char(c) || c == CGJ || c == '\u{FB1E}'
+}
+
+/// Walk the original source without allocating or changing its UTF-16 offsets.
+/// Formatting and invisible characters can alternate, so trim them together.
+fn trim_script_formatting_start(mut source: &str) -> &str {
+    loop {
+        source = source.trim_start_matches(is_script_invisible);
+        let Some(body) = source.strip_prefix('<') else {
+            break;
+        };
         let Some(gt) = body.find('>') else { break };
         if !is_inline_tag(&body[..gt]) {
             break;
@@ -1150,8 +1164,12 @@ fn trim_inline_start(mut source: &str) -> &str {
     source
 }
 
-fn trim_inline_end(mut source: &str) -> &str {
-    while let Some(body) = source.strip_suffix('>') {
+fn trim_script_formatting_end(mut source: &str) -> &str {
+    loop {
+        source = source.trim_end_matches(is_script_invisible);
+        let Some(body) = source.strip_suffix('>') else {
+            break;
+        };
         let Some(lt) = body.rfind('<') else { break };
         if body[lt + 1..].contains('>') || !is_inline_tag(&body[lt + 1..]) {
             break;
@@ -1163,7 +1181,17 @@ fn trim_inline_end(mut source: &str) -> &str {
 
 fn trim_script_context_end(mut source: &str) -> &str {
     loop {
-        let trimmed = trim_inline_end(source).trim_end_matches(is_attached_mark);
+        let trimmed = trim_script_formatting_end(source).trim_end_matches(is_word_mark);
+        if trimmed.len() == source.len() {
+            return source;
+        }
+        source = trimmed;
+    }
+}
+
+fn trim_script_context_start(mut source: &str) -> &str {
+    loop {
+        let trimmed = trim_script_formatting_start(source).trim_start_matches(is_word_mark);
         if trimmed.len() == source.len() {
             return source;
         }
@@ -1188,26 +1216,18 @@ fn is_word_internal_script(source: &str, lt: usize, gt: usize) -> bool {
     if marks_footnote(&source[lt + 1..gt]) {
         return false;
     }
-    let joined = |c: char| is_script_letter(c) || is_attached_mark(c);
-    if !trim_inline_end(&source[..lt])
+    if !trim_script_context_end(&source[..lt])
         .chars()
         .next_back()
-        .is_some_and(joined)
+        .is_some_and(is_script_letter)
     {
         return false;
     }
-    let mut content = trim_inline_start(&source[gt + 1..]).chars();
+    let mut content = trim_script_formatting_start(&source[gt + 1..]).chars();
     if !content.next().is_some_and(is_script_letter) {
         return false;
     }
-    let mut rest = content.as_str();
-    loop {
-        let trimmed = trim_inline_start(rest).trim_start_matches(is_attached_mark);
-        if rest.len() == trimmed.len() {
-            break;
-        }
-        rest = trimmed;
-    }
+    let rest = trim_script_context_start(content.as_str());
     let Some(close) = rest.strip_prefix('<') else {
         return false;
     };
@@ -1215,7 +1235,7 @@ fn is_word_internal_script(source: &str, lt: usize, gt: usize) -> bool {
         return false;
     };
     matches!(tag_name(&close[..close_gt]), Some((true, closing)) if closing.eq_ignore_ascii_case(name))
-        && trim_inline_start(&close[close_gt + 1..])
+        && trim_script_context_start(&close[close_gt + 1..])
             .chars()
             .next()
             .is_some_and(is_script_letter)
@@ -1251,14 +1271,25 @@ fn tag_breaks_word_chars(chars: &[char], lt: usize, gt: usize) -> bool {
                 && folded[1..].iter().all(|&m| is_attached_mark(m))
         })
     };
-    let mark = |i: usize| chars.get(i).is_some_and(|&c| is_attached_mark(c));
+    let mark = |i: usize| chars.get(i).is_some_and(|&c| is_word_mark(c));
+    let invisible = |i: usize| {
+        chars
+            .get(i)
+            .is_some_and(|&c| is_invisible_char(c) || matches!(c, '\u{034F}' | '\u{FB1E}'))
+    };
     let inline = |lt, gt| {
         !name_of(lt, gt).is_some_and(|(_, name)| {
             BREAKING_TAG_NAMES.contains(&name.as_str()) || SCRIPT_TAG_NAMES.contains(&name.as_str())
         })
     };
     let skip_start = |mut i: usize| {
-        while chars.get(i) == Some(&'<') {
+        loop {
+            while invisible(i) {
+                i += 1;
+            }
+            if chars.get(i) != Some(&'<') {
+                break;
+            }
             let Some(gt) = chars[i..].iter().position(|&c| c == '>').map(|p| i + p) else {
                 break;
             };
@@ -1270,7 +1301,13 @@ fn tag_breaks_word_chars(chars: &[char], lt: usize, gt: usize) -> bool {
         i
     };
     let skip_end = |mut i: usize| {
-        while i > 0 && chars[i - 1] == '>' {
+        loop {
+            while i > 0 && invisible(i - 1) {
+                i -= 1;
+            }
+            if i == 0 || chars[i - 1] != '>' {
+                break;
+            }
             let Some(lt) = chars[..i - 1].iter().rposition(|&c| c == '<') else {
                 break;
             };
@@ -1322,12 +1359,22 @@ fn tag_breaks_word_chars(chars: &[char], lt: usize, gt: usize) -> bool {
             && (i == 0 || !word(attributes.get(i - 1)))
             && !word(attributes.get(i + marker.len()))
     });
-    let before = skip_end(open_lt);
+    let mut before = open_lt;
+    loop {
+        let old = before;
+        before = skip_end(before);
+        while before > 0 && mark(before - 1) {
+            before -= 1;
+        }
+        if before == old {
+            break;
+        }
+    }
     let content = skip_start(open_gt + 1);
     if footnote
         || name_of(open_lt, open_gt) != Some((false, name.clone()))
         || before == 0
-        || !(letter(before - 1) || mark(before - 1))
+        || !letter(before - 1)
         || !letter(content)
     {
         return true;
@@ -1349,7 +1396,18 @@ fn tag_breaks_word_chars(chars: &[char], lt: usize, gt: usize) -> bool {
     let Some(close_gt) = chars[i..].iter().position(|&c| c == '>').map(|p| i + p) else {
         return true;
     };
-    name_of(i, close_gt) != Some((true, name)) || !letter(skip_start(close_gt + 1))
+    let mut after = close_gt + 1;
+    loop {
+        let old = after;
+        after = skip_start(after);
+        while mark(after) {
+            after += 1;
+        }
+        if after == old {
+            break;
+        }
+    }
+    name_of(i, close_gt) != Some((true, name)) || !letter(after)
 }
 
 /// The whitespace entities [`strip_html_for_indexing`] turns into a space.
@@ -3450,6 +3508,62 @@ mod tests {
     }
 
     #[test]
+    fn hanging_letter_context_ignores_zero_width_formatting_but_not_separators() {
+        let plain = |html: &str| {
+            normalize_text_for_indexing(html)
+                .chars()
+                .filter(|&c| !is_invisible_char(c) && !is_word_mark(c))
+                .collect::<String>()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let controls = [
+            '\u{200B}', '\u{200C}', '\u{200D}', '\u{200E}', '\u{200F}', '\u{202A}', '\u{202B}',
+            '\u{202C}', '\u{202D}', '\u{202E}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
+            '\u{FEFF}', '\u{034F}', '\u{FB1E}',
+        ];
+        for c in controls {
+            for (html, expected) in [
+                (format!("מ{c}<sup>נ</sup>שה"), "מנשה"),
+                (format!("מ<sup>{c}נ</sup>שה"), "מנשה"),
+                (format!("מ<sup>נ{c}</sup>שה"), "מנשה"),
+                (format!("מ<sup>נ</sup>{c}שה"), "מנשה"),
+                (
+                    format!("מ{c}<b>{c}<SUB>{c}<i>{c}נ{c}ַ{c}</i>{c}</SUB>{c}</b>{c}שה"),
+                    "מנשה",
+                ),
+                (format!("מ{c}<sup>שַׁ{c}</sup>{c}ה"), "משה"),
+                (format!("מ{c}<sup>נ</sup>{c}ַשה"), "מנשה"),
+                (format!("מ{c}<sup>נ{c}ש</sup>ה"), "מ נש ה"),
+                (format!("מ{c} <sup>נ</sup>{c}שה"), "מ נ שה"),
+                (format!("מ{c}<sup>נ</sup> {c}שה"), "מ נ שה"),
+                (format!("מ{c}<br><sup>נ</sup>{c}שה"), "מ נ שה"),
+                (format!("מ{c}<sup>נ</sup>{c}<br>שה"), "מ נ שה"),
+                (format!("מ{c}<sup>נ{c}<br></sup>שה"), "מ נ שה"),
+                (
+                    format!("מ{c}<sup class='footnote-marker'>{c}נ</sup>{c}שה"),
+                    "מ נ שה",
+                ),
+                (format!("מ{c}<sup>נ</sub>{c}שה"), "מ נ שה"),
+                (format!("מ{c}<sup>נ</sup>{c}"), "מ נ"),
+                (format!("{c}ַ<sup>נ</sup>{c}שה"), "נ שה"),
+            ] {
+                assert_eq!(plain(&html), expected, "{html:?}");
+                assert_eq!(
+                    strip_html_for_indexing(&html),
+                    strip_html_for_indexing_reference(&html),
+                    "{html:?}"
+                );
+                assert_normalization_parity(&html);
+            }
+        }
+        // A general combining mark belongs to the preceding letter, including
+        // when a formatting boundary separates it from the base character.
+        assert_eq!(plain("מ\u{0307}<sup>נ\u{0307}</sup>\u{0307}שה"), "מנשה");
+    }
+
+    #[test]
     fn strip_attached_marks_keeps_separators() {
         assert_eq!(strip_attached_marks("שָׁלוֹם"), "שלום");
         assert_eq!(strip_attached_marks("בְּרֵאשִׁית"), "בראשית");
@@ -3491,6 +3605,8 @@ mod tests {
             "מ<sup><b>נַ</b></sup>שה",
             "מ<br><sup>נ</sup>שה",
             "מ<sup>נ</sub>שה",
+            "מ\u{200F}<sup>נ</sup>שה",
+            "מ<sup>\u{2067}<b>נ\u{034F}</b></sup>\u{2069}שה",
             "<sup class=\"footnote-marker\">ב</sup>",
             "ב\u{05B7}",
             "&",
@@ -3511,6 +3627,10 @@ mod tests {
             "\u{FB1E}",
             "\u{FB4F}",
             "\u{200F}",
+            "\u{200E}",
+            "\u{2067}",
+            "\u{2069}",
+            "\u{034F}",
             "\u{FEFF}",
             "a",
             "1",

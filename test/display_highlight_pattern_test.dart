@@ -95,6 +95,29 @@ Future<void> main() async {
       );
     });
 
+    test('תווי כיווניות סביב אות תלויה משמרים התאמה וטווחי UTF16', () {
+      final matcher = _PreparedPattern(_pattern('מנשה'));
+      for (final word in [
+        'מ\u200F<sup>נ</sup>שה',
+        'מ<sup>\u200Eנ</sup>שה',
+        'מ<sup>נ\u034F</sup>\u2069שה',
+        'מ\u2067<b>\u200E<SUB>\u034F<i>נַ\u2069</i></SUB></b>\uFEFFשה',
+      ]) {
+        final text = '😀 $word';
+        final matches = matcher.matches(text);
+        expect(matches, hasLength(1), reason: text);
+        expect(matches.single.start, 3);
+        expect(matches.single.end, text.length);
+      }
+      for (final text in [
+        'מ\u200F<sup class="footnote-marker">נ</sup>שה',
+        'מ\u200F<br><sup>נ</sup>שה',
+        'מ<sup>נ</sup>\u200F שה',
+      ]) {
+        expect(matcher.hasMatch(text), isFalse, reason: text);
+      }
+    });
+
     test('מרווח מותאם מאפשר מילים ביניים עד הגבול', () {
       final hl = _pattern('כל היום', spacing: {'0-1': '1'});
       final regex = _PreparedPattern(hl);

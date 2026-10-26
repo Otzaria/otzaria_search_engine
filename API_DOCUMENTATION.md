@@ -214,7 +214,8 @@ patterns match whole terms; in term patterns, wildcards cover Hebrew letters, La
 digits and quotes. A `crossSpace` match starts and ends on a word boundary when that edge
 of the pattern is a letter, and is matched against the line as the app's
 `cleanLineForSearch` sees it (tags removed, a breaking tag as a space, as is a `<sup>` or
-`<sub>` unless it wraps one letter inside a word; nikud removed;
+`<sub>` unless it wraps one letter inside a word; transparent inline tags and zero-width
+controls do not interrupt that context; nikud removed;
 maqaf/paseq/`|` as a space; whitespace collapsed), lowercased, quotes as ASCII. Footnote
 text stays in the line, as it does in the index. It never continues onto the
 next line.
@@ -680,9 +681,9 @@ Checks whether an existing index is compatible with the current search engine sc
 
 The engine writes an `otzaria_index_meta.json` sidecar file when it initializes a new, empty index. Without that sidecar, Tantivy's `meta.json` must have a readable full schema and an explicitly empty segment inventory before initialization is safe.
 
-This engine reads and creates schema version 9 only, with `LINE_TEXT_VERSION` 3. Its fields match versions 7 and 8, but its text recipe uses contextual sup/sub boundaries through transparent formatting and canonical marks without CGJ. Every version through 8 is `rebuild_required`, including an index built from PR #66 revision `67f3193` with its valid version 8 sidecar. Vector artifacts with `text.line_text_version` 1 or 2 must also be rebuilt and republished. A Git-pinned build requires these compatibility checks even before a release is published.
+This engine reads and creates schema version 10 only, with `LINE_TEXT_VERSION` 4. Its fields match versions 7 through 9, but its text recipe uses contextual sup/sub boundaries through transparent formatting and zero-width controls, and canonical marks without CGJ. Every version through 9 is `rebuild_required`, including indexes built from PR #66 revisions `67f3193` (schema 8) and `4bb3589` (schema 9) with valid sidecars. Vector artifacts with `text.line_text_version` 1, 2 or 3 must also be rebuilt and republished. A Git-pinned build requires these compatibility checks even before a release is published.
 
-The check compares the whole Tantivy schema as well as the declared version. Without the sidecar, existing segments have an unknown text recipe even if their fields match version 9, so they require rebuilding and are never automatically stamped as version 9. Call this check before `SearchEngine.newInstance`; the constructor retains its existing contract and does not enforce this preflight for callers that skip it.
+The check compares the whole Tantivy schema as well as the declared version. Without the sidecar, existing segments have an unknown text recipe even if their fields match version 10, so they require rebuilding and are never automatically stamped as version 10. Call this check before `SearchEngine.newInstance`; the constructor retains its existing contract and does not enforce this preflight for callers that skip it.
 
 **Parameters:**
 - `path` (String): File system path of the Tantivy index directory

@@ -3141,13 +3141,14 @@ const INDEX_FORMAT: &str = "otzaria-search-index";
 // (see `derived_columns`); and the fields no longer index a quote-free twin beside a
 // quoted word (see `quote_expansion`). A version 5 index is rebuilt.
 //
-// v9 keeps v7's fields, with canonical marks, no CGJ and contextual sup/sub boundaries.
-// One Hebrew hanging letter remains inside its word across transparent formatting.
-pub(crate) const INDEX_SCHEMA_VERSION: u32 = 9;
+// v10 keeps v7's fields, with canonical marks, no CGJ and contextual sup/sub boundaries.
+// One Hebrew hanging letter remains inside its word across transparent formatting
+// and zero-width controls, without treating a stray mark as a preceding letter.
+pub(crate) const INDEX_SCHEMA_VERSION: u32 = 10;
 /// The oldest schema version this engine opens, searches and writes to as it was built.
 /// Every version from it to [`INDEX_SCHEMA_VERSION`] is one this engine reads, each with
 /// the one schema [`schema_of_version`] gives it; an older one is `rebuild_required`.
-const MIN_READABLE_SCHEMA_VERSION: u32 = 9;
+const MIN_READABLE_SCHEMA_VERSION: u32 = 10;
 /// The column that holds each line's chunk key: see [`crate::semantic_keys`].
 const CHUNK_KEY_FIELD: &str = "chunkKey";
 const TANTIVY_INDEX_VERSION: &str = "0.26.2";
@@ -3165,7 +3166,9 @@ const TANTIVY_INDEX_VERSION: &str = "0.26.2";
 /// the text a line's key is computed from, so it is a new version, even where the schema
 /// does not change.
 /// Version 3: transparent formatting around or inside a hanging letter is ignored.
-pub(crate) const LINE_TEXT_VERSION: u32 = 3;
+/// Version 4: that context also ignores bidi/zero-width controls, CGJ and varika;
+/// attached marks never stand in for a missing preceding base letter.
+pub(crate) const LINE_TEXT_VERSION: u32 = 4;
 
 /// תקרת אורך טוקן (בבייטים של UTF-8) לכל האנליזטורים — אינדוקס ושאילתה
 /// כאחד. 128 בייט ≈ 64 אותיות עבריות: פי כמה מכל מילה לגיטימית (כולל
@@ -4272,7 +4275,7 @@ fn check_legacy_tantivy_metadata(index_path: &Path, metadata_path: PathBuf) -> I
     };
 
     if let Some(version) = readable_schema_version(&tantivy_metadata) {
-        // Versions 7 through 9 have the same fields, but different text recipes.
+        // Versions 7 through 10 have the same fields, but different text recipes.
         if !tantivy_metadata
             .get("segments")
             .and_then(JsonValue::as_array)
@@ -18686,7 +18689,7 @@ mod tests {
 
     #[test]
     fn committed_terms_without_a_sidecar_require_rebuild_and_are_not_stamped() {
-        for version in [7, 8, INDEX_SCHEMA_VERSION] {
+        for version in [7, 8, 9, INDEX_SCHEMA_VERSION] {
             let (mut engine, dir) = make_engine();
             add(&mut engine, 1, "מ<sup>נ</sup>שה", "/books/a.txt");
             engine.commit().unwrap();
@@ -18901,9 +18904,9 @@ mod tests {
     ]"#;
 
     /// The version 5 fields versions 6 and 7 change, and how; every other version 5 field is
-    /// unchanged, and version 9 has the fields of 7. No other version is one this engine reads.
+    /// unchanged, and version 10 has the fields of 7. No other version is one this engine reads.
     #[test]
-    fn version_9_is_version_5_with_its_disk_savings_and_stamps() {
+    fn version_10_is_version_5_with_its_disk_savings_and_stamps() {
         let released: Schema = serde_json::from_str(RELEASED_VERSION_5_SCHEMA).unwrap();
         let current = current_schema();
         assert_eq!(
@@ -19038,14 +19041,14 @@ mod tests {
     /// Old text recipes keep the same fields, so their declared version requires rebuilding.
     #[test]
     fn previous_text_recipe_versions_require_rebuilding_with_their_sidecars() {
-        for version in [7, 8] {
+        for version in [7, 8, 9] {
             let fields = serde_json::to_value(current_schema()).unwrap();
             let dir = index_of_schema(fields, Some(version));
             let compatibility = check_index_compatibility(dir_path_string(&dir));
             assert!(!compatibility.compatible, "{version}");
             assert_eq!(compatibility.status, "rebuild_required");
             assert_eq!(compatibility.found_schema_version, Some(version));
-            assert_eq!(compatibility.required_schema_version, 9);
+            assert_eq!(compatibility.required_schema_version, 10);
         }
     }
 

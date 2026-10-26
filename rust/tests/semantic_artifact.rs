@@ -149,7 +149,7 @@ fn index_without_column(dir: &Path) {
         dir.join("otzaria_index_meta.json"),
         serde_json::json!({
             "format": "otzaria-search-index",
-            "schema_version": 9,
+            "schema_version": 10,
             "engine_version": "0.9.0",
             "tantivy_version": "0.26.2",
             "created_at_unix_seconds": 0
@@ -2383,7 +2383,7 @@ fn a_release_that_requires_schema_5_serves_an_index_without_the_column() {
         &std::fs::read_to_string(library.index.join("otzaria_index_meta.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(metadata["schema_version"], 9);
+    assert_eq!(metadata["schema_version"], 10);
     assert!(
         metadata.get("chunk_key_version").is_none(),
         "the index stayed without a recipe for its column"
@@ -4342,29 +4342,31 @@ fn a_release_declaring_a_mixed_store_is_refused_by_its_store_field() {
 }
 
 #[test]
-fn a_release_with_line_text_version_2_is_refused_before_installation() {
-    let mut pipeline = Pipeline::new(ReleaseCodec::I8SymVec);
-    let base = pipeline.release(LIBRARY_VERSION, &default_books());
-    let engine = SearchEngine::new(pipeline.index(LIBRARY_VERSION).to_str().unwrap());
-    let vectors = pipeline.root.path().join("vectors");
-    let mut input = pipeline.install_input(&vectors, &base);
-    let mut manifest: serde_json::Value = serde_json::from_str(&input.manifest_json).unwrap();
-    assert_eq!(manifest["identity"]["text"]["line_text_version"], 3);
-    manifest["identity"]["text"]["line_text_version"] = serde_json::json!(2);
-    input.manifest_json = serde_json::to_string(&manifest).unwrap();
-    input.published_manifest_sha256 = None;
-    let Err(error) = engine.install_semantic_vectors(input, &SemanticCancellationToken::new())
-    else {
-        panic!("vectors built under the previous line recipe must be refused");
-    };
-    assert_eq!(error.kind, SemanticErrorKind::ArtifactIncompatible);
-    assert_eq!(error.field.as_deref(), Some("text.line_text_version"));
-    assert!(
-        !engine
-            .semantic_vectors_info(dir_string(&vectors))
-            .unwrap()
-            .present
-    );
+fn releases_with_previous_line_text_recipes_are_refused_before_installation() {
+    for previous in [1, 2, 3] {
+        let mut pipeline = Pipeline::new(ReleaseCodec::I8SymVec);
+        let base = pipeline.release(LIBRARY_VERSION, &default_books());
+        let engine = SearchEngine::new(pipeline.index(LIBRARY_VERSION).to_str().unwrap());
+        let vectors = pipeline.root.path().join("vectors");
+        let mut input = pipeline.install_input(&vectors, &base);
+        let mut manifest: serde_json::Value = serde_json::from_str(&input.manifest_json).unwrap();
+        assert_eq!(manifest["identity"]["text"]["line_text_version"], 4);
+        manifest["identity"]["text"]["line_text_version"] = serde_json::json!(previous);
+        input.manifest_json = serde_json::to_string(&manifest).unwrap();
+        input.published_manifest_sha256 = None;
+        let Err(error) = engine.install_semantic_vectors(input, &SemanticCancellationToken::new())
+        else {
+            panic!("vectors built under the previous line recipe must be refused");
+        };
+        assert_eq!(error.kind, SemanticErrorKind::ArtifactIncompatible);
+        assert_eq!(error.field.as_deref(), Some("text.line_text_version"));
+        assert!(
+            !engine
+                .semantic_vectors_info(dir_string(&vectors))
+                .unwrap()
+                .present
+        );
+    }
 }
 
 #[test]

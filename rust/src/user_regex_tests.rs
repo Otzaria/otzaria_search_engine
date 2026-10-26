@@ -2220,3 +2220,44 @@ fn script_letters_wrapped_in_transparent_tags_remain_searchable() {
     let ids: Vec<_> = results(&updates).iter().map(|hit| hit.id).collect();
     assert_eq!(ids, [(1u64 << 32) + 1, (1u64 << 32) + 2, (1u64 << 32) + 3]);
 }
+
+#[test]
+fn hanging_letters_ignore_direction_controls_in_search_and_source_ranges() {
+    let lines = [
+        "מ\u{200F}<sup>נ</sup>שה עוד אמר",
+        "מ<sup>\u{200F}נ</sup>שה עוד אמר",
+        "מ<sup>נ</sup>\u{200F}שה עוד אמר",
+        "מ\u{2067}<b>\u{200E}<SUB>\u{034F}<i>נַ\u{2069}</i></SUB></b>\u{FEFF}שה עוד אמר",
+        "מ<sup>נ\u{034F}</sup>שה עוד אמר",
+        "מ<sup class=\"footnote-marker\">\u{200F}נ</sup>שה עוד אמר",
+        "מ\u{200F}<br><sup>נ</sup>שה עוד אמר",
+        "מ<sup>נ</sup>\u{200F} שה עוד אמר",
+    ];
+    let dir = TempDir::new().unwrap();
+    let book = TestBook {
+        title: "מנשה",
+        topics: "/תנך",
+        path: "script-bidi.txt".into(),
+        order: 0,
+        lines: lines.to_vec(),
+    };
+    let engine = stored_engine(dir.path(), &[book]);
+    let expected: Vec<_> = (1..=5).map(|line| (1u64 << 32) + line).collect();
+    for pattern in ["/מנשה/", "/מנשה .* אמר/"] {
+        assert_eq!(count(&engine, pattern, &[]), 5, "{pattern}");
+        let updates = events(&engine, pattern, &[], &Arc::new(AtomicBool::new(false)));
+        let ids: Vec<_> = results(&updates).iter().map(|hit| hit.id).collect();
+        assert_eq!(ids, expected, "{pattern}");
+    }
+    let regex = parse("/מנשה .* אמר/").unwrap();
+    let matcher = DisplayMatcher::new(&regex).unwrap();
+    for line in &lines[..5] {
+        let source = format!("😀 {line}");
+        let view = LineView::of(&source, true);
+        assert_eq!(view.text, "😀 מנשה עוד אמר");
+        let found = matcher.find(&source);
+        assert_eq!(found.len(), 1, "{source:?}");
+        assert_eq!(found[0].start, 3);
+        assert_eq!(found[0].end, source.encode_utf16().count());
+    }
+}

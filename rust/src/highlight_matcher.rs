@@ -740,6 +740,10 @@ mod tests {
             "מ<b><sup>נ</sup></b>שה",
             "מ<sup>נ</sup><b>שה</b>",
             "מ<b><sub><i>נַ</i></sub></b>שה",
+            "מ\u{200F}<sup>נ</sup>שה",
+            "מ<sup>\u{200E}נ</sup>שה",
+            "מ<sup>נ\u{034F}</sup>\u{2069}שה",
+            "מ\u{2067}<b>\u{200E}<SUB>\u{034F}<i>נַ\u{2069}</i></SUB></b>\u{FEFF}שה",
         ] {
             let data = format!("😀 {word}");
             let found = matcher("מנשה", &[], 0).find_matches(&data, &[]);
