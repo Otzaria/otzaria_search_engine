@@ -818,7 +818,7 @@ mod tests {
         assert_eq!(
             ChunkKeyRecipe::current(),
             ChunkKeyRecipe {
-                line_text_version: 1,
+                line_text_version: 4,
                 key_version: 1,
                 chunking_identity: PUBLISHED_CHUNKING_IDENTITY,
             }

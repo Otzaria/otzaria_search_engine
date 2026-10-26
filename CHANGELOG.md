@@ -1,5 +1,71 @@
 # Changelog
 
+## Unreleased
+
+> Breaking for every existing index: schema 10 changes the terms that `text`
+> and `textVocalized` index, so an index built by 5.0.x (schema 7), or by the
+> earlier PR #66 revisions `67f3193` (schema 8) and `4bb3589` (schema 9),
+> is `rebuild_required`.
+> `LINE_TEXT_VERSION` is 4, so vector sets with line-text version 1, 2 or 3 are
+> `artifactIncompatible` on `text.line_text_version` and must be
+> built and published again, and the chunk-key column of an existing index
+> counts as absent until it is rebuilt.
+
+### Breaking
+
+- **Index schema 10**: the fields of schema 7, with other terms. `text` splits
+  words at `<sup>` and `<sub>`, and `textVocalized` keeps each run of marks in
+  canonical order, without CGJ. A hanging Hebrew letter remains inside its
+  word even across transparent formatting and zero-width controls. Schemas 7
+  through 9 cannot prove this text recipe, so all are rebuilt, including builds
+  pinned to an earlier SHA of this unreleased PR.
+
+### Fixed
+
+- **`<sup>` and `<sub>` separate words.** Indexing, search, highlighting and
+  the regex line view read `word<sup>1</sup>word` as two words, as they do
+  other breaking tags, instead of gluing them into one term. The exception is
+  a hanging letter: a tag holding exactly one Hebrew letter (with its marks,
+  or a presentation form of one) between two letters of a word, such as the
+  raised letters of the Tanakh, stays inside the word. A tag whose attributes
+  mark it `footnote-marker` always separates. Transparent formatting around
+  or inside a hanging-letter tag does not interrupt the word. Bidi/zero-width
+  controls, CGJ and varika are ignored in this context too, including when
+  interleaved with formatting. Attached marks require a preceding base letter;
+  a stray mark cannot turn a footnote into part of the following word. Block
+  tags, whitespace and footnote markers still separate words.
+  `LINE_TEXT_VERSION` is 4 because the indexed line text changes.
+- **Vocalized search ignores the order of marks.** A query and a line that
+  type the same nikud and cantillation in different orders match: the
+  tokenizer and the vocalized query pattern both put each run of marks in
+  canonical combining class order. Both drop the combining grapheme joiner
+  (U+034F) first, so `ירושלַ͏ִם`, with a CGJ between the patah and the hiriq as
+  the library spells it, is found by a query typed without it, in either order.
+- **A line regex no longer drops lines with quoted or glued words.** The
+  fixed words that select candidate lines are split the way the index splits
+  them (`''` is `"`, and a run of quotes splits a word), and a word bounded on
+  both sides also finds a term that a quote, gershayim or a numeral that is
+  not `\w` (such as `²`) glues it to. `/ז''ל .* אמר/` and `/תוס' .* שבת/`
+  found no line or too few before. A word glued to another by a character the
+  index drops, such as `יב[ע]ר`, is still not found.
+- **An existing index without its sidecar is not assumed to use schema 10's
+  text recipe.** Matching field definitions alone cannot distinguish schema
+  older terms from schema 10's. The compatibility check now requires rebuilding
+  when committed segments exist or the segment inventory is unknown; opening
+  such an index does not silently write a version 10 sidecar. A new, empty index
+  still initializes normally. Callers must run the compatibility check before
+  opening an existing index.
+
+### Performance
+
+- **Line-regex fixed words share dictionary scans.** Up to 16 uncached fixed
+  fragments share each traversal, with the same per-fragment term and postings
+  budgets, cache identities and segment order. A fully cached required clause
+  known to be empty stops before a dictionary scan; an empty clause found by
+  the scan returns an empty query. A single uncached fragment keeps its previous
+  collector. Warm-cache calls can cost slightly more; this is a preparation
+  improvement for multi-fragment cache misses, not a blanket search speedup.
+
 ## 5.0.1 – 2026-10-20
 
 ### Fixed

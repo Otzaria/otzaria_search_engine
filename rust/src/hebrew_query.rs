@@ -37,6 +37,7 @@
 //! to, for cross-checking parity. The patterns intentionally diverge from the
 //! Dart where it was wrong or wasteful for this nikud-free index (see above).
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use unicode_segmentation::UnicodeSegmentation;
@@ -797,6 +798,94 @@ pub(crate) fn is_taam_mark(c: char) -> bool {
     is_attached_mark(c) && !is_nikud_mark(c)
 }
 
+/// Unicode canonical combining class of a word mark ([`is_word_mark`]); 0 for every
+/// other char, CGJ (U+034F) included. Arm order matters: the first match wins.
+pub(crate) fn mark_combining_class(c: char) -> u8 {
+    match c {
+        '\u{05B0}' => 10,
+        '\u{05B1}' => 11,
+        '\u{05B2}' => 12,
+        '\u{05B3}' => 13,
+        '\u{05B4}' => 14,
+        '\u{05B5}' => 15,
+        '\u{05B6}' => 16,
+        '\u{05B7}' => 17,
+        '\u{05B8}' | '\u{05C7}' => 18,
+        '\u{05B9}' | '\u{05BA}' => 19,
+        '\u{05BB}' => 20,
+        '\u{05BC}' => 21,
+        '\u{05BD}' => 22,
+        '\u{05BF}' => 23,
+        '\u{05C1}' => 24,
+        '\u{05C2}' => 25,
+        '\u{0591}'
+        | '\u{0596}'
+        | '\u{059B}'
+        | '\u{05A2}'..='\u{05A7}'
+        | '\u{05AA}'
+        | '\u{05C5}' => 220,
+        '\u{059A}' | '\u{05AD}' => 222,
+        '\u{05AE}' => 228,
+        '\u{0592}'..='\u{05AF}' | '\u{05C4}' => 230,
+        '\u{0334}'..='\u{0338}' => 1,
+        '\u{0321}' | '\u{0322}' | '\u{0327}' | '\u{0328}' => 202,
+        '\u{031B}' => 216,
+        '\u{0316}'..='\u{0319}'
+        | '\u{031C}'..='\u{0320}'
+        | '\u{0323}'..='\u{0326}'
+        | '\u{0329}'..='\u{0333}'
+        | '\u{0339}'..='\u{033C}'
+        | '\u{0347}'..='\u{0349}'
+        | '\u{034D}'
+        | '\u{034E}'
+        | '\u{0353}'..='\u{0356}'
+        | '\u{0359}'
+        | '\u{035A}' => 220,
+        '\u{0315}' | '\u{031A}' | '\u{0358}' => 232,
+        '\u{035C}' | '\u{035F}' | '\u{0362}' => 233,
+        '\u{035D}' | '\u{035E}' | '\u{0360}' | '\u{0361}' => 234,
+        '\u{0345}' => 240,
+        '\u{0300}'..='\u{034E}' | '\u{0350}'..='\u{036F}' => 230,
+        _ => 0,
+    }
+}
+
+/// Combining grapheme joiner: invisible, and dropped from vocalized terms and queries.
+pub(crate) const CGJ: char = '\u{034F}';
+
+/// `s` with every run of marks stably sorted by [`mark_combining_class`], as NFC orders
+/// them, so canonically-equivalent spellings (דגש+קמץ / קמץ+דגש) are one term. [`CGJ`] is
+/// dropped first, so the marks on its two sides (`ירושלַ͏ִם`) sort as one run.
+pub(crate) fn canonical_mark_order(s: &str) -> Cow<'_, str> {
+    let mut prev = 0;
+    let in_order = s.chars().all(|c| {
+        let class = mark_combining_class(c);
+        let ok = c != CGJ && (class == 0 || prev <= class);
+        prev = class;
+        ok
+    });
+    if in_order {
+        return Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut run: Vec<(u8, char)> = Vec::new();
+    let flush = |run: &mut Vec<(u8, char)>, out: &mut String| {
+        run.sort_by_key(|&(class, _)| class);
+        out.extend(run.drain(..).map(|(_, mark)| mark));
+    };
+    for c in s.chars().filter(|&c| c != CGJ) {
+        match mark_combining_class(c) {
+            0 => {
+                flush(&mut run, &mut out);
+                out.push(c);
+            }
+            class => run.push((class, c)),
+        }
+    }
+    flush(&mut run, &mut out);
+    Cow::Owned(out)
+}
+
 /// האם השורה נושאת סימן צמוד כלשהו — בדיקת-הכניסה הזולה של צינור האינדוקס
 /// (רק שורות כאלה נכתבות לשדה `textVocalized`).
 pub fn contains_attached_marks(text: &str) -> bool {
@@ -978,44 +1067,347 @@ pub(crate) const BREAKING_TAG_NAMES: &[&str] = &[
     "ul",
 ];
 
-/// האם תוכן תג (`body` — התווים שבין `<` ל-`>`) הוא תג שבירה: `/` פותח
-/// אופציונלי, שם באדישות לרישיות, ואחריו רק תו שאינו אות/ספרה (או כלום).
-pub(crate) fn is_breaking_tag(body: &[char]) -> bool {
-    let mut idx = 0;
-    if idx < body.len() && body[idx] == '/' {
-        idx += 1;
+/// sup/sub: their content is read as its own word, so their tags separate words
+/// ([`tag_breaks_word`]) — otherwise `תורה<sup>30</sup>` would index as `תורה30`.
+pub(crate) const SCRIPT_TAG_NAMES: &[&str] = &["sub", "sup"];
+
+/// The tag's name and whether it closes, for a body (the text between `<` and `>`) of
+/// an optional `/` and an ASCII alphanumeric name of at most 10 characters.
+fn tag_name(body: &str) -> Option<(bool, &str)> {
+    let (closing, name) = match body.strip_prefix('/') {
+        Some(name) => (true, name),
+        None => (false, body),
+    };
+    let len = name.bytes().take_while(u8::is_ascii_alphanumeric).count();
+    (1..=10).contains(&len).then(|| (closing, &name[..len]))
+}
+
+fn is_listed(names: &[&str], name: &str) -> bool {
+    names.iter().any(|listed| listed.eq_ignore_ascii_case(name))
+}
+
+fn is_hebrew_letter(c: char) -> bool {
+    matches!(c, '\u{05D0}'..='\u{05EA}')
+}
+
+/// A Hebrew letter, or a presentation form that folds to one letter and its marks.
+fn is_script_letter(c: char) -> bool {
+    match fold_presentation_form(c) {
+        Some(folded) => {
+            let mut folded = folded.chars();
+            folded.next().is_some_and(is_hebrew_letter) && folded.all(is_attached_mark)
+        }
+        None => is_hebrew_letter(c),
     }
-    let start = idx;
-    while idx < body.len() && body[idx].is_ascii_alphanumeric() {
-        idx += 1;
+}
+
+/// Whether the tag `source[lt..=gt]` separates words: block tags and sup/sub do, except
+/// a sup/sub around one letter inside a word (a hanging letter, `מְ<sup>נַ</sup>שֶּׁה`).
+pub(crate) fn tag_breaks_word(source: &str, lt: usize, gt: usize) -> bool {
+    let Some((closing, name)) = tag_name(&source[lt + 1..gt]) else {
+        return false;
+    };
+    if is_listed(BREAKING_TAG_NAMES, name) {
+        return true;
     }
-    // השם הארוך ביותר בן 10 תווים (figcaption) — חריגה היא לא-תג מהר.
-    if idx == start || idx - start > 10 {
+    if !is_listed(SCRIPT_TAG_NAMES, name) {
         return false;
     }
-    let name: String = body[start..idx]
+    let open = if closing {
+        script_open_before(source, lt)
+    } else {
+        Some((lt, gt))
+    };
+    !open.is_some_and(|(lt, gt)| is_word_internal_script(source, lt, gt))
+}
+
+/// The tag that ends right before the lone letter (and its marks) preceding `lt`.
+fn script_open_before(source: &str, lt: usize) -> Option<(usize, usize)> {
+    let mut before = trim_script_context_end(&source[..lt]).chars();
+    before.next_back().filter(|&c| is_script_letter(c))?;
+    let gt = trim_script_formatting_end(before.as_str())
+        .len()
+        .checked_sub(1)?;
+    if source.as_bytes()[gt] != b'>' {
+        return None;
+    }
+    let lt = source[..gt].rfind('<')?;
+    (!source[lt + 1..gt].contains('>')).then_some((lt, gt))
+}
+
+fn is_inline_tag(body: &str) -> bool {
+    !tag_name(body).is_some_and(|(_, name)| {
+        is_listed(BREAKING_TAG_NAMES, name) || is_listed(SCRIPT_TAG_NAMES, name)
+    })
+}
+
+/// Zero-width characters which neither text field keeps in a term. They must not
+/// change the classification of a neighbouring tag before the tokenizer drops them.
+fn is_script_invisible(c: char) -> bool {
+    is_invisible_char(c) || c == CGJ || c == '\u{FB1E}'
+}
+
+/// Walk the original source without allocating or changing its UTF-16 offsets.
+/// Formatting and invisible characters can alternate, so trim them together.
+fn trim_script_formatting_start(mut source: &str) -> &str {
+    loop {
+        source = source.trim_start_matches(is_script_invisible);
+        let Some(body) = source.strip_prefix('<') else {
+            break;
+        };
+        let Some(gt) = body.find('>') else { break };
+        if !is_inline_tag(&body[..gt]) {
+            break;
+        }
+        source = &body[gt + 1..];
+    }
+    source
+}
+
+fn trim_script_formatting_end(mut source: &str) -> &str {
+    loop {
+        source = source.trim_end_matches(is_script_invisible);
+        let Some(body) = source.strip_suffix('>') else {
+            break;
+        };
+        let Some(lt) = body.rfind('<') else { break };
+        if body[lt + 1..].contains('>') || !is_inline_tag(&body[lt + 1..]) {
+            break;
+        }
+        source = &body[..lt];
+    }
+    source
+}
+
+fn trim_script_context_end(mut source: &str) -> &str {
+    loop {
+        let trimmed = trim_script_formatting_end(source).trim_end_matches(is_word_mark);
+        if trimmed.len() == source.len() {
+            return source;
+        }
+        source = trimmed;
+    }
+}
+
+fn trim_script_context_start(mut source: &str) -> &str {
+    loop {
+        let trimmed = trim_script_formatting_start(source).trim_start_matches(is_word_mark);
+        if trimmed.len() == source.len() {
+            return source;
+        }
+        source = trimmed;
+    }
+}
+
+/// The word `footnote-marker` in a tag's attributes, as inline_notes.rs finds the marker.
+fn marks_footnote(attributes: &str) -> bool {
+    let lower = attributes.to_ascii_lowercase();
+    let word = |b: Option<&u8>| b.is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_');
+    lower.match_indices("footnote-marker").any(|(i, found)| {
+        !word(lower.as_bytes()[..i].last()) && !word(lower.as_bytes().get(i + found.len()))
+    })
+}
+
+/// Whether the open tag `source[lt..=gt]` wraps one letter (with marks) between letters.
+fn is_word_internal_script(source: &str, lt: usize, gt: usize) -> bool {
+    let Some((false, name)) = tag_name(&source[lt + 1..gt]) else {
+        return false;
+    };
+    if marks_footnote(&source[lt + 1..gt]) {
+        return false;
+    }
+    if !trim_script_context_end(&source[..lt])
+        .chars()
+        .next_back()
+        .is_some_and(is_script_letter)
+    {
+        return false;
+    }
+    let mut content = trim_script_formatting_start(&source[gt + 1..]).chars();
+    if !content.next().is_some_and(is_script_letter) {
+        return false;
+    }
+    let rest = trim_script_context_start(content.as_str());
+    let Some(close) = rest.strip_prefix('<') else {
+        return false;
+    };
+    let Some(close_gt) = close.find('>') else {
+        return false;
+    };
+    matches!(tag_name(&close[..close_gt]), Some((true, closing)) if closing.eq_ignore_ascii_case(name))
+        && trim_script_context_start(&close[close_gt + 1..])
+            .chars()
+            .next()
+            .is_some_and(is_script_letter)
+}
+
+/// [`tag_breaks_word`] over a char vector, written apart so the reference scan checks it.
+#[cfg(test)]
+fn tag_breaks_word_chars(chars: &[char], lt: usize, gt: usize) -> bool {
+    let name_of = |lt: usize, gt: usize| -> Option<(bool, String)> {
+        let body = &chars[lt + 1..gt];
+        let closing = body.first() == Some(&'/');
+        let name: String = body[usize::from(closing)..]
+            .iter()
+            .take_while(|c| c.is_ascii_alphanumeric())
+            .map(|c| c.to_ascii_lowercase())
+            .collect();
+        (1..=10).contains(&name.len()).then_some((closing, name))
+    };
+    let Some((closing, name)) = name_of(lt, gt) else {
+        return false;
+    };
+    if BREAKING_TAG_NAMES.contains(&name.as_str()) {
+        return true;
+    }
+    if !SCRIPT_TAG_NAMES.contains(&name.as_str()) {
+        return false;
+    }
+    let letter = |i: usize| {
+        chars.get(i).is_some_and(|&c| {
+            let folded: Vec<char> =
+                fold_presentation_form(c).map_or(vec![c], |f| f.chars().collect());
+            folded.first().is_some_and(|&f| is_hebrew_letter(f))
+                && folded[1..].iter().all(|&m| is_attached_mark(m))
+        })
+    };
+    let mark = |i: usize| chars.get(i).is_some_and(|&c| is_word_mark(c));
+    let invisible = |i: usize| {
+        chars
+            .get(i)
+            .is_some_and(|&c| is_invisible_char(c) || matches!(c, '\u{034F}' | '\u{FB1E}'))
+    };
+    let inline = |lt, gt| {
+        !name_of(lt, gt).is_some_and(|(_, name)| {
+            BREAKING_TAG_NAMES.contains(&name.as_str()) || SCRIPT_TAG_NAMES.contains(&name.as_str())
+        })
+    };
+    let skip_start = |mut i: usize| {
+        loop {
+            while invisible(i) {
+                i += 1;
+            }
+            if chars.get(i) != Some(&'<') {
+                break;
+            }
+            let Some(gt) = chars[i..].iter().position(|&c| c == '>').map(|p| i + p) else {
+                break;
+            };
+            if !inline(i, gt) {
+                break;
+            }
+            i = gt + 1;
+        }
+        i
+    };
+    let skip_end = |mut i: usize| {
+        loop {
+            while i > 0 && invisible(i - 1) {
+                i -= 1;
+            }
+            if i == 0 || chars[i - 1] != '>' {
+                break;
+            }
+            let Some(lt) = chars[..i - 1].iter().rposition(|&c| c == '<') else {
+                break;
+            };
+            if chars[lt + 1..i - 1].contains(&'>') || !inline(lt, i - 1) {
+                break;
+            }
+            i = lt;
+        }
+        i
+    };
+    let (open_lt, open_gt) = if closing {
+        let mut i = lt;
+        loop {
+            let old = i;
+            i = skip_end(i);
+            while i > 0 && mark(i - 1) {
+                i -= 1;
+            }
+            if i == old {
+                break;
+            }
+        }
+        if i == 0 || !letter(i - 1) {
+            return true;
+        }
+        let i = skip_end(i - 1);
+        if i == 0 || chars[i - 1] != '>' {
+            return true;
+        }
+        let open_gt = i - 1;
+        let Some(open_lt) = chars[..open_gt].iter().rposition(|&c| c == '<') else {
+            return true;
+        };
+        if chars[open_lt + 1..open_gt].contains(&'>') {
+            return true;
+        }
+        (open_lt, open_gt)
+    } else {
+        (lt, gt)
+    };
+    let attributes: Vec<char> = chars[open_lt + 1..open_gt]
         .iter()
         .map(|c| c.to_ascii_lowercase())
         .collect();
-    BREAKING_TAG_NAMES.contains(&name.as_str())
-}
-
-/// [`is_breaking_tag`] over the tag's text.
-fn is_breaking_tag_str(body: &str) -> bool {
-    let name = body.strip_prefix('/').unwrap_or(body).as_bytes();
-    let len = name
-        .iter()
-        .position(|b| !b.is_ascii_alphanumeric())
-        .unwrap_or(name.len());
-    if len == 0 || len > 10 {
-        return false;
+    let marker: Vec<char> = "footnote-marker".chars().collect();
+    let word = |c: Option<&char>| c.is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_');
+    let footnote = (0..attributes.len()).any(|i| {
+        attributes[i..].starts_with(&marker)
+            && (i == 0 || !word(attributes.get(i - 1)))
+            && !word(attributes.get(i + marker.len()))
+    });
+    let mut before = open_lt;
+    loop {
+        let old = before;
+        before = skip_end(before);
+        while before > 0 && mark(before - 1) {
+            before -= 1;
+        }
+        if before == old {
+            break;
+        }
     }
-    let mut lower = [0u8; 10];
-    for (to, from) in lower.iter_mut().zip(&name[..len]) {
-        *to = from.to_ascii_lowercase();
+    let content = skip_start(open_gt + 1);
+    if footnote
+        || name_of(open_lt, open_gt) != Some((false, name.clone()))
+        || before == 0
+        || !letter(before - 1)
+        || !letter(content)
+    {
+        return true;
     }
-    let lower = std::str::from_utf8(&lower[..len]).expect("ASCII");
-    BREAKING_TAG_NAMES.contains(&lower)
+    let mut i = content + 1;
+    loop {
+        let old = i;
+        i = skip_start(i);
+        while mark(i) {
+            i += 1;
+        }
+        if i == old {
+            break;
+        }
+    }
+    if chars.get(i) != Some(&'<') {
+        return true;
+    }
+    let Some(close_gt) = chars[i..].iter().position(|&c| c == '>').map(|p| i + p) else {
+        return true;
+    };
+    let mut after = close_gt + 1;
+    loop {
+        let old = after;
+        after = skip_start(after);
+        while mark(after) {
+            after += 1;
+        }
+        if after == old {
+            break;
+        }
+    }
+    name_of(i, close_gt) != Some((true, name)) || !letter(after)
 }
 
 /// The whitespace entities [`strip_html_for_indexing`] turns into a space.
@@ -1041,7 +1433,7 @@ fn for_each_html_stripped_piece(text: &str, mut f: impl FnMut(&str)) {
         let (replacement, next) = match bytes[i] {
             b'<' => match bytes[i + 1..].iter().position(|&b| b == b'>') {
                 Some(close) => {
-                    let breaking = is_breaking_tag_str(&text[i + 1..i + 1 + close]);
+                    let breaking = tag_breaks_word(text, i, i + 1 + close);
                     (if breaking { " " } else { "" }, i + close + 2)
                 }
                 None => ("<", i + 1),
@@ -1130,7 +1522,7 @@ pub(crate) fn strip_html_for_indexing_reference(text: &str) -> String {
             '<' => {
                 // `<[^>]*>` — find the closing `>`; drop the whole span.
                 if let Some(close) = chars[i + 1..].iter().position(|&c| c == '>') {
-                    if is_breaking_tag(&chars[i + 1..i + 1 + close]) {
+                    if tag_breaks_word_chars(&chars, i, i + 1 + close) {
                         out.push(' ');
                     }
                     i += close + 2; // past the '>'
@@ -2137,8 +2529,8 @@ fn word_to_pattern(root: &str, flags: &WordFlags) -> String {
 // The vocalized field (`textVocalized`) indexes surface forms WITH their
 // attached marks, so a vocalized query compiles to a whole-term regex over
 // that dictionary. The matching contract is "הוקלד → חייב; לא הוקלד →
-// חופשי": every typed mark of an enabled class must appear, in order; any
-// other attached mark in the term is free. A base letter therefore becomes
+// חופשי": every typed mark of an enabled class must appear, in canonical
+// order; any other attached mark in the term is free. A base letter therefore becomes
 // `X[marks]*` and a required mark `m[marks]*` — the free class overlaps the
 // required mark, which is harmless under DFA acceptance.
 
@@ -2151,8 +2543,10 @@ fn word_to_pattern(root: &str, flags: &WordFlags) -> String {
 pub(crate) const VOC_FREE_MARKS: &str = "[\u{0300}-\u{036F}\u{0591}-\u{05C7}]*";
 
 /// Whole-term pattern for one vocalized query token: typed marks of an
-/// enabled class are required in order, everything else is free.
+/// enabled class are required in canonical order (as the tokenizer indexes
+/// them), everything else is free.
 pub(crate) fn vocalized_token_pattern(token: &str, voc: &VocalizedFlags) -> String {
+    let token = canonical_mark_order(token);
     let mut out = String::with_capacity(token.len() * 4);
     for c in token.chars() {
         if is_general_combining_mark(c) {
@@ -3041,6 +3435,135 @@ mod tests {
     }
 
     #[test]
+    fn strip_html_script_tags_are_word_boundaries() {
+        for (html, stripped) in [
+            ("תורה<sup>30</sup> המשך", "תורה 30  המשך"),
+            ("תורה<sub>30</sub> המשך", "תורה 30  המשך"),
+            ("תורה<sup>א</sup> מסוף", "תורה א  מסוף"),
+            ("תורה.<sup>30</sup>", "תורה. 30 "),
+            ("תורה&nbsp;<sup>30</sup>&nbsp;המשך", "תורה  30  המשך"),
+            ("תורה<sup class=\"x\">30</sup>המשך", "תורה 30 המשך"),
+            ("תורה<SUP>30</SUP>המשך", "תורה 30 המשך"),
+            ("תורה<b><sup>30</sup></b>המשך", "תורה 30 המשך"),
+            ("תורה<sup>30המשך", "תורה 30המשך"),
+            ("תּוֹרָה<sup>30</sup>הֶמְשֵׁךְ", "תּוֹרָה 30 הֶמְשֵׁךְ"),
+            ("תחלה<sup>31</sup>א", "תחלה 31 א"),
+            (
+                "גוף<sup class=\"footnote-marker\">א</sup><i class=\"footnote\">הרי זה</i>",
+                "גוף א הרי זה",
+            ),
+            // A name that only starts with sup/sub is an inline tag.
+            ("א<supx>ב", "אב"),
+            ("מי<b>לה</b>", "מילה"),
+            // A hanging letter inside a word stays part of it.
+            ("מְ<sup>נַ</sup>שֶּׁה", "מְנַשֶּׁה"),
+            ("מ<b><sup>נ</sup></b>שה", "מנשה"),
+            ("מ<sup>נ</sup><b>שה</b>", "מנשה"),
+            ("מ<b>נ</b>שה", "מנשה"),
+            ("מ<sup><b>נ</b></sup>שה", "מנשה"),
+            ("מ<b><sub><i>נַ</i></sub></b>שה", "מנַשה"),
+            ("מ<b><sup>שַׁ</sup></b>ה", "משַׁה"),
+            ("מ<b><sup>נ</sub></b>שה", "מ נ שה"),
+            ("מ<b><sup>נש</sup></b>ה", "מ נש ה"),
+            ("מ<b><sup>נ </sup></b>שה", "מ נ  שה"),
+            ("מ<b> <sup>נ</sup></b>שה", "מ  נ שה"),
+            ("מ<sup><b>נ<br></b></sup>שה", "מ נ  שה"),
+            ("מ<br><sup>נ</sup>שה", "מ  נ שה"),
+            ("מ<sup>נ</sup><br>שה", "מ נ  שה"),
+            ("מ<b><sup class=\"footnote-marker\">נ</sup></b>שה", "מ נ שה"),
+            (
+                "מ<b><SUP CLASS='x Footnote-Marker'><i>נ</i></SUP></b>שה",
+                "מ נ שה",
+            ),
+            ("מִיָּ֑<sup>עַ</sup>ר", "מִיָּ֑עַר"),
+            ("ו<sup>ג</sup>וש", "וגוש"),
+            ("ו<SUB>ג</SUB>וש", "וגוש"),
+            ("ו<sup>ג</sub>וש", "ו ג וש"),
+            ("ו<sup>גד</sup>וש", "ו גד וש"),
+            ("ו <sup>ג</sup>וש", "ו  ג וש"),
+            ("ו<sup>ג</sup> וש", "ו ג  וש"),
+            // A footnote marker always separates.
+            (
+                "גוף<sup class=\"footnote-marker\">א</sup>המשך",
+                "גוף א המשך",
+            ),
+            (
+                "גוף<SUP CLASS=\"x Footnote-Marker\">א</SUP>המשך",
+                "גוף א המשך",
+            ),
+            ("גוף<sup class=\"footnote-markers\">א</sup>המשך", "גוףאהמשך"),
+            // Presentation forms count as the letters they fold to.
+            ("\u{FB2A}<sup>נ</sup>ה", "\u{FB2A}נה"),
+            ("מ<sup>\u{FB2A}</sup>ה", "מ\u{FB2A}ה"),
+            ("מ<sup>נ</sup>\u{FB31}", "מנ\u{FB31}"),
+            ("מ<sup>\u{FB4F}</sup>ה", "מ \u{FB4F} ה"),
+        ] {
+            assert_eq!(strip_html_for_indexing(html), stripped, "{html:?}");
+            assert_eq!(
+                strip_html_for_indexing_reference(html),
+                stripped,
+                "{html:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn hanging_letter_context_ignores_zero_width_formatting_but_not_separators() {
+        let plain = |html: &str| {
+            normalize_text_for_indexing(html)
+                .chars()
+                .filter(|&c| !is_invisible_char(c) && !is_word_mark(c))
+                .collect::<String>()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let controls = [
+            '\u{200B}', '\u{200C}', '\u{200D}', '\u{200E}', '\u{200F}', '\u{202A}', '\u{202B}',
+            '\u{202C}', '\u{202D}', '\u{202E}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
+            '\u{FEFF}', '\u{034F}', '\u{FB1E}',
+        ];
+        for c in controls {
+            for (html, expected) in [
+                (format!("מ{c}<sup>נ</sup>שה"), "מנשה"),
+                (format!("מ<sup>{c}נ</sup>שה"), "מנשה"),
+                (format!("מ<sup>נ{c}</sup>שה"), "מנשה"),
+                (format!("מ<sup>נ</sup>{c}שה"), "מנשה"),
+                (
+                    format!("מ{c}<b>{c}<SUB>{c}<i>{c}נ{c}ַ{c}</i>{c}</SUB>{c}</b>{c}שה"),
+                    "מנשה",
+                ),
+                (format!("מ{c}<sup>שַׁ{c}</sup>{c}ה"), "משה"),
+                (format!("מ{c}<sup>נ</sup>{c}ַשה"), "מנשה"),
+                (format!("מ{c}<sup>נ{c}ש</sup>ה"), "מ נש ה"),
+                (format!("מ{c} <sup>נ</sup>{c}שה"), "מ נ שה"),
+                (format!("מ{c}<sup>נ</sup> {c}שה"), "מ נ שה"),
+                (format!("מ{c}<br><sup>נ</sup>{c}שה"), "מ נ שה"),
+                (format!("מ{c}<sup>נ</sup>{c}<br>שה"), "מ נ שה"),
+                (format!("מ{c}<sup>נ{c}<br></sup>שה"), "מ נ שה"),
+                (
+                    format!("מ{c}<sup class='footnote-marker'>{c}נ</sup>{c}שה"),
+                    "מ נ שה",
+                ),
+                (format!("מ{c}<sup>נ</sub>{c}שה"), "מ נ שה"),
+                (format!("מ{c}<sup>נ</sup>{c}"), "מ נ"),
+                (format!("{c}ַ<sup>נ</sup>{c}שה"), "נ שה"),
+            ] {
+                assert_eq!(plain(&html), expected, "{html:?}");
+                assert_eq!(
+                    strip_html_for_indexing(&html),
+                    strip_html_for_indexing_reference(&html),
+                    "{html:?}"
+                );
+                assert_normalization_parity(&html);
+            }
+        }
+        // A general combining mark belongs to the preceding letter, including
+        // when a formatting boundary separates it from the base character.
+        assert_eq!(plain("מ\u{0307}<sup>נ\u{0307}</sup>\u{0307}שה"), "מנשה");
+    }
+
+    #[test]
     fn strip_attached_marks_keeps_separators() {
         assert_eq!(strip_attached_marks("שָׁלוֹם"), "שלום");
         assert_eq!(strip_attached_marks("בְּרֵאשִׁית"), "בראשית");
@@ -3072,6 +3595,20 @@ mod tests {
             "<h2 class=\"x\">",
             "<figcaption>",
             "<span>",
+            "<sup>",
+            "</sup>",
+            "<SUP class=\"footnote-marker\">",
+            "<sub>",
+            "</sub>",
+            "<sup>ב</sup>",
+            "מ<b><sup>נ</sup></b>שה",
+            "מ<sup><b>נַ</b></sup>שה",
+            "מ<br><sup>נ</sup>שה",
+            "מ<sup>נ</sub>שה",
+            "מ\u{200F}<sup>נ</sup>שה",
+            "מ<sup>\u{2067}<b>נ\u{034F}</b></sup>\u{2069}שה",
+            "<sup class=\"footnote-marker\">ב</sup>",
+            "ב\u{05B7}",
             "&",
             ";",
             "&amp;",
@@ -3090,6 +3627,10 @@ mod tests {
             "\u{FB1E}",
             "\u{FB4F}",
             "\u{200F}",
+            "\u{200E}",
+            "\u{2067}",
+            "\u{2069}",
+            "\u{034F}",
             "\u{FEFF}",
             "a",
             "1",
@@ -3289,6 +3830,73 @@ mod tests {
         let both = VocalizedFlags::new(true, true);
         assert!(!vocalized_token_pattern(word, &nikud_only).contains('\u{05A3}'));
         assert!(vocalized_token_pattern(word, &both).contains('\u{05A3}'));
+    }
+
+    #[test]
+    fn mark_combining_class_matches_unicode() {
+        use unicode_normalization_alignments::char::canonical_combining_class;
+        for cp in (0x0300u32..=0x036F).chain(0x0591..=0x05C7) {
+            let c = char::from_u32(cp).unwrap();
+            assert_eq!(
+                mark_combining_class(c),
+                canonical_combining_class(c),
+                "U+{cp:04X}"
+            );
+        }
+        assert_eq!(mark_combining_class('א'), 0);
+        assert_eq!(mark_combining_class('\u{05BE}'), 0);
+    }
+
+    #[test]
+    fn canonical_mark_order_sorts_runs_stably() {
+        assert_eq!(
+            canonical_mark_order("ב\u{05BC}\u{05B8}"),
+            "ב\u{05B8}\u{05BC}"
+        );
+        assert_eq!(
+            canonical_mark_order("ש\u{05C1}\u{05BC}\u{05B8}"),
+            "ש\u{05B8}\u{05BC}\u{05C1}"
+        );
+        // Same-class accents (230) keep their order; the dagesh moves before both.
+        assert_eq!(
+            canonical_mark_order("ב\u{0599}\u{0592}\u{05BC}"),
+            "ב\u{05BC}\u{0599}\u{0592}"
+        );
+        // CGJ is dropped, and the marks around it sort as one run.
+        assert_eq!(
+            canonical_mark_order("ב\u{05BC}\u{034F}\u{05B8}"),
+            "ב\u{05B8}\u{05BC}"
+        );
+        assert_eq!(
+            canonical_mark_order("ל\u{05B7}\u{0594}\u{034F}\u{05B4}ם"),
+            "ל\u{05B4}\u{05B7}\u{0594}ם"
+        );
+        assert_eq!(
+            canonical_mark_order("ס\u{0307}\u{0323}"),
+            "ס\u{0323}\u{0307}"
+        );
+        // Each run sorts on its own.
+        assert_eq!(
+            canonical_mark_order("ב\u{05BC}\u{05B8}ר\u{05B8}ש\u{05C1}\u{05B4}"),
+            "ב\u{05B8}\u{05BC}ר\u{05B8}ש\u{05B4}\u{05C1}"
+        );
+        for sorted in ["", "ברא", "ב\u{05B8}\u{05BC}רָא"] {
+            assert!(matches!(canonical_mark_order(sorted), Cow::Borrowed(_)));
+        }
+    }
+
+    #[test]
+    fn vocalized_token_pattern_is_mark_order_insensitive() {
+        for voc in [
+            VocalizedFlags::new(true, false),
+            VocalizedFlags::new(true, true),
+        ] {
+            let canonical = vocalized_token_pattern("ב\u{05B8}\u{05BC}\u{05A3}רָא", &voc);
+            for typed in ["ב\u{05BC}\u{05B8}\u{05A3}רָא", "ב\u{05A3}\u{05BC}\u{05B8}רָא"] {
+                assert_eq!(vocalized_token_pattern(typed, &voc), canonical, "{voc:?}");
+            }
+            assert!(accepts(&canonical, "ב\u{05B8}\u{05BC}\u{05A3}רָא"));
+        }
     }
 
     fn gram_group() -> String {

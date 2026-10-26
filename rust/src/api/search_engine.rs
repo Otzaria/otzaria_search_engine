@@ -3140,11 +3140,15 @@ const INDEX_FORMAT: &str = "otzaria-search-index";
 // fingerprints sit on one document of a book; `sectionId`/`generationSort` are derived
 // (see `derived_columns`); and the fields no longer index a quote-free twin beside a
 // quoted word (see `quote_expansion`). A version 5 index is rebuilt.
-pub(crate) const INDEX_SCHEMA_VERSION: u32 = 7;
+//
+// v10 keeps v7's fields, with canonical marks, no CGJ and contextual sup/sub boundaries.
+// One Hebrew hanging letter remains inside its word across transparent formatting
+// and zero-width controls, without treating a stray mark as a preceding letter.
+pub(crate) const INDEX_SCHEMA_VERSION: u32 = 10;
 /// The oldest schema version this engine opens, searches and writes to as it was built.
 /// Every version from it to [`INDEX_SCHEMA_VERSION`] is one this engine reads, each with
 /// the one schema [`schema_of_version`] gives it; an older one is `rebuild_required`.
-const MIN_READABLE_SCHEMA_VERSION: u32 = 7;
+const MIN_READABLE_SCHEMA_VERSION: u32 = 10;
 /// The column that holds each line's chunk key: see [`crate::semantic_keys`].
 const CHUNK_KEY_FIELD: &str = "chunkKey";
 const TANTIVY_INDEX_VERSION: &str = "0.26.2";
@@ -3153,19 +3157,23 @@ const TANTIVY_INDEX_VERSION: &str = "0.26.2";
 /// the documents the index stores, which is the text every semantic chunk key is computed
 /// from. Version 1: the text is split on `\n`; every line becomes one document, a blank one
 /// included, whose `text` is [`normalize_text_for_indexing`] of it; and a line that starts
-/// with `<h` opens a new section and belongs to it.
+/// with `<h` opens a new section and belongs to it. Version 2: sup/sub tags separate words
+/// ([`crate::hebrew_query::tag_breaks_word`]).
 ///
 /// Declared to the semantic sidecar as `text.line_text_version`, the half of a vector set's
 /// identity that only this crate can know. A change to any of the four — another split, a
 /// normalization that keeps or drops something else, another rule for sections — changes
 /// the text a line's key is computed from, so it is a new version, even where the schema
 /// does not change.
-pub(crate) const LINE_TEXT_VERSION: u32 = 1;
+/// Version 3: transparent formatting around or inside a hanging letter is ignored.
+/// Version 4: that context also ignores bidi/zero-width controls, CGJ and varika;
+/// attached marks never stand in for a missing preceding base letter.
+pub(crate) const LINE_TEXT_VERSION: u32 = 4;
 
 /// תקרת אורך טוקן (בבייטים של UTF-8) לכל האנליזטורים — אינדוקס ושאילתה
 /// כאחד. 128 בייט ≈ 64 אותיות עבריות: פי כמה מכל מילה לגיטימית (כולל
 /// גרשיים וניקוד), ומתחת לכל ריצת-זבל אמיתית (base64 שזלג לקורפוס).
-const MAX_TOKEN_BYTES: usize = 128;
+pub(crate) const MAX_TOKEN_BYTES: usize = 128;
 
 /// Upper bound on distinct dictionary terms collected for highlighting an
 /// advanced (regex) query. Bounds work when a pattern (e.g. partial match)
@@ -4267,14 +4275,31 @@ fn check_legacy_tantivy_metadata(index_path: &Path, metadata_path: PathBuf) -> I
     };
 
     if let Some(version) = readable_schema_version(&tantivy_metadata) {
+        // Versions 7 through 10 have the same fields, but different text recipes.
+        if !tantivy_metadata
+            .get("segments")
+            .and_then(JsonValue::as_array)
+            .is_some_and(Vec::is_empty)
+        {
+            return compatibility(
+                false,
+                "rebuild_required",
+                None,
+                metadata_path,
+                Some(
+                    "otzaria metadata is missing: the text recipe of existing segments is unknown"
+                        .to_string(),
+                ),
+            );
+        }
         return compatibility(
             true,
             "legacy_compatible",
             Some(version),
             metadata_path,
             Some(format!(
-                "otzaria metadata is missing, but Tantivy schema matches the engine's schema \
-                 version {version}"
+                "otzaria metadata is missing, but the index has no segments and its Tantivy \
+                 schema matches the engine's schema version {version}"
             )),
         );
     }
@@ -18663,6 +18688,55 @@ mod tests {
     }
 
     #[test]
+    fn committed_terms_without_a_sidecar_require_rebuild_and_are_not_stamped() {
+        for version in [7, 8, 9, INDEX_SCHEMA_VERSION] {
+            let (mut engine, dir) = make_engine();
+            add(&mut engine, 1, "מ<sup>נ</sup>שה", "/books/a.txt");
+            engine.commit().unwrap();
+            drop(engine);
+            write_metadata(&dir, &index_metadata(version, None));
+            fs::remove_file(index_metadata_path(dir.path())).unwrap();
+            let meta_path = dir.path().join("meta.json");
+            let before = fs::read(&meta_path).unwrap();
+
+            let compatibility = check_index_compatibility(dir_path_string(&dir));
+            assert!(!compatibility.compatible, "{version}");
+            assert_eq!(compatibility.status, "rebuild_required", "{version}");
+            assert_eq!(compatibility.found_schema_version, None, "{version}");
+            assert!(compatibility.reason.unwrap().contains("recipe"));
+            ensure_current_index_metadata(dir.path(), false).unwrap();
+            let reopened = SearchEngine::new(dir.path().to_str().unwrap());
+            assert!(!index_metadata_path(dir.path()).exists(), "{version}");
+            assert_eq!(fs::read(&meta_path).unwrap(), before, "{version}");
+            assert_eq!(reopened.index_reader.searcher().num_docs(), 1);
+        }
+    }
+
+    #[test]
+    fn missing_sidecar_with_an_unknown_segment_inventory_is_not_empty() {
+        let (engine, dir) = make_engine();
+        drop(engine);
+        fs::remove_file(index_metadata_path(dir.path())).unwrap();
+        let meta_path = dir.path().join("meta.json");
+        let original: JsonValue = serde_json::from_slice(&fs::read(&meta_path).unwrap()).unwrap();
+        for segments in [None, Some(JsonValue::Null), Some(json!([{}]))] {
+            let mut metadata = original.clone();
+            match segments {
+                Some(segments) => metadata["segments"] = segments,
+                None => {
+                    metadata.as_object_mut().unwrap().remove("segments");
+                }
+            }
+            fs::write(&meta_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+            let compatibility = check_index_compatibility(dir_path_string(&dir));
+            assert!(!compatibility.compatible, "{metadata}");
+            assert_eq!(compatibility.status, "rebuild_required");
+            ensure_current_index_metadata(dir.path(), true).unwrap();
+            assert!(!index_metadata_path(dir.path()).exists());
+        }
+    }
+
+    #[test]
     fn old_sidecar_schema_requires_rebuild() {
         let dir = TempDir::new().unwrap();
         let mut metadata = current_index_metadata();
@@ -18830,9 +18904,9 @@ mod tests {
     ]"#;
 
     /// The version 5 fields versions 6 and 7 change, and how; every other version 5 field is
-    /// unchanged. No other version is one this engine reads.
+    /// unchanged, and version 10 has the fields of 7. No other version is one this engine reads.
     #[test]
-    fn version_7_is_version_5_with_its_disk_savings_and_stamps() {
+    fn version_10_is_version_5_with_its_disk_savings_and_stamps() {
         let released: Schema = serde_json::from_str(RELEASED_VERSION_5_SCHEMA).unwrap();
         let current = current_schema();
         assert_eq!(
@@ -18964,6 +19038,20 @@ mod tests {
         }
     }
 
+    /// Old text recipes keep the same fields, so their declared version requires rebuilding.
+    #[test]
+    fn previous_text_recipe_versions_require_rebuilding_with_their_sidecars() {
+        for version in [7, 8, 9] {
+            let fields = serde_json::to_value(current_schema()).unwrap();
+            let dir = index_of_schema(fields, Some(version));
+            let compatibility = check_index_compatibility(dir_path_string(&dir));
+            assert!(!compatibility.compatible, "{version}");
+            assert_eq!(compatibility.status, "rebuild_required");
+            assert_eq!(compatibility.found_schema_version, Some(version));
+            assert_eq!(compatibility.required_schema_version, 10);
+        }
+    }
+
     /// An empty index of the schema `fields` (a `meta.json` schema array), with the metadata
     /// of `version` when one is given.
     fn index_of_schema(fields: JsonValue, version: Option<u32>) -> TempDir {
@@ -19077,7 +19165,7 @@ mod tests {
             let mut metadata = index_metadata(
                 INDEX_SCHEMA_VERSION,
                 Some(ChunkKeyRecipe {
-                    line_text_version: 1,
+                    line_text_version: LINE_TEXT_VERSION,
                     key_version: 1,
                     chunking_identity: identity,
                 }),
@@ -19720,6 +19808,222 @@ mod tests {
                 .replace("</font>", "");
             assert!(plain.contains("המורים כי"), "stored text: {plain}");
         }
+    }
+
+    #[test]
+    fn sup_marker_keeps_neighbouring_words_searchable() {
+        let lines = [
+            "תורה<sup>30</sup> המשך",
+            "תורה.<sup>30</sup> המשך",
+            "תורה<sup>א</sup> מסוף",
+            "תורה<sub>30</sub> המשך",
+            "גוף <sup class=\"footnote-marker\">א</sup><i class=\"footnote\">הרי זה</i> סוף",
+            "יְהוֹנָתָן בֶּן־גֵּרְשֹׁם בֶּן־מְ<sup>נַ</sup>שֶּׁה",
+        ];
+        let (mut engine, _dir) = make_engine();
+        engine
+            .add_text_book_placed(
+                "הערות".to_string(),
+                "/root".to_string(),
+                "/books/notes.txt".to_string(),
+                1,
+                DEFAULT_GENERATION_ORDER,
+                lines.join("\n"),
+                None,
+                TextStorage::InIndex,
+                None,
+            )
+            .unwrap();
+        engine.commit().unwrap();
+
+        let segments = |results: Vec<SearchResult>| {
+            let mut segments: Vec<u64> = results.iter().map(|r| r.segment).collect();
+            segments.sort_unstable();
+            segments
+        };
+        let exact = |query: &str| {
+            let q = query.to_string();
+            let found = segments(
+                engine
+                    .search_exact(
+                        q.clone(),
+                        vec![],
+                        10,
+                        0,
+                        ResultsOrder::Catalogue,
+                        false,
+                        false,
+                        None,
+                        None,
+                    )
+                    .unwrap(),
+            );
+            let page = engine
+                .search_and_count_exact(
+                    q.clone(),
+                    vec![],
+                    10,
+                    0,
+                    ResultsOrder::Catalogue,
+                    false,
+                    false,
+                    None,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(segments(page.results), found, "{query}");
+            assert_eq!(page.total_count as usize, found.len(), "{query}");
+            let count = engine
+                .count_exact(q.clone(), vec![], false, false, None)
+                .unwrap();
+            assert_eq!(count as usize, found.len(), "{query}");
+            let by_book = engine
+                .count_by_book_exact(q, vec![], false, false, None)
+                .unwrap();
+            assert_eq!(
+                by_book.values().sum::<u32>() as usize,
+                found.len(),
+                "{query}"
+            );
+            found
+        };
+        let fuzzy = |query: &str, distance: u8| {
+            let q = query.to_string();
+            let found = segments(
+                engine
+                    .search_fuzzy(
+                        q.clone(),
+                        vec![],
+                        10,
+                        0,
+                        distance,
+                        ResultsOrder::Catalogue,
+                        false,
+                        false,
+                        None,
+                        None,
+                    )
+                    .unwrap(),
+            );
+            let page = engine
+                .search_and_count_fuzzy(
+                    q.clone(),
+                    vec![],
+                    10,
+                    0,
+                    distance,
+                    ResultsOrder::Catalogue,
+                    false,
+                    false,
+                    None,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(segments(page.results), found, "{query}");
+            assert_eq!(page.total_count as usize, found.len(), "{query}");
+            let count = engine
+                .count_fuzzy(q.clone(), vec![], distance, false, false, None)
+                .unwrap();
+            assert_eq!(count as usize, found.len(), "{query}");
+            let by_book = engine
+                .count_by_book_fuzzy(q, vec![], distance, false, false, None)
+                .unwrap();
+            assert_eq!(
+                by_book.values().sum::<u32>() as usize,
+                found.len(),
+                "{query}"
+            );
+            found
+        };
+        let raw = |term: &str| {
+            let terms = vec![term.to_string()];
+            let found = segments(
+                engine
+                    .search(
+                        terms.clone(),
+                        vec![],
+                        10,
+                        0,
+                        0,
+                        100,
+                        ResultsOrder::Catalogue,
+                        None,
+                        None,
+                    )
+                    .unwrap(),
+            );
+            let page = engine
+                .search_and_count(
+                    terms.clone(),
+                    vec![],
+                    10,
+                    0,
+                    0,
+                    100,
+                    ResultsOrder::Catalogue,
+                    None,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(segments(page.results), found, "{term}");
+            assert_eq!(page.total_count as usize, found.len(), "{term}");
+            assert_eq!(
+                engine.count(terms.clone(), &[], 0, 100).unwrap() as usize,
+                found.len()
+            );
+            let by_book = engine.count_by_book(terms, vec![], 0, 100).unwrap();
+            assert_eq!(
+                by_book.values().sum::<u32>() as usize,
+                found.len(),
+                "{term}"
+            );
+            found
+        };
+
+        assert_eq!(exact("תורה"), [0, 1, 2, 3]);
+        assert_eq!(raw("תורה"), [0, 1, 2, 3]);
+        assert_eq!(fuzzy("תורה", 1), [0, 1, 2, 3]);
+        assert_eq!(exact("הרי"), [4]);
+        assert_eq!(raw("הרי"), [4]);
+        assert!(exact("אהרי").is_empty());
+        assert!(raw("אהרי").is_empty());
+        assert!(fuzzy("אהרן", 1).is_empty());
+        // The marker is a word of its own, merged with neither neighbour.
+        assert_eq!(exact("30"), [0, 1, 3]);
+        assert_eq!(exact("תורה 30 המשך"), [0, 1, 3]);
+        assert!(exact("תורה30").is_empty());
+        assert!(exact("30המשך").is_empty());
+        // A hanging letter stays inside its word.
+        assert_eq!(exact("מנשה"), [5]);
+        assert_eq!(fuzzy("מנשה", 1), [5]);
+
+        let text = |query: &str| {
+            engine
+                .search_exact(
+                    query.to_string(),
+                    vec![],
+                    10,
+                    0,
+                    ResultsOrder::Catalogue,
+                    false,
+                    false,
+                    None,
+                    None,
+                )
+                .unwrap()
+                .remove(0)
+                .text
+        };
+        assert!(
+            text("הרי").contains("א <font color=red>הרי</font> זה"),
+            "{}",
+            text("הרי")
+        );
+        assert!(
+            text("גוף").contains("<font color=red>גוף</font> א הרי"),
+            "{}",
+            text("גוף")
+        );
     }
 
     #[test]
@@ -26170,6 +26474,209 @@ mod tests {
             )
             .unwrap();
         assert!(exact_only.is_empty());
+    }
+
+    #[test]
+    fn vocalized_mark_order_is_canonical() {
+        // דגש (ccc 21) לפני קמץ (ccc 18) שקול קנונית לקמץ לפני דגש.
+        const DAGESH_FIRST: &str = "ב\u{05BC}\u{05B8}רָא";
+        const QAMATS_FIRST: &str = "ב\u{05B8}\u{05BC}רָא";
+        // מונח (ccc 220) לפני הדגש והקמץ.
+        const TAAM_FIRST: &str = "ב\u{05A3}\u{05BC}\u{05B8}רָא";
+        let lines = [
+            format!("{DAGESH_FIRST} אֱלֹהִים"),
+            format!("{QAMATS_FIRST} אֱלֹהִים"),
+            "\u{FB31}\u{05B8}רָא אֱלֹהִים".to_string(),
+            format!("{TAAM_FIRST} אֱלֹהִים"),
+            "ברא אלהים".to_string(),
+        ];
+        let (mut engine, _dir) = make_engine();
+        engine
+            .add_text_book_placed(
+                "ספר".to_string(),
+                "/x".to_string(),
+                "/books/order.txt".to_string(),
+                1,
+                DEFAULT_GENERATION_ORDER,
+                lines.join("\n"),
+                None,
+                TextStorage::InIndex,
+                None,
+            )
+            .unwrap();
+        engine.commit().unwrap();
+
+        let segments = |hits: Vec<SearchResult>| {
+            let mut segments: Vec<u64> = hits.iter().map(|h| h.segment).collect();
+            segments.sort();
+            segments
+        };
+        let exact = |query: &str, taamim: bool| {
+            engine
+                .search_exact(
+                    query.to_string(),
+                    vec![],
+                    20,
+                    0,
+                    ResultsOrder::Catalogue,
+                    true,
+                    taamim,
+                    None,
+                    None,
+                )
+                .unwrap()
+        };
+        let all_marked = vec![0, 1, 2, 3];
+        for query in [DAGESH_FIRST, QAMATS_FIRST, "\u{FB31}\u{05B8}רָא"] {
+            let hits = exact(query, false);
+            for hit in &hits {
+                let source = &lines[hit.segment as usize];
+                let word = source.split(' ').next().unwrap();
+                let word = hebrew_query::fold_presentation_forms(word);
+                assert!(
+                    hit.text.contains(&format!("<font color=red>{word}</font>")),
+                    "query {query:?}, text: {}",
+                    hit.text
+                );
+            }
+            assert_eq!(segments(hits), all_marked, "query {query:?}");
+            assert_eq!(
+                segments(exact(&format!("{query} אֱלֹהִים"), false)),
+                all_marked,
+                "phrase {query:?}"
+            );
+            assert_eq!(
+                engine
+                    .count_exact(query.to_string(), vec![], true, false, None)
+                    .unwrap(),
+                4,
+                "count {query:?}"
+            );
+            let fuzzy = engine
+                .search_fuzzy(
+                    query.to_string(),
+                    vec![],
+                    20,
+                    0,
+                    0,
+                    ResultsOrder::Catalogue,
+                    true,
+                    false,
+                    None,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(segments(fuzzy), all_marked, "fuzzy {query:?}");
+            let advanced = search_advanced_default(
+                &engine,
+                query.to_string(),
+                vec![],
+                20,
+                0,
+                0,
+                HashMap::new(),
+                HashMap::new(),
+                HashMap::new(),
+                ResultsOrder::Catalogue,
+                true,
+                false,
+                SearchScope::WordDistance,
+            )
+            .unwrap();
+            assert_eq!(segments(advanced), all_marked, "advanced {query:?}");
+        }
+        // עם טעמים: המונח שהוקלד נדרש בכל סדר שבו הוקלד.
+        for query in [
+            TAAM_FIRST,
+            "ב\u{05BC}\u{05A3}\u{05B8}רָא",
+            "ב\u{05B8}\u{05BC}\u{05A3}רָא",
+        ] {
+            assert_eq!(segments(exact(query, true)), vec![3], "taamim {query:?}");
+        }
+        assert_eq!(segments(exact(QAMATS_FIRST, true)), all_marked);
+        // התוצאה מציגה את השורה בסדר הסימנים שבמקור.
+        let hits = exact(DAGESH_FIRST, false);
+        let qamats_line = hits.iter().find(|h| h.segment == 1).unwrap();
+        assert!(
+            qamats_line.text.contains(QAMATS_FIRST),
+            "{}",
+            qamats_line.text
+        );
+        assert!(
+            !qamats_line.text.contains(DAGESH_FIRST),
+            "{}",
+            qamats_line.text
+        );
+    }
+
+    #[test]
+    fn vocalized_search_ignores_cgj() {
+        // ירושלַ͏ִם as the library spells it: CGJ between the patah and the hiriq, after a
+        // meteg in one line and after a zaqef qatan on the lamed in the other.
+        const METEG: &str =
+            "י\u{05B0}ר\u{05BD}ו\u{05BC}ש\u{05B8}\u{05C1}ל\u{05B7}\u{034F}\u{05B4}ם";
+        const ZAQEF: &str =
+            "י\u{05B0}רו\u{05BC}ש\u{05B8}\u{05C1}ל\u{05B7}\u{0594}\u{034F}\u{05B4}ם";
+        const CITY: &str = "ע\u{05B4}יר";
+        let lines = [
+            format!("{METEG} {CITY}"),
+            format!("{ZAQEF} {CITY}"),
+            "ירושלים עיר".to_string(),
+        ];
+        let (mut engine, _dir) = make_engine();
+        engine
+            .add_text_book_placed(
+                "ספר".to_string(),
+                "/x".to_string(),
+                "/books/cgj.txt".to_string(),
+                1,
+                DEFAULT_GENERATION_ORDER,
+                lines.join("\n"),
+                None,
+                TextStorage::InIndex,
+                None,
+            )
+            .unwrap();
+        engine.commit().unwrap();
+
+        let exact = |query: String| {
+            let mut hits = engine
+                .search_exact(
+                    query,
+                    vec![],
+                    20,
+                    0,
+                    ResultsOrder::Catalogue,
+                    true,
+                    false,
+                    None,
+                    None,
+                )
+                .unwrap();
+            hits.sort_by_key(|h| h.segment);
+            hits
+        };
+        for query in [
+            "י\u{05B0}רו\u{05BC}ש\u{05B8}\u{05C1}ל\u{05B7}\u{05B4}ם",
+            "י\u{05B0}רו\u{05BC}ש\u{05B8}\u{05C1}ל\u{05B4}\u{05B7}ם",
+            "י\u{05B0}רו\u{05BC}ש\u{05B8}\u{05C1}ל\u{05B7}\u{034F}\u{05B4}ם",
+        ] {
+            let hits = exact(query.to_string());
+            let segments: Vec<u64> = hits.iter().map(|h| h.segment).collect();
+            assert_eq!(segments, [0, 1], "query {query:?}");
+            for (hit, word) in hits.iter().zip([METEG, ZAQEF]) {
+                assert!(
+                    hit.text.contains(&format!("<font color=red>{word}</font>")),
+                    "query {query:?}, text: {}",
+                    hit.text
+                );
+            }
+            let phrase: Vec<u64> = exact(format!("{query} {CITY}"))
+                .iter()
+                .map(|h| h.segment)
+                .collect();
+            assert_eq!(phrase, [0, 1], "phrase {query:?}");
+        }
     }
 
     // ── SearchScope: "באותה פסקה" / "תחת אותה כותרת" ─────────────────────

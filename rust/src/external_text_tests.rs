@@ -2291,8 +2291,8 @@ fn library_storage_needs_an_official_book_key() {
 }
 
 #[test]
-fn the_v5_and_v6_schemas_are_refused() {
-    for old in [5, 6] {
+fn the_v5_to_v9_schemas_are_refused() {
+    for old in [5, 6, 7, 8, 9] {
         let dir = TempDir::new().unwrap();
         drop(SearchEngine::new(dir.path().to_str().unwrap()));
         let meta = dir.path().join("otzaria_index_meta.json");
@@ -2300,7 +2300,7 @@ fn the_v5_and_v6_schemas_are_refused() {
         std::fs::write(
             &meta,
             raw.replace(
-                "\"schema_version\": 7",
+                "\"schema_version\": 10",
                 &format!("\"schema_version\": {old}"),
             ),
         )
@@ -2308,7 +2308,7 @@ fn the_v5_and_v6_schemas_are_refused() {
         let compat = check_index_compatibility(dir.path().to_string_lossy().into_owned());
         assert!(!compat.compatible, "{old}");
         assert_eq!(compat.status, "rebuild_required", "{old}");
-        assert_eq!(compat.required_schema_version, 7);
+        assert_eq!(compat.required_schema_version, 10);
     }
 }
 

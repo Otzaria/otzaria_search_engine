@@ -1739,6 +1739,7 @@ dependencies = [
  "tantivy",
  "tantivy-fst",
  "tempfile",
+ "unicode-normalization-alignments",
  "unicode-segmentation",
  "zstd",
 ]

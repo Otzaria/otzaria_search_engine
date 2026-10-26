@@ -10,7 +10,7 @@ use regex::{Regex, RegexBuilder};
 use tantivy::tokenizer::{TokenStream, Tokenizer};
 
 use crate::gap_phrase::{Proximity, WordWindows};
-use crate::hebrew_query::{fold_presentation_form, is_breaking_tag, is_word_mark};
+use crate::hebrew_query::{fold_presentation_form, is_word_mark, tag_breaks_word};
 use crate::hebrew_tokenizer::{is_geresh, is_gershayim, is_transparent, HebrewTokenizer};
 
 pub(crate) struct PreparedHighlightMatcher {
@@ -395,7 +395,7 @@ impl MappedText {
             if c == '<' && has_tag_end {
                 if let Some(close) = rest.find('>') {
                     let end = utf16 + rest[..=close].encode_utf16().count();
-                    if is_breaking_tag(&rest[1..close].chars().collect::<Vec<_>>()) {
+                    if tag_breaks_word(data, byte, byte + close) {
                         out.push(' ', utf16, end);
                     }
                     byte += close + 1;
@@ -710,6 +710,52 @@ mod tests {
         assert!(matcher("מילה", &[], 0)
             .find_matches("מי<br>לה", &[])
             .is_empty());
+    }
+
+    #[test]
+    fn script_tags_separate_words_and_keep_utf16_source_ranges() {
+        let data = "😀 גוף<sup class=\"footnote-marker\">א</sup><i>הרי</i> זה";
+        let units: Vec<u16> = data.encode_utf16().collect();
+        let source = |m: &Match| String::from_utf16(&units[m.start..m.end]).unwrap();
+        let found = matcher("הרי זה", &[], 0).find_matches(data, &[]);
+        assert_eq!(found.len(), 1);
+        assert_eq!(source(&found[0]), "הרי</i> זה");
+        let found = matcher("גוף", &[], 0).find_matches(data, &[]);
+        assert_eq!(found.len(), 1);
+        assert_eq!((found[0].start, source(&found[0])), (3, "גוף".to_string()));
+        assert!(matcher("אהרי", &[], 0).find_matches(data, &[]).is_empty());
+        // A hanging letter inside a word stays part of it.
+        let verse = "מְ<sup>נַ</sup>שֶּׁה";
+        let found = matcher("מנשה", &[], 0).find_matches(verse, &[]);
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            (found[0].start, found[0].end),
+            (0, verse.encode_utf16().count())
+        );
+    }
+
+    #[test]
+    fn hanging_letter_skips_transparent_tags_and_keeps_utf16_ranges() {
+        for word in [
+            "מ<b><sup>נ</sup></b>שה",
+            "מ<sup>נ</sup><b>שה</b>",
+            "מ<b><sub><i>נַ</i></sub></b>שה",
+            "מ\u{200F}<sup>נ</sup>שה",
+            "מ<sup>\u{200E}נ</sup>שה",
+            "מ<sup>נ\u{034F}</sup>\u{2069}שה",
+            "מ\u{2067}<b>\u{200E}<SUB>\u{034F}<i>נַ\u{2069}</i></SUB></b>\u{FEFF}שה",
+        ] {
+            let data = format!("😀 {word}");
+            let found = matcher("מנשה", &[], 0).find_matches(&data, &[]);
+            assert_eq!(found.len(), 1, "{data}");
+            assert_eq!(found[0].start, 3);
+            let units: Vec<u16> = data.encode_utf16().collect();
+            let source = String::from_utf16(&units[found[0].start..found[0].end]).unwrap();
+            assert_eq!(
+                source.trim_end_matches("</b>"),
+                word.trim_end_matches("</b>")
+            );
+        }
     }
 
     #[test]

@@ -83,6 +83,41 @@ Future<void> main() async {
       expect(regex.hasMatch('תדע<b>זרעך'), isFalse);
     });
 
+    test('תג sup הוא גבול מילה, ואות תלויה נשארת בתוך המילה', () {
+      // תוכן ה-sup (סימן הערה) הוא מילה משלו באינדוקס, ואינו נדבק לשכנותיו.
+      const note =
+          'גוף<sup class="footnote-marker">א</sup><i class="footnote">הרי זה</i>';
+      expect(_PreparedPattern(_pattern('הרי זה')).hasMatch(note), isTrue);
+      expect(_PreparedPattern(_pattern('אהרי')).hasMatch(note), isFalse);
+      expect(
+        _PreparedPattern(_pattern('מנשה')).hasMatch('מְ<sup>נַ</sup>שֶּׁה'),
+        isTrue,
+      );
+    });
+
+    test('תווי כיווניות סביב אות תלויה משמרים התאמה וטווחי UTF16', () {
+      final matcher = _PreparedPattern(_pattern('מנשה'));
+      for (final word in [
+        'מ\u200F<sup>נ</sup>שה',
+        'מ<sup>\u200Eנ</sup>שה',
+        'מ<sup>נ\u034F</sup>\u2069שה',
+        'מ\u2067<b>\u200E<SUB>\u034F<i>נַ\u2069</i></SUB></b>\uFEFFשה',
+      ]) {
+        final text = '😀 $word';
+        final matches = matcher.matches(text);
+        expect(matches, hasLength(1), reason: text);
+        expect(matches.single.start, 3);
+        expect(matches.single.end, text.length);
+      }
+      for (final text in [
+        'מ\u200F<sup class="footnote-marker">נ</sup>שה',
+        'מ\u200F<br><sup>נ</sup>שה',
+        'מ<sup>נ</sup>\u200F שה',
+      ]) {
+        expect(matcher.hasMatch(text), isFalse, reason: text);
+      }
+    });
+
     test('מרווח מותאם מאפשר מילים ביניים עד הגבול', () {
       final hl = _pattern('כל היום', spacing: {'0-1': '1'});
       final regex = _PreparedPattern(hl);
