@@ -468,8 +468,13 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// Stops every lexical call tagged with `request_id` (the streams, counts and
   /// per-book counts that take `cancel_request_id`), running or still to come.
   /// A cancelled count fails with [`LexicalSearchCancelled::MESSAGE`]; a
-  /// cancelled stream closes without another event. Returns at once.
-  void cancelLexicalSearch({required int requestId});
+  /// cancelled stream closes without another event. Await the returned future
+  /// before starting a call that must observe the cancel.
+  ///
+  /// Deliberately **not** `#[frb(sync)]`: the call takes the engine lock, which
+  /// `commit`/`optimize` hold for minutes; a sync binding would block the
+  /// calling isolate that long.
+  Future<void> cancelLexicalSearch({required int requestId});
 
   /// Delete all documents. Does not commit.
   Future<void> clear();

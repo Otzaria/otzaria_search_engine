@@ -69,7 +69,7 @@ Future<void> main() async {
     test(
       'page cancellation crosses FFI and leaves other requests usable',
       () async {
-        engine.cancelLexicalSearch(requestId: 76);
+        await engine.cancelLexicalSearch(requestId: 76);
         await expectLater(
           page(requestId: 76),
           throwsA(predicate((e) => e.toString().contains('cancelled'))),

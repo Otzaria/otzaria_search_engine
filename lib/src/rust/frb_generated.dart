@@ -184,7 +184,7 @@ abstract class RustLibApi extends BaseApi {
     required SearchEngine that,
   });
 
-  void crateApiSearchEngineSearchEngineCancelLexicalSearch({
+  Future<void> crateApiSearchEngineSearchEngineCancelLexicalSearch({
     required SearchEngine that,
     required int requestId,
   });
@@ -2014,20 +2014,25 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  void crateApiSearchEngineSearchEngineCancelLexicalSearch({
+  Future<void> crateApiSearchEngineSearchEngineCancelLexicalSearch({
     required SearchEngine that,
     required int requestId,
   }) {
-    return handler.executeSync(
-      SyncTask(
-        callFfi: () {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
             that,
             serializer,
           );
           sse_encode_u_32(requestId, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 17)!;
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 17,
+            port: port_,
+          );
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_unit,
@@ -16272,8 +16277,13 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// Stops every lexical call tagged with `request_id` (the streams, counts and
   /// per-book counts that take `cancel_request_id`), running or still to come.
   /// A cancelled count fails with [`LexicalSearchCancelled::MESSAGE`]; a
-  /// cancelled stream closes without another event. Returns at once.
-  void cancelLexicalSearch({required int requestId}) =>
+  /// cancelled stream closes without another event. Await the returned future
+  /// before starting a call that must observe the cancel.
+  ///
+  /// Deliberately **not** `#[frb(sync)]`: the call takes the engine lock, which
+  /// `commit`/`optimize` hold for minutes; a sync binding would block the
+  /// calling isolate that long.
+  Future<void> cancelLexicalSearch({required int requestId}) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineCancelLexicalSearch(
         that: this,
         requestId: requestId,
