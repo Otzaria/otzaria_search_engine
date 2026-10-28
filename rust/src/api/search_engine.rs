@@ -340,11 +340,11 @@ fn pdf_pages_from_bytes(
     };
     page_indexes
         .iter()
-        .zip(ends.chunks_exact(2))
-        .map(|(&page_index, pair)| {
+        .zip(ends.as_chunks::<2>().0)
+        .map(|(&page_index, &[reference_end, text_end])| {
             Ok(PdfPageInput {
-                reference: take(pair[0])?,
-                text: take(pair[1])?,
+                reference: take(reference_end)?,
+                text: take(text_end)?,
                 page_index,
             })
         })
