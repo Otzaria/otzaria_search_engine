@@ -11,9 +11,12 @@ import 'api/diagnostic_test.dart';
 import 'api/focused_benchmark.dart';
 import 'api/library_indexing.dart';
 import 'api/search_engine.dart';
+
 import 'dart:async';
 import 'dart:convert';
+
 import 'frb_generated.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_web.dart';
 
 abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
@@ -437,6 +440,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<PdfPageInput> dco_decode_list_pdf_page_input(dynamic raw);
+
+  @protected
+  List<int> dco_decode_list_prim_u_32_loose(dynamic raw);
 
   @protected
   Uint32List dco_decode_list_prim_u_32_strict(dynamic raw);
@@ -1226,6 +1232,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<PdfPageInput> sse_decode_list_pdf_page_input(
     SseDeserializer deserializer,
   );
+
+  @protected
+  List<int> sse_decode_list_prim_u_32_loose(SseDeserializer deserializer);
 
   @protected
   Uint32List sse_decode_list_prim_u_32_strict(SseDeserializer deserializer);
@@ -2219,6 +2228,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_pdf_page_input(
     List<PdfPageInput> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_prim_u_32_loose(
+    List<int> self,
     SseSerializer serializer,
   );
 

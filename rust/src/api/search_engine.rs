@@ -317,6 +317,40 @@ pub struct PdfPageInput {
     pub page_index: u32,
 }
 
+/// Unpacks [`SearchEngine::add_pdf_book_bytes`]'s buffer.
+fn pdf_pages_from_bytes(
+    bytes: &[u8],
+    ends: &[u32],
+    page_indexes: &[u32],
+) -> Result<Vec<PdfPageInput>> {
+    anyhow::ensure!(
+        ends.len() == page_indexes.len() * 2,
+        "add_pdf_book_bytes: {} ends for {} pages",
+        ends.len(),
+        page_indexes.len()
+    );
+    let mut start = 0usize;
+    let mut take = |end: u32| -> Result<String> {
+        let end = end as usize;
+        let slice = bytes
+            .get(start..end)
+            .context("add_pdf_book_bytes: ends out of order or past the buffer")?;
+        start = end;
+        Ok(String::from_utf8_lossy(slice).into_owned())
+    };
+    page_indexes
+        .iter()
+        .zip(ends.chunks_exact(2))
+        .map(|(&page_index, pair)| {
+            Ok(PdfPageInput {
+                reference: take(pair[0])?,
+                text: take(pair[1])?,
+                page_index,
+            })
+        })
+        .collect()
+}
+
 pub struct HighlightConfig {
     pub highlight_prefix: String,
     pub highlight_postfix: String,
@@ -9118,6 +9152,31 @@ impl SearchEngine {
             started.elapsed()
         );
         Ok(ordinal as u32)
+    }
+
+    /// [`Self::add_pdf_book`] with the pages packed into one UTF-8 buffer:
+    /// page `i` is `ends[2i]` (end of its reference) and `ends[2i + 1]` (end of
+    /// its text), each slice starting where the previous one ended, and its
+    /// index is `page_indexes[i]`.
+    ///
+    /// The bridge decodes arguments on the caller's thread, and decoding a large
+    /// `Vec<PdfPageInput>` there froze the app's UI (Otzaria/otzaria#3443). A
+    /// buffer the app packs off its UI isolate crosses as a copy; UTF-8 is
+    /// checked here, on the worker. Invalid UTF-8 is replaced, never an error.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_pdf_book_bytes(
+        &mut self,
+        title: String,
+        topics: String,
+        file_path: String,
+        bytes: Vec<u8>,
+        ends: Vec<u32>,
+        page_indexes: Vec<u32>,
+        extra_facets: Option<Vec<String>>,
+    ) -> Result<u32> {
+        let pages = pdf_pages_from_bytes(&bytes, &ends, &page_indexes)?;
+        drop(bytes);
+        self.add_pdf_book(title, topics, file_path, pages, extra_facets)
     }
 
     /// Delete then re-insert a single line, by the id [`Self::add_document`] composes for
@@ -20542,6 +20601,34 @@ mod tests {
         // ל-PDF אין טביעת אצבע — contentHash נחתם כ-0 (לא נרשם).
         let fingerprints = engine.get_book_fingerprints().unwrap();
         assert_eq!(fingerprints.get("C:/books/sefer.pdf"), Some(&0u64));
+    }
+
+    #[test]
+    fn pdf_pages_from_bytes_unpacks_references_and_texts() {
+        let bytes = "ספר, עמוד 1שורה\nשנייהעמוד 2בראשית".as_bytes();
+        let ref1 = "ספר, עמוד 1".len() as u32;
+        let text1 = ref1 + "שורה\nשנייה".len() as u32;
+        let ref2 = text1 + "עמוד 2".len() as u32;
+        let ends = [ref1, text1, ref2, bytes.len() as u32];
+        let pages = pdf_pages_from_bytes(bytes, &ends, &[3, 7]).unwrap();
+        assert_eq!(pages.len(), 2);
+        assert_eq!(pages[0].reference, "ספר, עמוד 1");
+        assert_eq!(pages[0].text, "שורה\nשנייה");
+        assert_eq!(pages[0].page_index, 3);
+        assert_eq!(pages[1].reference, "עמוד 2");
+        assert_eq!(pages[1].text, "בראשית");
+        assert_eq!(pages[1].page_index, 7);
+
+        // A page with an empty reference and text is still a page.
+        let pages = pdf_pages_from_bytes(b"", &[0, 0], &[0]).unwrap();
+        assert_eq!(
+            (pages[0].reference.as_str(), pages[0].text.as_str()),
+            ("", "")
+        );
+
+        assert!(pdf_pages_from_bytes(bytes, &ends[..3], &[3, 7]).is_err());
+        assert!(pdf_pages_from_bytes(bytes, &[ref1, 1], &[0]).is_err());
+        assert!(pdf_pages_from_bytes(bytes, &[ref1, 9999], &[0]).is_err());
     }
 
     #[test]

@@ -744,6 +744,11 @@ Future<void> configureUserBooksLineSource({String? dbPath}); // personal books; 
 - `DocumentInput.textStorage` (optional) accepts only `null` or `inIndex`:
   `addDocumentsBatch` / `upsertDocumentsBatch` refuse a `libraryDb` document, since a
   ready-made document cannot be tied to its row. `addPdfBook` always stores its text.
+- `addPdfBookBytes` is `addPdfBook` over one UTF-8 buffer: for page `i`, `ends[2i]` ends
+  its reference and `ends[2i + 1]` its text, each slice starting where the previous ended,
+  and `pageIndexes[i]` is its index. The bridge encodes and decodes arguments on the
+  calling thread, so a large `List<PdfPageInput>` blocks the UI; pack the buffer off the
+  UI isolate and pass it here. Invalid UTF-8 is replaced, never an error.
 - Each library line carries `lineCheck`, a CRC-32 of its exact text (spacing, punctuation,
   nikud and markup included). Every library row of one result window is read in a single
   read transaction and must match its `lineCheck`, and its `lineHash` when that is not 0;
@@ -942,7 +947,7 @@ Documents match a facet query if their topic starts with any of the specified fa
 ### Dimension Facets (author / era / base)
 
 Alongside the category path, a document can carry extra facet values supplied at
-indexing time (`extraFacets` on `addTextBook`/`addTextBookBytes`/`addPdfBook`/
+indexing time (`extraFacets` on `addTextBook`/`addTextBookBytes`/`addPdfBook`/`addPdfBookBytes`/
 `addDocument`/`upsertDocument`, or `DocumentInput.extraFacets`). Three English
 roots are reserved as *filter dimensions* (they cannot collide with Hebrew
 category names): `/author/<name>`, `/era/<period>`, `/base` (foundational books).
