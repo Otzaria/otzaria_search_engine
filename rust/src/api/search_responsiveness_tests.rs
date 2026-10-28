@@ -83,6 +83,75 @@ fn exact(
 }
 
 #[test]
+fn lexical_handle_cancels_under_the_bridge_engine_write_lock() {
+    let (engine, _dir) = fixture();
+    let handle = engine.lexical_cancellation_handle();
+    let engine = flutter_rust_bridge::RustAutoOpaqueNom::new(engine);
+    let handle = flutter_rust_bridge::RustAutoOpaqueNom::new(handle);
+    let writer = engine.blocking_write();
+    handle.blocking_read().cancel(7);
+    assert!(writer.lexical_cancellations.begin(Some(7)).check().is_err());
+    drop(writer);
+    let engine = engine.blocking_read();
+    assert!(exact(&engine, 0, None, Some(7)).is_err());
+    assert_eq!(exact(&engine, 0, None, Some(8)).unwrap().len(), 10);
+}
+
+#[test]
+fn lexical_handle_retains_only_its_registry_and_never_cancels_another_engine() {
+    let (engine, _dir) = fixture();
+    let engine = Arc::new(engine);
+    let weak = Arc::downgrade(&engine);
+    let handle = engine.lexical_cancellation_handle();
+    drop(engine);
+    assert!(weak.upgrade().is_none());
+    handle.cancel(7);
+    let (other, _other_dir) = fixture();
+    assert_eq!(exact(&other, 0, None, Some(7)).unwrap().len(), 10);
+}
+
+#[test]
+#[cfg(not(target_family = "wasm"))]
+fn lexical_handle_interrupts_requests_with_every_bridge_worker_busy() {
+    use flutter_rust_bridge::BaseThreadPool;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    let (engine, _dir) = fixture();
+    let engine = Arc::new(engine);
+    let handle = engine.lexical_cancellation_handle();
+    let pool = crate::frb_generated::FLUTTER_RUST_BRIDGE_HANDLER.thread_pool();
+    let workers = pool.0.max_count();
+    let start = Arc::new(std::sync::Barrier::new(workers + 1));
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let (finished_tx, finished_rx) = mpsc::channel();
+    for _ in 0..workers {
+        let engine = Arc::clone(&engine);
+        let ready_tx = ready_tx.clone();
+        let finished_tx = finished_tx.clone();
+        let start = Arc::clone(&start);
+        pool.execute(move || {
+            let request = engine.lexical_cancellations.begin(Some(7));
+            ready_tx.send(()).unwrap();
+            start.wait();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !request.is_cancelled() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            finished_tx.send(request.is_cancelled()).unwrap();
+        });
+    }
+    for _ in 0..workers {
+        ready_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    }
+    start.wait();
+    handle.cancel(7);
+    for _ in 0..workers {
+        assert!(finished_rx.recv_timeout(Duration::from_secs(10)).unwrap());
+    }
+}
+
+#[test]
 fn non_streamed_pages_and_counts_respect_cancellation_and_leave_other_requests_usable() {
     let (engine, _dir) = fixture();
     engine.cancel_lexical_search(7);

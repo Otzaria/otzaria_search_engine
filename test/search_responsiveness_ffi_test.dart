@@ -79,6 +79,86 @@ Future<void> main() async {
       },
     );
 
+    test(
+      'a separate handle cancels requests synchronously across FFI',
+      () async {
+        final handle = await engine.lexicalCancellationHandle();
+        final otherHandle = await engine.lexicalCancellationHandle();
+        try {
+          handle.cancel(requestId: 78);
+          await expectLater(
+            page(requestId: 78),
+            throwsA(predicate((e) => e.toString().contains('cancelled'))),
+          );
+          handle.dispose();
+          otherHandle.cancel(requestId: 79);
+          await expectLater(
+            page(requestId: 79),
+            throwsA(predicate((e) => e.toString().contains('cancelled'))),
+          );
+          expect(await page(requestId: 80), hasLength(10));
+        } finally {
+          if (!handle.isDisposed) handle.dispose();
+          otherHandle.dispose();
+        }
+      },
+    );
+
+    test(
+      'dictionary loading and presence checks round-trip asynchronously',
+      () async {
+        final missing = '${directory.path}/missing';
+        expect(await engine.setMagicDictionaryPath(path: missing), isFalse);
+        expect(await engine.hasMagicDictionary(), isFalse);
+
+        final translation = File('${directory.path}/translation.json');
+        await translation.writeAsString('{"test": [{"איתא": "יש"}]}');
+        expect(
+          await engine.setTranslationDictionaryPath(path: translation.path),
+          isTrue,
+        );
+        expect(await engine.hasTranslationDictionary(), isTrue);
+        expect(
+          await engine.setTranslationDictionaryPath(path: missing),
+          isFalse,
+        );
+        expect(await engine.hasTranslationDictionary(), isFalse);
+
+        final acronyms = File('${directory.path}/acronyms.json');
+        await acronyms.writeAsString('{"רמבם": ["רבי משה בן מיימון"]}');
+        expect(
+          await engine.setAcronymsDictionaryPath(path: acronyms.path),
+          isTrue,
+        );
+        expect(await engine.hasAcronymsDictionary(), isTrue);
+        expect(await engine.setAcronymsDictionaryPath(path: missing), isFalse);
+        expect(await engine.hasAcronymsDictionary(), isFalse);
+      },
+    );
+
+    test(
+      'book order revision refreshes asynchronously across engines',
+      () async {
+        final reader = await SearchEngine.newInstance(path: directory.path);
+        try {
+          expect(await reader.bookOrderRevision(), BigInt.zero);
+          final revision = await engine.setBookOrder(
+            entries: [
+              BookOrderEntry(
+                filePath: '/fixture.txt',
+                catalogueOrder: 1,
+                generationOrder: 1,
+              ),
+            ],
+          );
+          expect(revision, isNot(BigInt.zero));
+          expect(await reader.bookOrderRevision(), revision);
+        } finally {
+          reader.dispose();
+        }
+      },
+    );
+
     test('memory release preserves snapshot and searchable results', () async {
       final snapshot = await engine.searchSnapshot();
       final ids = (await page()).map((r) => r.id).toList();

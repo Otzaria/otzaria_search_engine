@@ -4780,7 +4780,7 @@ pub struct SearchEngine {
     dictionary_epoch: u64,
     memory_epoch: std::sync::atomic::AtomicU64,
     /// Request ids of running lexical searches: see [`crate::lexical_cancellation`].
-    lexical_cancellations: LexicalCancellations,
+    lexical_cancellations: Arc<LexicalCancellations>,
     /// Which book holds which number (see [`crate::book_order`]): read from the index when
     /// first needed.
     book_numbers: Mutex<Option<BookNumbers>>,
@@ -4977,7 +4977,7 @@ impl SearchEngine {
             grouped_cache: GroupCache::default(),
             dictionary_epoch: book_order::next_epoch(),
             memory_epoch: std::sync::atomic::AtomicU64::default(),
-            lexical_cancellations: LexicalCancellations::default(),
+            lexical_cancellations: Arc::default(),
             book_numbers: Mutex::new(None),
             numbers_stale: AtomicBool::new(true),
             book_order: RwLock::new(BookOrderState::read(Path::new(path))),
@@ -5046,7 +5046,7 @@ impl SearchEngine {
             grouped_cache: GroupCache::default(),
             dictionary_epoch: book_order::next_epoch(),
             memory_epoch: std::sync::atomic::AtomicU64::default(),
-            lexical_cancellations: LexicalCancellations::default(),
+            lexical_cancellations: Arc::default(),
             book_numbers: Mutex::new(None),
             numbers_stale: AtomicBool::new(true),
             book_order: RwLock::new(BookOrderState::read(path)),
@@ -5443,7 +5443,8 @@ impl SearchEngine {
     /// keeps its existing fuzzy behaviour (no error is surfaced, so the app can
     /// call this unconditionally at startup). Does **not** affect exact or
     /// advanced search.
-    #[frb(sync)]
+    /// Dictionary bindings are asynchronous: loading does disk I/O, and even
+    /// status queries can wait for an indexing operation to release the engine.
     pub fn set_magic_dictionary_path(&mut self, path: String) -> bool {
         self.dictionary_epoch = book_order::next_epoch();
         self.highlight_cache.clear();
@@ -5467,7 +5468,6 @@ impl SearchEngine {
 
     /// Whether a lexical dictionary is currently loaded (i.e. approximate search
     /// will use morphological expansion).
-    #[frb(sync)]
     pub fn has_magic_dictionary(&self) -> bool {
         self.magic_dict.is_some()
     }
@@ -5476,7 +5476,6 @@ impl SearchEngine {
     /// עבור אפשרות "תרגום ארמי" בחיפוש המתקדם. מחזיר `true` אם הקובץ נטען;
     /// `false` אם חסר/פגום — ואז האפשרות לא מרחיבה דבר (אין שגיאה כלפי
     /// האפליקציה, שיכולה לקרוא לזה ללא תנאי באתחול).
-    #[frb(sync)]
     pub fn set_translation_dictionary_path(&mut self, path: String) -> bool {
         self.dictionary_epoch = book_order::next_epoch();
         self.highlight_cache.clear();
@@ -5500,7 +5499,6 @@ impl SearchEngine {
     }
 
     /// האם מילון תרגום ארמי-עברי טעון כרגע.
-    #[frb(sync)]
     pub fn has_translation_dictionary(&self) -> bool {
         self.translation_dict.is_some()
     }
@@ -5509,7 +5507,6 @@ impl SearchEngine {
     /// אפשרות "ראשי תיבות" בחיפוש המתקדם. מחזיר `true` אם הקובץ נטען;
     /// `false` אם חסר/פגום — ואז האפשרות לא מרחיבה דבר (אין שגיאה כלפי
     /// האפליקציה, שיכולה לקרוא לזה ללא תנאי באתחול).
-    #[frb(sync)]
     pub fn set_acronyms_dictionary_path(&mut self, path: String) -> bool {
         self.dictionary_epoch = book_order::next_epoch();
         self.highlight_cache.clear();
@@ -5533,7 +5530,6 @@ impl SearchEngine {
     }
 
     /// האם מילון ראשי-תיבות טעון כרגע.
-    #[frb(sync)]
     pub fn has_acronyms_dictionary(&self) -> bool {
         self.acronym_dict.is_some()
     }
@@ -9402,7 +9398,8 @@ impl SearchEngine {
     }
 
     /// The revision of the order mapping: 0 before any [`Self::set_book_order`].
-    #[frb(sync)]
+    /// Asynchronous because refreshing can read the mapping file or wait for
+    /// an engine or book-order write lock.
     pub fn book_order_revision(&self) -> u64 {
         self.refresh_book_order();
         self.book_order
@@ -14174,15 +14171,22 @@ impl SearchEngine {
         Ok(results)
     }
 
+    /// Obtain once after opening the engine. Its synchronous `cancel` bypasses
+    /// the engine lock and worker queue, even during indexing or a busy search.
+    pub fn lexical_cancellation_handle(&self) -> LexicalCancellationHandle {
+        LexicalCancellationHandle {
+            registry: Arc::clone(&self.lexical_cancellations),
+        }
+    }
+
     /// Stops every lexical call tagged with `request_id` (the streams, counts and
     /// per-book counts that take `cancel_request_id`), running or still to come.
     /// A cancelled count fails with [`LexicalSearchCancelled::MESSAGE`]; a
     /// cancelled stream closes without another event. Await the returned future
     /// before starting a call that must observe the cancel.
     ///
-    /// Deliberately **not** `#[frb(sync)]`: the call takes the engine lock, which
-    /// `commit`/`optimize` hold for minutes; a sync binding would block the
-    /// calling isolate that long.
+    /// Prefer [`Self::lexical_cancellation_handle`] for responsive cancellation:
+    /// this compatibility entry point waits for the engine lock and worker queue.
     pub fn cancel_lexical_search(&self, request_id: u32) {
         self.lexical_cancellations.cancel(request_id);
     }
@@ -16516,6 +16520,22 @@ where
             (addresses(hits), Some(total as u32), Some(books))
         }
     })
+}
+
+/// Cancels request ids on one engine without waiting for its lock or workers.
+/// Keep this handle while searching; cancellation also covers calls not yet started.
+#[frb(opaque)]
+pub struct LexicalCancellationHandle {
+    registry: Arc<LexicalCancellations>,
+}
+
+impl LexicalCancellationHandle {
+    /// Stops lexical calls tagged with `request_id`; unrelated ids keep running.
+    /// Cancelled counts fail; streams close without another event.
+    #[frb(sync)]
+    pub fn cancel(&self, request_id: u32) {
+        self.registry.cancel(request_id);
+    }
 }
 
 // ── User regex (`/…/`) ─────────────────────────────────────────────────────────

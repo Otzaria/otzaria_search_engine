@@ -123,7 +123,10 @@ Future<void> main() async {
       await addFixture('כתב רבי משה\nבן מיימון בספרו');
       final dictionary = File('${indexDir.path}/acronyms.json')
         ..writeAsStringSync(r'{"רמב\"ם": ["רבי משה בן מיימון"]}');
-      expect(engine.setAcronymsDictionaryPath(path: dictionary.path), isTrue);
+      expect(
+        await engine.setAcronymsDictionaryPath(path: dictionary.path),
+        isTrue,
+      );
       final results = await advanced(
         'רמב"ם',
         searchOptions: const {

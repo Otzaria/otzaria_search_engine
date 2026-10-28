@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### Breaking
+
+- `cancelLexicalSearch`, the three `set*DictionaryPath` methods, the three
+  `has*Dictionary` methods and `bookOrderRevision` now return `Future`s. Await
+  dictionary changes before searching or replacing an open dictionary file.
+
+### Added
+
+- `await engine.lexicalCancellationHandle()` returns a reusable handle whose
+  synchronous `cancel(requestId: ...)` bypasses the engine lock and FRB worker
+  queue. Obtain it before starting searches or indexing. The engine's async
+  `cancelLexicalSearch` remains available as a compatibility entry point.
+
+### Fixed
+
+- Engine calls no longer block the Dart isolate behind a long index write or
+  merge. Cancellation through the separate handle also works when every FRB
+  worker is busy.
+- The concurrent highlight-cache test no longer mistakes another thread's
+  brief cache access for a lock held by the pattern computation.
+
 ## 6.0.0 – 2026-10-26
 
 > Breaking for every existing index: schema 10 changes the terms that `text`

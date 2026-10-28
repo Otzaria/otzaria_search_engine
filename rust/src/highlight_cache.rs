@@ -468,7 +468,18 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_patterns_share_one_matcher_without_holding_the_cache_lock() {
+    fn pattern_computation_does_not_hold_the_cache_lock() {
+        let cache = HighlightCache::default();
+        cache
+            .pattern(1, "k".into(), || {
+                assert!(cache.patterns.try_lock().is_ok());
+                Ok(Some(display_pattern()))
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn concurrent_patterns_share_one_matcher() {
         let cache = HighlightCache::default();
         let starts = std::sync::Barrier::new(4);
         let runs = std::sync::atomic::AtomicUsize::new(0);
@@ -480,7 +491,6 @@ mod tests {
                         cache
                             .pattern(1, "k".into(), || {
                                 runs.fetch_add(1, Ordering::Relaxed);
-                                assert!(cache.patterns.try_lock().is_ok());
                                 std::thread::sleep(Duration::from_millis(20));
                                 Ok(Some(display_pattern()))
                             })
