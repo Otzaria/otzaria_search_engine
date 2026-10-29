@@ -317,6 +317,13 @@ abstract class HighlightMatcher implements RustOpaqueInterface {
   });
 }
 
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<LexicalCancellationHandle>>
+abstract class LexicalCancellationHandle implements RustOpaqueInterface {
+  /// Stops lexical calls tagged with `request_id`; unrelated ids keep running.
+  /// Cancelled counts fail; streams close without another event.
+  void cancel({required int requestId});
+}
+
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>>
 abstract class SearchEngine implements RustOpaqueInterface {
   /// Add a single line of a book. Does not commit. The id is the engine's: line `ordinal`
@@ -463,13 +470,19 @@ abstract class SearchEngine implements RustOpaqueInterface {
   });
 
   /// The revision of the order mapping: 0 before any [`Self::set_book_order`].
-  BigInt bookOrderRevision();
+  /// Asynchronous because refreshing can read the mapping file or wait for
+  /// an engine or book-order write lock.
+  Future<BigInt> bookOrderRevision();
 
   /// Stops every lexical call tagged with `request_id` (the streams, counts and
   /// per-book counts that take `cancel_request_id`), running or still to come.
   /// A cancelled count fails with [`LexicalSearchCancelled::MESSAGE`]; a
-  /// cancelled stream closes without another event. Returns at once.
-  void cancelLexicalSearch({required int requestId});
+  /// cancelled stream closes without another event. Await the returned future
+  /// before starting a call that must observe the cancel.
+  ///
+  /// Prefer [`Self::lexical_cancellation_handle`] for responsive cancellation:
+  /// this compatibility entry point waits for the engine lock and worker queue.
+  Future<void> cancelLexicalSearch({required int requestId});
 
   /// Delete all documents. Does not commit.
   Future<void> clear();
@@ -1022,14 +1035,14 @@ abstract class SearchEngine implements RustOpaqueInterface {
   Future<int> getSegmentCount();
 
   /// האם מילון ראשי-תיבות טעון כרגע.
-  bool hasAcronymsDictionary();
+  Future<bool> hasAcronymsDictionary();
 
   /// Whether a lexical dictionary is currently loaded (i.e. approximate search
   /// will use morphological expansion).
-  bool hasMagicDictionary();
+  Future<bool> hasMagicDictionary();
 
   /// האם מילון תרגום ארמי-עברי טעון כרגע.
-  bool hasTranslationDictionary();
+  Future<bool> hasTranslationDictionary();
 
   /// Install a release of the library's vectors into the set at `vectors_dir`, creating
   /// the set when there is none: a base replaces whatever the set holds, and a delta
@@ -1065,6 +1078,10 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required SemanticVectorsInstallInput input,
     required SemanticCancellationToken cancellation,
   });
+
+  /// Obtain once after opening the engine. Its synchronous `cancel` bypasses
+  /// the engine lock and worker queue, even during indexing or a busy search.
+  Future<LexicalCancellationHandle> lexicalCancellationHandle();
 
   // HINT: Make it `#[frb(sync)]` to let it become the default constructor of Dart class.
   /// Deliberately **not** `#[frb(sync)]` — opening the index mmaps and reads every
@@ -1599,7 +1616,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// אפשרות "ראשי תיבות" בחיפוש המתקדם. מחזיר `true` אם הקובץ נטען;
   /// `false` אם חסר/פגום — ואז האפשרות לא מרחיבה דבר (אין שגיאה כלפי
   /// האפליקציה, שיכולה לקרוא לזה ללא תנאי באתחול).
-  bool setAcronymsDictionaryPath({required String path});
+  Future<bool> setAcronymsDictionaryPath({required String path});
 
   /// Replaces the whole order mapping: the catalogue and generation position of each book,
   /// by its `filePath`. Catalogue and generation searches sort by it from the next call on,
@@ -1635,13 +1652,15 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// keeps its existing fuzzy behaviour (no error is surfaced, so the app can
   /// call this unconditionally at startup). Does **not** affect exact or
   /// advanced search.
-  bool setMagicDictionaryPath({required String path});
+  /// Dictionary bindings are asynchronous: loading does disk I/O, and even
+  /// status queries can wait for an indexing operation to release the engine.
+  Future<bool> setMagicDictionaryPath({required String path});
 
   /// טוען את מילון התרגום הארמי-עברי (ה-`dictionary.json` של האפליקציה)
   /// עבור אפשרות "תרגום ארמי" בחיפוש המתקדם. מחזיר `true` אם הקובץ נטען;
   /// `false` אם חסר/פגום — ואז האפשרות לא מרחיבה דבר (אין שגיאה כלפי
   /// האפליקציה, שיכולה לקרוא לזה ללא תנאי באתחול).
-  bool setTranslationDictionaryPath({required String path});
+  Future<bool> setTranslationDictionaryPath({required String path});
 
   /// Delete then re-insert a single line, by the id [`Self::add_document`] composes for
   /// it. Does not commit.

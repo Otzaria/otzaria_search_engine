@@ -4,6 +4,33 @@ A Rust-based full-text search engine for the Otzaria project, built upon Tantivy
 
 this is a Dart library and cannot run by itself.
 
+## Lexical cancellation and engine calls
+
+Obtain a cancellation handle once after opening the engine, before exposing it
+to searches or indexing:
+
+```dart
+final engine = await SearchEngine.newInstance(path: indexPath);
+final cancellations = await engine.lexicalCancellationHandle();
+
+// Tag a search's stream and counts with the same cancelRequestId.
+cancellations.cancel(requestId: requestId);
+```
+
+`cancel` is synchronous and uses only the request registry. It can stop a
+running search even while indexing holds the engine lock or every FRB worker
+is busy. Use a fresh request id for each logical search. Dispose the handle
+when its engine owner closes; it does not keep the engine or index files open.
+
+`engine.cancelLexicalSearch(requestId: ...)` returns a `Future<void>` and waits
+for the engine lock and a worker. Prefer the separate handle for interactive
+search. Await the compatibility call when a subsequent call must observe it.
+
+Dictionary setters, dictionary presence checks and `bookOrderRevision()` also
+return `Future`s: even a small getter can wait behind an index write. Await
+dictionary loading before using it, and await dictionary detachment before
+replacing its file so Windows can release the open file handle.
+
 ## Paired readings and existing indexes
 
 A single-token `(X) [Y]` reading pair is indexed as two alternatives at the

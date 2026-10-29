@@ -42,7 +42,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1908715958;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1059061632;
 
 // Section: executor
 
@@ -316,6 +316,58 @@ fn wire__crate__api__library_indexing__IndexingCancellationToken_new_impl(
             transform_result_sse::<_, ()>((move || {
                 let output_ok =
                     Ok::<_, ()>(crate::api::library_indexing::IndexingCancellationToken::new())?;
+                std::result::Result::Ok(output_ok)
+            })())
+        },
+    )
+}
+fn wire__crate__api__search_engine__LexicalCancellationHandle_cancel_impl(
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "LexicalCancellationHandle_cancel",
+            port: None,
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<LexicalCancellationHandle>,
+            >>::sse_decode(&mut deserializer);
+            let api_request_id = <u32>::sse_decode(&mut deserializer);
+            deserializer.end();
+            transform_result_sse::<_, ()>((move || {
+                let mut api_that_guard = None;
+                let decode_indices_ =
+                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                            &api_that, 0, false,
+                        ),
+                    ]);
+                for i in decode_indices_ {
+                    match i {
+                        0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                        _ => unreachable!(),
+                    }
+                }
+                let api_that_guard = api_that_guard.unwrap();
+                let output_ok = Ok::<_, ()>({
+                    crate::api::search_engine::LexicalCancellationHandle::cancel(
+                        &*api_that_guard,
+                        api_request_id,
+                    );
+                })?;
                 std::result::Result::Ok(output_ok)
             })())
         },
@@ -874,15 +926,16 @@ fn wire__crate__api__search_engine__SearchEngine_add_text_book_bytes_impl(
     )
 }
 fn wire__crate__api__search_engine__SearchEngine_book_order_revision_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
     data_len_: i32,
-) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
         flutter_rust_bridge::for_generated::TaskInfo {
             debug_name: "SearchEngine_book_order_revision",
-            port: None,
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
         },
         move || {
             let message = unsafe {
@@ -898,39 +951,44 @@ fn wire__crate__api__search_engine__SearchEngine_book_order_revision_impl(
                 flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>,
             >>::sse_decode(&mut deserializer);
             deserializer.end();
-            transform_result_sse::<_, ()>((move || {
-                let mut api_that_guard = None;
-                let decode_indices_ =
-                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
-                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                            &api_that, 0, false,
-                        ),
-                    ]);
-                for i in decode_indices_ {
-                    match i {
-                        0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
-                        _ => unreachable!(),
+            move |context| {
+                transform_result_sse::<_, ()>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
                     }
-                }
-                let api_that_guard = api_that_guard.unwrap();
-                let output_ok = Ok::<_, ()>(
-                    crate::api::search_engine::SearchEngine::book_order_revision(&*api_that_guard),
-                )?;
-                std::result::Result::Ok(output_ok)
-            })())
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = Ok::<_, ()>(
+                        crate::api::search_engine::SearchEngine::book_order_revision(
+                            &*api_that_guard,
+                        ),
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
         },
     )
 }
 fn wire__crate__api__search_engine__SearchEngine_cancel_lexical_search_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
     data_len_: i32,
-) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
         flutter_rust_bridge::for_generated::TaskInfo {
             debug_name: "SearchEngine_cancel_lexical_search",
-            port: None,
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
         },
         move || {
             let message = unsafe {
@@ -947,29 +1005,31 @@ fn wire__crate__api__search_engine__SearchEngine_cancel_lexical_search_impl(
             >>::sse_decode(&mut deserializer);
             let api_request_id = <u32>::sse_decode(&mut deserializer);
             deserializer.end();
-            transform_result_sse::<_, ()>((move || {
-                let mut api_that_guard = None;
-                let decode_indices_ =
-                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
-                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                            &api_that, 0, false,
-                        ),
-                    ]);
-                for i in decode_indices_ {
-                    match i {
-                        0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
-                        _ => unreachable!(),
+            move |context| {
+                transform_result_sse::<_, ()>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
                     }
-                }
-                let api_that_guard = api_that_guard.unwrap();
-                let output_ok = Ok::<_, ()>({
-                    crate::api::search_engine::SearchEngine::cancel_lexical_search(
-                        &*api_that_guard,
-                        api_request_id,
-                    );
-                })?;
-                std::result::Result::Ok(output_ok)
-            })())
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = Ok::<_, ()>({
+                        crate::api::search_engine::SearchEngine::cancel_lexical_search(
+                            &*api_that_guard,
+                            api_request_id,
+                        );
+                    })?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
         },
     )
 }
@@ -3679,15 +3739,16 @@ fn wire__crate__api__search_engine__SearchEngine_get_segment_count_impl(
     )
 }
 fn wire__crate__api__search_engine__SearchEngine_has_acronyms_dictionary_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
     data_len_: i32,
-) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
         flutter_rust_bridge::for_generated::TaskInfo {
             debug_name: "SearchEngine_has_acronyms_dictionary",
-            port: None,
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
         },
         move || {
             let message = unsafe {
@@ -3703,41 +3764,44 @@ fn wire__crate__api__search_engine__SearchEngine_has_acronyms_dictionary_impl(
                 flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>,
             >>::sse_decode(&mut deserializer);
             deserializer.end();
-            transform_result_sse::<_, ()>((move || {
-                let mut api_that_guard = None;
-                let decode_indices_ =
-                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
-                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                            &api_that, 0, false,
-                        ),
-                    ]);
-                for i in decode_indices_ {
-                    match i {
-                        0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
-                        _ => unreachable!(),
+            move |context| {
+                transform_result_sse::<_, ()>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
                     }
-                }
-                let api_that_guard = api_that_guard.unwrap();
-                let output_ok = Ok::<_, ()>(
-                    crate::api::search_engine::SearchEngine::has_acronyms_dictionary(
-                        &*api_that_guard,
-                    ),
-                )?;
-                std::result::Result::Ok(output_ok)
-            })())
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = Ok::<_, ()>(
+                        crate::api::search_engine::SearchEngine::has_acronyms_dictionary(
+                            &*api_that_guard,
+                        ),
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
         },
     )
 }
 fn wire__crate__api__search_engine__SearchEngine_has_magic_dictionary_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
     data_len_: i32,
-) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
         flutter_rust_bridge::for_generated::TaskInfo {
             debug_name: "SearchEngine_has_magic_dictionary",
-            port: None,
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
         },
         move || {
             let message = unsafe {
@@ -3753,39 +3817,44 @@ fn wire__crate__api__search_engine__SearchEngine_has_magic_dictionary_impl(
                 flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>,
             >>::sse_decode(&mut deserializer);
             deserializer.end();
-            transform_result_sse::<_, ()>((move || {
-                let mut api_that_guard = None;
-                let decode_indices_ =
-                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
-                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                            &api_that, 0, false,
-                        ),
-                    ]);
-                for i in decode_indices_ {
-                    match i {
-                        0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
-                        _ => unreachable!(),
+            move |context| {
+                transform_result_sse::<_, ()>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
                     }
-                }
-                let api_that_guard = api_that_guard.unwrap();
-                let output_ok = Ok::<_, ()>(
-                    crate::api::search_engine::SearchEngine::has_magic_dictionary(&*api_that_guard),
-                )?;
-                std::result::Result::Ok(output_ok)
-            })())
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = Ok::<_, ()>(
+                        crate::api::search_engine::SearchEngine::has_magic_dictionary(
+                            &*api_that_guard,
+                        ),
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
         },
     )
 }
 fn wire__crate__api__search_engine__SearchEngine_has_translation_dictionary_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
     data_len_: i32,
-) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
         flutter_rust_bridge::for_generated::TaskInfo {
             debug_name: "SearchEngine_has_translation_dictionary",
-            port: None,
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
         },
         move || {
             let message = unsafe {
@@ -3801,28 +3870,30 @@ fn wire__crate__api__search_engine__SearchEngine_has_translation_dictionary_impl
                 flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>,
             >>::sse_decode(&mut deserializer);
             deserializer.end();
-            transform_result_sse::<_, ()>((move || {
-                let mut api_that_guard = None;
-                let decode_indices_ =
-                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
-                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                            &api_that, 0, false,
-                        ),
-                    ]);
-                for i in decode_indices_ {
-                    match i {
-                        0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
-                        _ => unreachable!(),
+            move |context| {
+                transform_result_sse::<_, ()>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
                     }
-                }
-                let api_that_guard = api_that_guard.unwrap();
-                let output_ok = Ok::<_, ()>(
-                    crate::api::search_engine::SearchEngine::has_translation_dictionary(
-                        &*api_that_guard,
-                    ),
-                )?;
-                std::result::Result::Ok(output_ok)
-            })())
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = Ok::<_, ()>(
+                        crate::api::search_engine::SearchEngine::has_translation_dictionary(
+                            &*api_that_guard,
+                        ),
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
         },
     )
 }
@@ -3894,6 +3965,59 @@ fn wire__crate__api__search_engine__SearchEngine_install_semantic_vectors_impl(
                     std::result::Result::Ok(output_ok)
                 })(
                 ))
+            }
+        },
+    )
+}
+fn wire__crate__api__search_engine__SearchEngine_lexical_cancellation_handle_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "SearchEngine_lexical_cancellation_handle",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, ()>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = Ok::<_, ()>(
+                        crate::api::search_engine::SearchEngine::lexical_cancellation_handle(
+                            &*api_that_guard,
+                        ),
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })())
             }
         },
     )
@@ -6177,15 +6301,16 @@ fn wire__crate__api__search_engine__SearchEngine_semantic_vectors_info_impl(
     )
 }
 fn wire__crate__api__search_engine__SearchEngine_set_acronyms_dictionary_path_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
     data_len_: i32,
-) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
         flutter_rust_bridge::for_generated::TaskInfo {
             debug_name: "SearchEngine_set_acronyms_dictionary_path",
-            port: None,
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
         },
         move || {
             let message = unsafe {
@@ -6202,29 +6327,31 @@ fn wire__crate__api__search_engine__SearchEngine_set_acronyms_dictionary_path_im
             >>::sse_decode(&mut deserializer);
             let api_path = <String>::sse_decode(&mut deserializer);
             deserializer.end();
-            transform_result_sse::<_, ()>((move || {
-                let mut api_that_guard = None;
-                let decode_indices_ =
-                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
-                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                            &api_that, 0, true,
-                        ),
-                    ]);
-                for i in decode_indices_ {
-                    match i {
-                        0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
-                        _ => unreachable!(),
+            move |context| {
+                transform_result_sse::<_, ()>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, true,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
+                            _ => unreachable!(),
+                        }
                     }
-                }
-                let mut api_that_guard = api_that_guard.unwrap();
-                let output_ok = Ok::<_, ()>(
-                    crate::api::search_engine::SearchEngine::set_acronyms_dictionary_path(
-                        &mut *api_that_guard,
-                        api_path,
-                    ),
-                )?;
-                std::result::Result::Ok(output_ok)
-            })())
+                    let mut api_that_guard = api_that_guard.unwrap();
+                    let output_ok = Ok::<_, ()>(
+                        crate::api::search_engine::SearchEngine::set_acronyms_dictionary_path(
+                            &mut *api_that_guard,
+                            api_path,
+                        ),
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
         },
     )
 }
@@ -6396,15 +6523,16 @@ fn wire__crate__api__search_engine__SearchEngine_set_economy_indexing_impl(
     )
 }
 fn wire__crate__api__search_engine__SearchEngine_set_magic_dictionary_path_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
     data_len_: i32,
-) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
         flutter_rust_bridge::for_generated::TaskInfo {
             debug_name: "SearchEngine_set_magic_dictionary_path",
-            port: None,
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
         },
         move || {
             let message = unsafe {
@@ -6421,42 +6549,45 @@ fn wire__crate__api__search_engine__SearchEngine_set_magic_dictionary_path_impl(
             >>::sse_decode(&mut deserializer);
             let api_path = <String>::sse_decode(&mut deserializer);
             deserializer.end();
-            transform_result_sse::<_, ()>((move || {
-                let mut api_that_guard = None;
-                let decode_indices_ =
-                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
-                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                            &api_that, 0, true,
-                        ),
-                    ]);
-                for i in decode_indices_ {
-                    match i {
-                        0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
-                        _ => unreachable!(),
+            move |context| {
+                transform_result_sse::<_, ()>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, true,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
+                            _ => unreachable!(),
+                        }
                     }
-                }
-                let mut api_that_guard = api_that_guard.unwrap();
-                let output_ok = Ok::<_, ()>(
-                    crate::api::search_engine::SearchEngine::set_magic_dictionary_path(
-                        &mut *api_that_guard,
-                        api_path,
-                    ),
-                )?;
-                std::result::Result::Ok(output_ok)
-            })())
+                    let mut api_that_guard = api_that_guard.unwrap();
+                    let output_ok = Ok::<_, ()>(
+                        crate::api::search_engine::SearchEngine::set_magic_dictionary_path(
+                            &mut *api_that_guard,
+                            api_path,
+                        ),
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
         },
     )
 }
 fn wire__crate__api__search_engine__SearchEngine_set_translation_dictionary_path_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
     data_len_: i32,
-) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
         flutter_rust_bridge::for_generated::TaskInfo {
             debug_name: "SearchEngine_set_translation_dictionary_path",
-            port: None,
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
         },
         move || {
             let message = unsafe {
@@ -6473,29 +6604,31 @@ fn wire__crate__api__search_engine__SearchEngine_set_translation_dictionary_path
             >>::sse_decode(&mut deserializer);
             let api_path = <String>::sse_decode(&mut deserializer);
             deserializer.end();
-            transform_result_sse::<_, ()>((move || {
-                let mut api_that_guard = None;
-                let decode_indices_ =
-                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
-                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                            &api_that, 0, true,
-                        ),
-                    ]);
-                for i in decode_indices_ {
-                    match i {
-                        0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
-                        _ => unreachable!(),
+            move |context| {
+                transform_result_sse::<_, ()>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, true,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
+                            _ => unreachable!(),
+                        }
                     }
-                }
-                let mut api_that_guard = api_that_guard.unwrap();
-                let output_ok = Ok::<_, ()>(
-                    crate::api::search_engine::SearchEngine::set_translation_dictionary_path(
-                        &mut *api_that_guard,
-                        api_path,
-                    ),
-                )?;
-                std::result::Result::Ok(output_ok)
-            })())
+                    let mut api_that_guard = api_that_guard.unwrap();
+                    let output_ok = Ok::<_, ()>(
+                        crate::api::search_engine::SearchEngine::set_translation_dictionary_path(
+                            &mut *api_that_guard,
+                            api_path,
+                        ),
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
         },
     )
 }
@@ -8198,6 +8331,9 @@ flutter_rust_bridge::frb_generated_moi_arc_impl_value!(
     flutter_rust_bridge::for_generated::RustAutoOpaqueInner<IndexingCancellationToken>
 );
 flutter_rust_bridge::frb_generated_moi_arc_impl_value!(
+    flutter_rust_bridge::for_generated::RustAutoOpaqueInner<LexicalCancellationHandle>
+);
+flutter_rust_bridge::frb_generated_moi_arc_impl_value!(
     flutter_rust_bridge::for_generated::RustAutoOpaqueInner<RegexBenchmarker>
 );
 flutter_rust_bridge::frb_generated_moi_arc_impl_value!(
@@ -8238,6 +8374,16 @@ impl SseDecode for IndexingCancellationToken {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut inner = <RustOpaqueMoi<
             flutter_rust_bridge::for_generated::RustAutoOpaqueInner<IndexingCancellationToken>,
+        >>::sse_decode(deserializer);
+        return flutter_rust_bridge::for_generated::rust_auto_opaque_decode_owned(inner);
+    }
+}
+
+impl SseDecode for LexicalCancellationHandle {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <RustOpaqueMoi<
+            flutter_rust_bridge::for_generated::RustAutoOpaqueInner<LexicalCancellationHandle>,
         >>::sse_decode(deserializer);
         return flutter_rust_bridge::for_generated::rust_auto_opaque_decode_owned(inner);
     }
@@ -8355,6 +8501,18 @@ impl SseDecode
 impl SseDecode
     for RustOpaqueMoi<
         flutter_rust_bridge::for_generated::RustAutoOpaqueInner<IndexingCancellationToken>,
+    >
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <usize>::sse_decode(deserializer);
+        return decode_rust_opaque_moi(inner);
+    }
+}
+
+impl SseDecode
+    for RustOpaqueMoi<
+        flutter_rust_bridge::for_generated::RustAutoOpaqueInner<LexicalCancellationHandle>,
     >
 {
     // Codec=Sse (Serialization based), see doc to use other codecs
@@ -10674,117 +10832,126 @@ fn pde_ffi_dispatcher_primary_impl(
     // Codec=Pde (Serialization + dispatch), see doc to use other codecs
     match func_id {
                         4 => wire__crate__api__library_indexing__IndexingCancellationToken_default_impl(port, ptr, rust_vec_len, data_len),
-7 => wire__crate__api__benchmark__RegexBenchmarker_benchmark_custom_queries_impl(port, ptr, rust_vec_len, data_len),
-8 => wire__crate__api__benchmark__RegexBenchmarker_new_impl(port, ptr, rust_vec_len, data_len),
-9 => wire__crate__api__benchmark__RegexBenchmarker_run_comprehensive_benchmark_impl(port, ptr, rust_vec_len, data_len),
-10 => wire__crate__api__search_engine__SearchEngine_add_document_impl(port, ptr, rust_vec_len, data_len),
-11 => wire__crate__api__search_engine__SearchEngine_add_documents_batch_impl(port, ptr, rust_vec_len, data_len),
-12 => wire__crate__api__search_engine__SearchEngine_add_library_books_impl(port, ptr, rust_vec_len, data_len),
-13 => wire__crate__api__search_engine__SearchEngine_add_pdf_book_impl(port, ptr, rust_vec_len, data_len),
-14 => wire__crate__api__search_engine__SearchEngine_add_text_book_impl(port, ptr, rust_vec_len, data_len),
-15 => wire__crate__api__search_engine__SearchEngine_add_text_book_bytes_impl(port, ptr, rust_vec_len, data_len),
-18 => wire__crate__api__search_engine__SearchEngine_clear_impl(port, ptr, rust_vec_len, data_len),
-19 => wire__crate__api__search_engine__SearchEngine_commit_impl(port, ptr, rust_vec_len, data_len),
-20 => wire__crate__api__search_engine__SearchEngine_compact_semantic_vectors_impl(port, ptr, rust_vec_len, data_len),
-21 => wire__crate__api__search_engine__SearchEngine_configure_semantic_impl(port, ptr, rust_vec_len, data_len),
-22 => wire__crate__api__search_engine__SearchEngine_count_impl(port, ptr, rust_vec_len, data_len),
-23 => wire__crate__api__search_engine__SearchEngine_count_advanced_impl(port, ptr, rust_vec_len, data_len),
-24 => wire__crate__api__search_engine__SearchEngine_count_advanced_with_status_impl(port, ptr, rust_vec_len, data_len),
-25 => wire__crate__api__search_engine__SearchEngine_count_by_book_impl(port, ptr, rust_vec_len, data_len),
-26 => wire__crate__api__search_engine__SearchEngine_count_by_book_advanced_impl(port, ptr, rust_vec_len, data_len),
-27 => wire__crate__api__search_engine__SearchEngine_count_by_book_advanced_with_status_impl(port, ptr, rust_vec_len, data_len),
-28 => wire__crate__api__search_engine__SearchEngine_count_by_book_exact_impl(port, ptr, rust_vec_len, data_len),
-29 => wire__crate__api__search_engine__SearchEngine_count_by_book_exact_with_status_impl(port, ptr, rust_vec_len, data_len),
-30 => wire__crate__api__search_engine__SearchEngine_count_by_book_fuzzy_impl(port, ptr, rust_vec_len, data_len),
-31 => wire__crate__api__search_engine__SearchEngine_count_by_book_fuzzy_with_status_impl(port, ptr, rust_vec_len, data_len),
-32 => wire__crate__api__search_engine__SearchEngine_count_by_book_user_regex_impl(port, ptr, rust_vec_len, data_len),
-33 => wire__crate__api__search_engine__SearchEngine_count_by_book_with_status_impl(port, ptr, rust_vec_len, data_len),
-34 => wire__crate__api__search_engine__SearchEngine_count_documents_by_file_path_impl(port, ptr, rust_vec_len, data_len),
-35 => wire__crate__api__search_engine__SearchEngine_count_exact_impl(port, ptr, rust_vec_len, data_len),
-36 => wire__crate__api__search_engine__SearchEngine_count_exact_with_status_impl(port, ptr, rust_vec_len, data_len),
-37 => wire__crate__api__search_engine__SearchEngine_count_fuzzy_impl(port, ptr, rust_vec_len, data_len),
-38 => wire__crate__api__search_engine__SearchEngine_count_fuzzy_with_status_impl(port, ptr, rust_vec_len, data_len),
-39 => wire__crate__api__search_engine__SearchEngine_count_user_regex_impl(port, ptr, rust_vec_len, data_len),
-40 => wire__crate__api__search_engine__SearchEngine_count_with_status_impl(port, ptr, rust_vec_len, data_len),
-41 => wire__crate__api__search_engine__SearchEngine_delete_document_by_id_impl(port, ptr, rust_vec_len, data_len),
-42 => wire__crate__api__search_engine__SearchEngine_delete_documents_by_file_path_impl(port, ptr, rust_vec_len, data_len),
-43 => wire__crate__api__search_engine__SearchEngine_delete_documents_by_file_paths_impl(port, ptr, rust_vec_len, data_len),
-44 => wire__crate__api__search_engine__SearchEngine_disable_semantic_impl(port, ptr, rust_vec_len, data_len),
-45 => wire__crate__api__search_engine__SearchEngine_generate_index_fuzzy_highlight_pattern_impl(port, ptr, rust_vec_len, data_len),
-46 => wire__crate__api__search_engine__SearchEngine_generate_index_highlight_pattern_impl(port, ptr, rust_vec_len, data_len),
-47 => wire__crate__api__search_engine__SearchEngine_get_book_fingerprints_impl(port, ptr, rust_vec_len, data_len),
-48 => wire__crate__api__search_engine__SearchEngine_get_book_stamps_impl(port, ptr, rust_vec_len, data_len),
-49 => wire__crate__api__search_engine__SearchEngine_get_book_text_fingerprint_impl(port, ptr, rust_vec_len, data_len),
-50 => wire__crate__api__search_engine__SearchEngine_get_book_text_fingerprints_impl(port, ptr, rust_vec_len, data_len),
-51 => wire__crate__api__search_engine__SearchEngine_get_document_by_id_impl(port, ptr, rust_vec_len, data_len),
-52 => wire__crate__api__search_engine__SearchEngine_get_document_count_impl(port, ptr, rust_vec_len, data_len),
-53 => wire__crate__api__search_engine__SearchEngine_get_facet_counts_impl(port, ptr, rust_vec_len, data_len),
-54 => wire__crate__api__search_engine__SearchEngine_get_facet_counts_advanced_impl(port, ptr, rust_vec_len, data_len),
-55 => wire__crate__api__search_engine__SearchEngine_get_facet_counts_advanced_with_status_impl(port, ptr, rust_vec_len, data_len),
-56 => wire__crate__api__search_engine__SearchEngine_get_facet_counts_exact_impl(port, ptr, rust_vec_len, data_len),
-57 => wire__crate__api__search_engine__SearchEngine_get_facet_counts_exact_with_status_impl(port, ptr, rust_vec_len, data_len),
-58 => wire__crate__api__search_engine__SearchEngine_get_facet_counts_fuzzy_impl(port, ptr, rust_vec_len, data_len),
-59 => wire__crate__api__search_engine__SearchEngine_get_facet_counts_fuzzy_with_status_impl(port, ptr, rust_vec_len, data_len),
-60 => wire__crate__api__search_engine__SearchEngine_get_facet_counts_user_regex_impl(port, ptr, rust_vec_len, data_len),
-61 => wire__crate__api__search_engine__SearchEngine_get_facet_counts_with_status_impl(port, ptr, rust_vec_len, data_len),
-62 => wire__crate__api__search_engine__SearchEngine_get_indexed_file_paths_impl(port, ptr, rust_vec_len, data_len),
-63 => wire__crate__api__search_engine__SearchEngine_get_segment_count_impl(port, ptr, rust_vec_len, data_len),
-67 => wire__crate__api__search_engine__SearchEngine_install_semantic_vectors_impl(port, ptr, rust_vec_len, data_len),
-68 => wire__crate__api__search_engine__SearchEngine_new_impl(port, ptr, rust_vec_len, data_len),
-69 => wire__crate__api__search_engine__SearchEngine_open_index_writer_impl(port, ptr, rust_vec_len, data_len),
-70 => wire__crate__api__search_engine__SearchEngine_open_semantic_artifact_impl(port, ptr, rust_vec_len, data_len),
-71 => wire__crate__api__search_engine__SearchEngine_optimize_impl(port, ptr, rust_vec_len, data_len),
-72 => wire__crate__api__search_engine__SearchEngine_release_memory_impl(port, ptr, rust_vec_len, data_len),
-73 => wire__crate__api__search_engine__SearchEngine_remove_documents_by_title_impl(port, ptr, rust_vec_len, data_len),
-74 => wire__crate__api__search_engine__SearchEngine_remove_semantic_books_impl(port, ptr, rust_vec_len, data_len),
-75 => wire__crate__api__search_engine__SearchEngine_reset_semantic_index_impl(port, ptr, rust_vec_len, data_len),
-76 => wire__crate__api__search_engine__SearchEngine_rollback_impl(port, ptr, rust_vec_len, data_len),
-77 => wire__crate__api__search_engine__SearchEngine_search_impl(port, ptr, rust_vec_len, data_len),
-78 => wire__crate__api__search_engine__SearchEngine_search_advanced_impl(port, ptr, rust_vec_len, data_len),
-79 => wire__crate__api__search_engine__SearchEngine_search_advanced_stream_impl(port, ptr, rust_vec_len, data_len),
-80 => wire__crate__api__search_engine__SearchEngine_search_advanced_stream_with_counts_impl(port, ptr, rust_vec_len, data_len),
-81 => wire__crate__api__search_engine__SearchEngine_search_and_count_impl(port, ptr, rust_vec_len, data_len),
-82 => wire__crate__api__search_engine__SearchEngine_search_and_count_advanced_impl(port, ptr, rust_vec_len, data_len),
-83 => wire__crate__api__search_engine__SearchEngine_search_and_count_exact_impl(port, ptr, rust_vec_len, data_len),
-84 => wire__crate__api__search_engine__SearchEngine_search_and_count_fuzzy_impl(port, ptr, rust_vec_len, data_len),
-85 => wire__crate__api__search_engine__SearchEngine_search_exact_impl(port, ptr, rust_vec_len, data_len),
-86 => wire__crate__api__search_engine__SearchEngine_search_exact_stream_impl(port, ptr, rust_vec_len, data_len),
-87 => wire__crate__api__search_engine__SearchEngine_search_exact_stream_with_counts_impl(port, ptr, rust_vec_len, data_len),
-88 => wire__crate__api__search_engine__SearchEngine_search_fuzzy_impl(port, ptr, rust_vec_len, data_len),
-89 => wire__crate__api__search_engine__SearchEngine_search_fuzzy_stream_impl(port, ptr, rust_vec_len, data_len),
-90 => wire__crate__api__search_engine__SearchEngine_search_fuzzy_stream_with_counts_impl(port, ptr, rust_vec_len, data_len),
-91 => wire__crate__api__search_engine__SearchEngine_search_fuzzy_terms_impl(port, ptr, rust_vec_len, data_len),
-92 => wire__crate__api__search_engine__SearchEngine_search_semantic_impl(port, ptr, rust_vec_len, data_len),
-93 => wire__crate__api__search_engine__SearchEngine_search_snapshot_impl(port, ptr, rust_vec_len, data_len),
-94 => wire__crate__api__search_engine__SearchEngine_search_stream_impl(port, ptr, rust_vec_len, data_len),
-95 => wire__crate__api__search_engine__SearchEngine_search_user_regex_stream_impl(port, ptr, rust_vec_len, data_len),
-96 => wire__crate__api__search_engine__SearchEngine_semantic_coverage_impl(port, ptr, rust_vec_len, data_len),
-97 => wire__crate__api__search_engine__SearchEngine_semantic_index_books_impl(port, ptr, rust_vec_len, data_len),
-98 => wire__crate__api__search_engine__SearchEngine_semantic_index_diff_impl(port, ptr, rust_vec_len, data_len),
-99 => wire__crate__api__search_engine__SearchEngine_semantic_passage_highlights_impl(port, ptr, rust_vec_len, data_len),
-100 => wire__crate__api__search_engine__SearchEngine_semantic_status_impl(port, ptr, rust_vec_len, data_len),
-101 => wire__crate__api__search_engine__SearchEngine_semantic_vectors_info_impl(port, ptr, rust_vec_len, data_len),
-103 => wire__crate__api__search_engine__SearchEngine_set_book_order_impl(port, ptr, rust_vec_len, data_len),
-104 => wire__crate__api__search_engine__SearchEngine_set_bulk_indexing_impl(port, ptr, rust_vec_len, data_len),
-105 => wire__crate__api__search_engine__SearchEngine_set_economy_indexing_impl(port, ptr, rust_vec_len, data_len),
-108 => wire__crate__api__search_engine__SearchEngine_upsert_document_impl(port, ptr, rust_vec_len, data_len),
-109 => wire__crate__api__search_engine__SearchEngine_upsert_documents_batch_impl(port, ptr, rust_vec_len, data_len),
-110 => wire__crate__api__search_engine__SearchEngine_verify_semantic_vectors_impl(port, ptr, rust_vec_len, data_len),
-111 => wire__crate__api__search_engine__SearchEngine_warm_book_order_impl(port, ptr, rust_vec_len, data_len),
-119 => wire__crate__api__search_engine__attached_line_source_status_impl(port, ptr, rust_vec_len, data_len),
-120 => wire__crate__api__search_engine__check_index_compatibility_impl(port, ptr, rust_vec_len, data_len),
-124 => wire__crate__api__search_engine__compute_content_fingerprint_bytes_impl(port, ptr, rust_vec_len, data_len),
-125 => wire__crate__api__search_engine__configure_attached_line_source_impl(port, ptr, rust_vec_len, data_len),
-126 => wire__crate__api__search_engine__configure_line_source_impl(port, ptr, rust_vec_len, data_len),
-127 => wire__crate__api__search_engine__configure_user_books_line_source_impl(port, ptr, rust_vec_len, data_len),
-131 => wire__crate__api__library_indexing__library_book_content_fingerprint_impl(port, ptr, rust_vec_len, data_len),
-132 => wire__crate__api__search_engine__line_source_status_impl(port, ptr, rust_vec_len, data_len),
-140 => wire__crate__api__search_engine__resume_line_source_impl(port, ptr, rust_vec_len, data_len),
-141 => wire__crate__api__search_engine__resume_line_source_owned_impl(port, ptr, rust_vec_len, data_len),
-142 => wire__crate__api__diagnostic_test__run_diagnostic_test_impl(port, ptr, rust_vec_len, data_len),
-143 => wire__crate__api__focused_benchmark__run_focused_benchmark_impl(port, ptr, rust_vec_len, data_len),
-150 => wire__crate__api__search_engine__suspend_line_source_impl(port, ptr, rust_vec_len, data_len),
-151 => wire__crate__api__search_engine__suspend_line_source_owned_impl(port, ptr, rust_vec_len, data_len),
+8 => wire__crate__api__benchmark__RegexBenchmarker_benchmark_custom_queries_impl(port, ptr, rust_vec_len, data_len),
+9 => wire__crate__api__benchmark__RegexBenchmarker_new_impl(port, ptr, rust_vec_len, data_len),
+10 => wire__crate__api__benchmark__RegexBenchmarker_run_comprehensive_benchmark_impl(port, ptr, rust_vec_len, data_len),
+11 => wire__crate__api__search_engine__SearchEngine_add_document_impl(port, ptr, rust_vec_len, data_len),
+12 => wire__crate__api__search_engine__SearchEngine_add_documents_batch_impl(port, ptr, rust_vec_len, data_len),
+13 => wire__crate__api__search_engine__SearchEngine_add_library_books_impl(port, ptr, rust_vec_len, data_len),
+14 => wire__crate__api__search_engine__SearchEngine_add_pdf_book_impl(port, ptr, rust_vec_len, data_len),
+15 => wire__crate__api__search_engine__SearchEngine_add_text_book_impl(port, ptr, rust_vec_len, data_len),
+16 => wire__crate__api__search_engine__SearchEngine_add_text_book_bytes_impl(port, ptr, rust_vec_len, data_len),
+17 => wire__crate__api__search_engine__SearchEngine_book_order_revision_impl(port, ptr, rust_vec_len, data_len),
+18 => wire__crate__api__search_engine__SearchEngine_cancel_lexical_search_impl(port, ptr, rust_vec_len, data_len),
+19 => wire__crate__api__search_engine__SearchEngine_clear_impl(port, ptr, rust_vec_len, data_len),
+20 => wire__crate__api__search_engine__SearchEngine_commit_impl(port, ptr, rust_vec_len, data_len),
+21 => wire__crate__api__search_engine__SearchEngine_compact_semantic_vectors_impl(port, ptr, rust_vec_len, data_len),
+22 => wire__crate__api__search_engine__SearchEngine_configure_semantic_impl(port, ptr, rust_vec_len, data_len),
+23 => wire__crate__api__search_engine__SearchEngine_count_impl(port, ptr, rust_vec_len, data_len),
+24 => wire__crate__api__search_engine__SearchEngine_count_advanced_impl(port, ptr, rust_vec_len, data_len),
+25 => wire__crate__api__search_engine__SearchEngine_count_advanced_with_status_impl(port, ptr, rust_vec_len, data_len),
+26 => wire__crate__api__search_engine__SearchEngine_count_by_book_impl(port, ptr, rust_vec_len, data_len),
+27 => wire__crate__api__search_engine__SearchEngine_count_by_book_advanced_impl(port, ptr, rust_vec_len, data_len),
+28 => wire__crate__api__search_engine__SearchEngine_count_by_book_advanced_with_status_impl(port, ptr, rust_vec_len, data_len),
+29 => wire__crate__api__search_engine__SearchEngine_count_by_book_exact_impl(port, ptr, rust_vec_len, data_len),
+30 => wire__crate__api__search_engine__SearchEngine_count_by_book_exact_with_status_impl(port, ptr, rust_vec_len, data_len),
+31 => wire__crate__api__search_engine__SearchEngine_count_by_book_fuzzy_impl(port, ptr, rust_vec_len, data_len),
+32 => wire__crate__api__search_engine__SearchEngine_count_by_book_fuzzy_with_status_impl(port, ptr, rust_vec_len, data_len),
+33 => wire__crate__api__search_engine__SearchEngine_count_by_book_user_regex_impl(port, ptr, rust_vec_len, data_len),
+34 => wire__crate__api__search_engine__SearchEngine_count_by_book_with_status_impl(port, ptr, rust_vec_len, data_len),
+35 => wire__crate__api__search_engine__SearchEngine_count_documents_by_file_path_impl(port, ptr, rust_vec_len, data_len),
+36 => wire__crate__api__search_engine__SearchEngine_count_exact_impl(port, ptr, rust_vec_len, data_len),
+37 => wire__crate__api__search_engine__SearchEngine_count_exact_with_status_impl(port, ptr, rust_vec_len, data_len),
+38 => wire__crate__api__search_engine__SearchEngine_count_fuzzy_impl(port, ptr, rust_vec_len, data_len),
+39 => wire__crate__api__search_engine__SearchEngine_count_fuzzy_with_status_impl(port, ptr, rust_vec_len, data_len),
+40 => wire__crate__api__search_engine__SearchEngine_count_user_regex_impl(port, ptr, rust_vec_len, data_len),
+41 => wire__crate__api__search_engine__SearchEngine_count_with_status_impl(port, ptr, rust_vec_len, data_len),
+42 => wire__crate__api__search_engine__SearchEngine_delete_document_by_id_impl(port, ptr, rust_vec_len, data_len),
+43 => wire__crate__api__search_engine__SearchEngine_delete_documents_by_file_path_impl(port, ptr, rust_vec_len, data_len),
+44 => wire__crate__api__search_engine__SearchEngine_delete_documents_by_file_paths_impl(port, ptr, rust_vec_len, data_len),
+45 => wire__crate__api__search_engine__SearchEngine_disable_semantic_impl(port, ptr, rust_vec_len, data_len),
+46 => wire__crate__api__search_engine__SearchEngine_generate_index_fuzzy_highlight_pattern_impl(port, ptr, rust_vec_len, data_len),
+47 => wire__crate__api__search_engine__SearchEngine_generate_index_highlight_pattern_impl(port, ptr, rust_vec_len, data_len),
+48 => wire__crate__api__search_engine__SearchEngine_get_book_fingerprints_impl(port, ptr, rust_vec_len, data_len),
+49 => wire__crate__api__search_engine__SearchEngine_get_book_stamps_impl(port, ptr, rust_vec_len, data_len),
+50 => wire__crate__api__search_engine__SearchEngine_get_book_text_fingerprint_impl(port, ptr, rust_vec_len, data_len),
+51 => wire__crate__api__search_engine__SearchEngine_get_book_text_fingerprints_impl(port, ptr, rust_vec_len, data_len),
+52 => wire__crate__api__search_engine__SearchEngine_get_document_by_id_impl(port, ptr, rust_vec_len, data_len),
+53 => wire__crate__api__search_engine__SearchEngine_get_document_count_impl(port, ptr, rust_vec_len, data_len),
+54 => wire__crate__api__search_engine__SearchEngine_get_facet_counts_impl(port, ptr, rust_vec_len, data_len),
+55 => wire__crate__api__search_engine__SearchEngine_get_facet_counts_advanced_impl(port, ptr, rust_vec_len, data_len),
+56 => wire__crate__api__search_engine__SearchEngine_get_facet_counts_advanced_with_status_impl(port, ptr, rust_vec_len, data_len),
+57 => wire__crate__api__search_engine__SearchEngine_get_facet_counts_exact_impl(port, ptr, rust_vec_len, data_len),
+58 => wire__crate__api__search_engine__SearchEngine_get_facet_counts_exact_with_status_impl(port, ptr, rust_vec_len, data_len),
+59 => wire__crate__api__search_engine__SearchEngine_get_facet_counts_fuzzy_impl(port, ptr, rust_vec_len, data_len),
+60 => wire__crate__api__search_engine__SearchEngine_get_facet_counts_fuzzy_with_status_impl(port, ptr, rust_vec_len, data_len),
+61 => wire__crate__api__search_engine__SearchEngine_get_facet_counts_user_regex_impl(port, ptr, rust_vec_len, data_len),
+62 => wire__crate__api__search_engine__SearchEngine_get_facet_counts_with_status_impl(port, ptr, rust_vec_len, data_len),
+63 => wire__crate__api__search_engine__SearchEngine_get_indexed_file_paths_impl(port, ptr, rust_vec_len, data_len),
+64 => wire__crate__api__search_engine__SearchEngine_get_segment_count_impl(port, ptr, rust_vec_len, data_len),
+65 => wire__crate__api__search_engine__SearchEngine_has_acronyms_dictionary_impl(port, ptr, rust_vec_len, data_len),
+66 => wire__crate__api__search_engine__SearchEngine_has_magic_dictionary_impl(port, ptr, rust_vec_len, data_len),
+67 => wire__crate__api__search_engine__SearchEngine_has_translation_dictionary_impl(port, ptr, rust_vec_len, data_len),
+68 => wire__crate__api__search_engine__SearchEngine_install_semantic_vectors_impl(port, ptr, rust_vec_len, data_len),
+69 => wire__crate__api__search_engine__SearchEngine_lexical_cancellation_handle_impl(port, ptr, rust_vec_len, data_len),
+70 => wire__crate__api__search_engine__SearchEngine_new_impl(port, ptr, rust_vec_len, data_len),
+71 => wire__crate__api__search_engine__SearchEngine_open_index_writer_impl(port, ptr, rust_vec_len, data_len),
+72 => wire__crate__api__search_engine__SearchEngine_open_semantic_artifact_impl(port, ptr, rust_vec_len, data_len),
+73 => wire__crate__api__search_engine__SearchEngine_optimize_impl(port, ptr, rust_vec_len, data_len),
+74 => wire__crate__api__search_engine__SearchEngine_release_memory_impl(port, ptr, rust_vec_len, data_len),
+75 => wire__crate__api__search_engine__SearchEngine_remove_documents_by_title_impl(port, ptr, rust_vec_len, data_len),
+76 => wire__crate__api__search_engine__SearchEngine_remove_semantic_books_impl(port, ptr, rust_vec_len, data_len),
+77 => wire__crate__api__search_engine__SearchEngine_reset_semantic_index_impl(port, ptr, rust_vec_len, data_len),
+78 => wire__crate__api__search_engine__SearchEngine_rollback_impl(port, ptr, rust_vec_len, data_len),
+79 => wire__crate__api__search_engine__SearchEngine_search_impl(port, ptr, rust_vec_len, data_len),
+80 => wire__crate__api__search_engine__SearchEngine_search_advanced_impl(port, ptr, rust_vec_len, data_len),
+81 => wire__crate__api__search_engine__SearchEngine_search_advanced_stream_impl(port, ptr, rust_vec_len, data_len),
+82 => wire__crate__api__search_engine__SearchEngine_search_advanced_stream_with_counts_impl(port, ptr, rust_vec_len, data_len),
+83 => wire__crate__api__search_engine__SearchEngine_search_and_count_impl(port, ptr, rust_vec_len, data_len),
+84 => wire__crate__api__search_engine__SearchEngine_search_and_count_advanced_impl(port, ptr, rust_vec_len, data_len),
+85 => wire__crate__api__search_engine__SearchEngine_search_and_count_exact_impl(port, ptr, rust_vec_len, data_len),
+86 => wire__crate__api__search_engine__SearchEngine_search_and_count_fuzzy_impl(port, ptr, rust_vec_len, data_len),
+87 => wire__crate__api__search_engine__SearchEngine_search_exact_impl(port, ptr, rust_vec_len, data_len),
+88 => wire__crate__api__search_engine__SearchEngine_search_exact_stream_impl(port, ptr, rust_vec_len, data_len),
+89 => wire__crate__api__search_engine__SearchEngine_search_exact_stream_with_counts_impl(port, ptr, rust_vec_len, data_len),
+90 => wire__crate__api__search_engine__SearchEngine_search_fuzzy_impl(port, ptr, rust_vec_len, data_len),
+91 => wire__crate__api__search_engine__SearchEngine_search_fuzzy_stream_impl(port, ptr, rust_vec_len, data_len),
+92 => wire__crate__api__search_engine__SearchEngine_search_fuzzy_stream_with_counts_impl(port, ptr, rust_vec_len, data_len),
+93 => wire__crate__api__search_engine__SearchEngine_search_fuzzy_terms_impl(port, ptr, rust_vec_len, data_len),
+94 => wire__crate__api__search_engine__SearchEngine_search_semantic_impl(port, ptr, rust_vec_len, data_len),
+95 => wire__crate__api__search_engine__SearchEngine_search_snapshot_impl(port, ptr, rust_vec_len, data_len),
+96 => wire__crate__api__search_engine__SearchEngine_search_stream_impl(port, ptr, rust_vec_len, data_len),
+97 => wire__crate__api__search_engine__SearchEngine_search_user_regex_stream_impl(port, ptr, rust_vec_len, data_len),
+98 => wire__crate__api__search_engine__SearchEngine_semantic_coverage_impl(port, ptr, rust_vec_len, data_len),
+99 => wire__crate__api__search_engine__SearchEngine_semantic_index_books_impl(port, ptr, rust_vec_len, data_len),
+100 => wire__crate__api__search_engine__SearchEngine_semantic_index_diff_impl(port, ptr, rust_vec_len, data_len),
+101 => wire__crate__api__search_engine__SearchEngine_semantic_passage_highlights_impl(port, ptr, rust_vec_len, data_len),
+102 => wire__crate__api__search_engine__SearchEngine_semantic_status_impl(port, ptr, rust_vec_len, data_len),
+103 => wire__crate__api__search_engine__SearchEngine_semantic_vectors_info_impl(port, ptr, rust_vec_len, data_len),
+104 => wire__crate__api__search_engine__SearchEngine_set_acronyms_dictionary_path_impl(port, ptr, rust_vec_len, data_len),
+105 => wire__crate__api__search_engine__SearchEngine_set_book_order_impl(port, ptr, rust_vec_len, data_len),
+106 => wire__crate__api__search_engine__SearchEngine_set_bulk_indexing_impl(port, ptr, rust_vec_len, data_len),
+107 => wire__crate__api__search_engine__SearchEngine_set_economy_indexing_impl(port, ptr, rust_vec_len, data_len),
+108 => wire__crate__api__search_engine__SearchEngine_set_magic_dictionary_path_impl(port, ptr, rust_vec_len, data_len),
+109 => wire__crate__api__search_engine__SearchEngine_set_translation_dictionary_path_impl(port, ptr, rust_vec_len, data_len),
+110 => wire__crate__api__search_engine__SearchEngine_upsert_document_impl(port, ptr, rust_vec_len, data_len),
+111 => wire__crate__api__search_engine__SearchEngine_upsert_documents_batch_impl(port, ptr, rust_vec_len, data_len),
+112 => wire__crate__api__search_engine__SearchEngine_verify_semantic_vectors_impl(port, ptr, rust_vec_len, data_len),
+113 => wire__crate__api__search_engine__SearchEngine_warm_book_order_impl(port, ptr, rust_vec_len, data_len),
+121 => wire__crate__api__search_engine__attached_line_source_status_impl(port, ptr, rust_vec_len, data_len),
+122 => wire__crate__api__search_engine__check_index_compatibility_impl(port, ptr, rust_vec_len, data_len),
+126 => wire__crate__api__search_engine__compute_content_fingerprint_bytes_impl(port, ptr, rust_vec_len, data_len),
+127 => wire__crate__api__search_engine__configure_attached_line_source_impl(port, ptr, rust_vec_len, data_len),
+128 => wire__crate__api__search_engine__configure_line_source_impl(port, ptr, rust_vec_len, data_len),
+129 => wire__crate__api__search_engine__configure_user_books_line_source_impl(port, ptr, rust_vec_len, data_len),
+133 => wire__crate__api__library_indexing__library_book_content_fingerprint_impl(port, ptr, rust_vec_len, data_len),
+134 => wire__crate__api__search_engine__line_source_status_impl(port, ptr, rust_vec_len, data_len),
+142 => wire__crate__api__search_engine__resume_line_source_impl(port, ptr, rust_vec_len, data_len),
+143 => wire__crate__api__search_engine__resume_line_source_owned_impl(port, ptr, rust_vec_len, data_len),
+144 => wire__crate__api__diagnostic_test__run_diagnostic_test_impl(port, ptr, rust_vec_len, data_len),
+145 => wire__crate__api__focused_benchmark__run_focused_benchmark_impl(port, ptr, rust_vec_len, data_len),
+152 => wire__crate__api__search_engine__suspend_line_source_impl(port, ptr, rust_vec_len, data_len),
+153 => wire__crate__api__search_engine__suspend_line_source_owned_impl(port, ptr, rust_vec_len, data_len),
                         _ => unreachable!(),
                     }
 }
@@ -10822,156 +10989,121 @@ fn pde_ffi_dispatcher_sync_impl(
             rust_vec_len,
             data_len,
         ),
-        16 => wire__crate__api__search_engine__SearchEngine_book_order_revision_impl(
+        7 => wire__crate__api__search_engine__LexicalCancellationHandle_cancel_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        17 => wire__crate__api__search_engine__SearchEngine_cancel_lexical_search_impl(
+        114 => wire__crate__api__search_engine__SemanticCancellationToken_cancel_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        64 => wire__crate__api__search_engine__SearchEngine_has_acronyms_dictionary_impl(
+        115 => wire__crate__api__search_engine__SemanticCancellationToken_is_cancelled_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        65 => wire__crate__api__search_engine__SearchEngine_has_magic_dictionary_impl(
+        116 => wire__crate__api__search_engine__SemanticCancellationToken_new_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        66 => wire__crate__api__search_engine__SearchEngine_has_translation_dictionary_impl(
+        117 => wire__crate__api__search_engine__UserRegexCancellationToken_cancel_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        102 => wire__crate__api__search_engine__SearchEngine_set_acronyms_dictionary_path_impl(
+        118 => wire__crate__api__search_engine__UserRegexCancellationToken_is_cancelled_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        106 => wire__crate__api__search_engine__SearchEngine_set_magic_dictionary_path_impl(
+        119 => wire__crate__api__search_engine__UserRegexCancellationToken_new_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        107 => wire__crate__api__search_engine__SearchEngine_set_translation_dictionary_path_impl(
+        120 => wire__crate__api__search_engine__UserRegexMatcher_find_matches_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        112 => wire__crate__api__search_engine__SemanticCancellationToken_cancel_impl(
+        123 => wire__crate__api__search_engine__compute_book_fingerprint_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        113 => wire__crate__api__search_engine__SemanticCancellationToken_is_cancelled_impl(
+        124 => wire__crate__api__search_engine__compute_book_metadata_fingerprint_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        114 => wire__crate__api__search_engine__SemanticCancellationToken_new_impl(
+        125 => wire__crate__api__search_engine__compute_content_fingerprint_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        115 => wire__crate__api__search_engine__UserRegexCancellationToken_cancel_impl(
+        130 => wire__crate__api__search_engine__generate_highlight_pattern_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        116 => wire__crate__api__search_engine__UserRegexCancellationToken_is_cancelled_impl(
+        131 => wire__crate__api__search_engine__generate_literal_highlight_pattern_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        117 => wire__crate__api__search_engine__UserRegexCancellationToken_new_impl(
+        132 => wire__crate__api__search_engine__is_probably_garbage_pdf_text_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        118 => wire__crate__api__search_engine__UserRegexMatcher_find_matches_impl(
+        135 => wire__crate__api__search_engine__normalize_pdf_text_for_indexing_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        121 => wire__crate__api__search_engine__compute_book_fingerprint_impl(
+        136 => wire__crate__api__search_engine__normalize_pdf_texts_for_indexing_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        122 => wire__crate__api__search_engine__compute_book_metadata_fingerprint_impl(
+        137 => wire__crate__api__search_engine__normalize_text_for_indexing_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        123 => wire__crate__api__search_engine__compute_content_fingerprint_impl(
+        138 => wire__crate__api__search_engine__normalize_texts_for_indexing_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        128 => wire__crate__api__search_engine__generate_highlight_pattern_impl(
+        139 => wire__crate__api__search_engine__parse_user_regex_impl(ptr, rust_vec_len, data_len),
+        140 => wire__crate__api__search_engine__prepare_user_regex_matcher_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        129 => wire__crate__api__search_engine__generate_literal_highlight_pattern_impl(
+        141 => wire__crate__api__search_engine__query_word_spans_impl(ptr, rust_vec_len, data_len),
+        146 => wire__crate__api__search_engine__sanitize_query_impl(ptr, rust_vec_len, data_len),
+        147 => wire__crate__api__search_engine__semantic_compaction_policy_defaults_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        130 => wire__crate__api__search_engine__is_probably_garbage_pdf_text_impl(
+        148 => wire__crate__api__search_engine__semantic_ranking_options_defaults_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        133 => wire__crate__api__search_engine__normalize_pdf_text_for_indexing_impl(
+        149 => wire__crate__api__search_engine__set_vocalized_snippets_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        134 => wire__crate__api__search_engine__normalize_pdf_texts_for_indexing_impl(
-            ptr,
-            rust_vec_len,
-            data_len,
-        ),
-        135 => wire__crate__api__search_engine__normalize_text_for_indexing_impl(
-            ptr,
-            rust_vec_len,
-            data_len,
-        ),
-        136 => wire__crate__api__search_engine__normalize_texts_for_indexing_impl(
-            ptr,
-            rust_vec_len,
-            data_len,
-        ),
-        137 => wire__crate__api__search_engine__parse_user_regex_impl(ptr, rust_vec_len, data_len),
-        138 => wire__crate__api__search_engine__prepare_user_regex_matcher_impl(
-            ptr,
-            rust_vec_len,
-            data_len,
-        ),
-        139 => wire__crate__api__search_engine__query_word_spans_impl(ptr, rust_vec_len, data_len),
-        144 => wire__crate__api__search_engine__sanitize_query_impl(ptr, rust_vec_len, data_len),
-        145 => wire__crate__api__search_engine__semantic_compaction_policy_defaults_impl(
-            ptr,
-            rust_vec_len,
-            data_len,
-        ),
-        146 => wire__crate__api__search_engine__semantic_ranking_options_defaults_impl(
-            ptr,
-            rust_vec_len,
-            data_len,
-        ),
-        147 => wire__crate__api__search_engine__set_vocalized_snippets_impl(
-            ptr,
-            rust_vec_len,
-            data_len,
-        ),
-        148 => wire__crate__api__search_engine__split_query_words_impl(ptr, rust_vec_len, data_len),
-        149 => wire__crate__api__search_engine__sqlite_host_entry_address_impl(
+        150 => wire__crate__api__search_engine__split_query_words_impl(ptr, rust_vec_len, data_len),
+        151 => wire__crate__api__search_engine__sqlite_host_entry_address_impl(
             ptr,
             rust_vec_len,
             data_len,
@@ -11013,6 +11145,26 @@ impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<IndexingCancellationToken>>
     for IndexingCancellationToken
 {
     fn into_into_dart(self) -> FrbWrapper<IndexingCancellationToken> {
+        self.into()
+    }
+}
+
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for FrbWrapper<LexicalCancellationHandle> {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        flutter_rust_bridge::for_generated::rust_auto_opaque_encode::<_, MoiArc<_>>(self.0)
+            .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for FrbWrapper<LexicalCancellationHandle>
+{
+}
+
+impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<LexicalCancellationHandle>>
+    for LexicalCancellationHandle
+{
+    fn into_into_dart(self) -> FrbWrapper<LexicalCancellationHandle> {
         self.into()
     }
 }
@@ -12899,6 +13051,18 @@ impl SseEncode for IndexingCancellationToken {
     }
 }
 
+impl SseEncode for LexicalCancellationHandle {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <RustOpaqueMoi<
+            flutter_rust_bridge::for_generated::RustAutoOpaqueInner<LexicalCancellationHandle>,
+        >>::sse_encode(
+            flutter_rust_bridge::for_generated::rust_auto_opaque_encode::<_, MoiArc<_>>(self),
+            serializer,
+        );
+    }
+}
+
 impl SseEncode for RegexBenchmarker {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -13003,6 +13167,19 @@ impl SseEncode
 impl SseEncode
     for RustOpaqueMoi<
         flutter_rust_bridge::for_generated::RustAutoOpaqueInner<IndexingCancellationToken>,
+    >
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        let (ptr, size) = self.sse_encode_raw();
+        <usize>::sse_encode(ptr, serializer);
+        <i32>::sse_encode(size, serializer);
+    }
+}
+
+impl SseEncode
+    for RustOpaqueMoi<
+        flutter_rust_bridge::for_generated::RustAutoOpaqueInner<LexicalCancellationHandle>,
     >
 {
     // Codec=Sse (Serialization based), see doc to use other codecs
@@ -14847,6 +15024,20 @@ mod io {
     }
 
     #[unsafe(no_mangle)]
+    pub extern "C" fn frbgen_otzaria_search_engine_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLexicalCancellationHandle(
+        ptr: *const std::ffi::c_void,
+    ) {
+        MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<LexicalCancellationHandle>>::increment_strong_count(ptr as _);
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn frbgen_otzaria_search_engine_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLexicalCancellationHandle(
+        ptr: *const std::ffi::c_void,
+    ) {
+        MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<LexicalCancellationHandle>>::decrement_strong_count(ptr as _);
+    }
+
+    #[unsafe(no_mangle)]
     pub extern "C" fn frbgen_otzaria_search_engine_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
         ptr: *const std::ffi::c_void,
     ) {
@@ -14969,6 +15160,20 @@ mod web {
         ptr: *const std::ffi::c_void,
     ) {
         MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<IndexingCancellationToken>>::decrement_strong_count(ptr as _);
+    }
+
+    #[wasm_bindgen]
+    pub fn rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLexicalCancellationHandle(
+        ptr: *const std::ffi::c_void,
+    ) {
+        MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<LexicalCancellationHandle>>::increment_strong_count(ptr as _);
+    }
+
+    #[wasm_bindgen]
+    pub fn rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLexicalCancellationHandle(
+        ptr: *const std::ffi::c_void,
+    ) {
+        MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<LexicalCancellationHandle>>::decrement_strong_count(ptr as _);
     }
 
     #[wasm_bindgen]

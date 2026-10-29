@@ -33,6 +33,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken;
 
   CrossPlatformFinalizerArg
+  get rust_arc_decrement_strong_count_LexicalCancellationHandlePtr => wire
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLexicalCancellationHandle;
+
+  CrossPlatformFinalizerArg
   get rust_arc_decrement_strong_count_RegexBenchmarkerPtr => wire
       .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker;
 
@@ -64,6 +68,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   IndexingCancellationToken
   dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
+    dynamic raw,
+  );
+
+  @protected
+  LexicalCancellationHandle
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLexicalCancellationHandle(
     dynamic raw,
   );
 
@@ -122,6 +132,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  LexicalCancellationHandle
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLexicalCancellationHandle(
+    dynamic raw,
+  );
+
+  @protected
   SearchEngine
   dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
     dynamic raw,
@@ -173,6 +189,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   IndexingCancellationToken
   dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
+    dynamic raw,
+  );
+
+  @protected
+  LexicalCancellationHandle
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLexicalCancellationHandle(
     dynamic raw,
   );
 
@@ -777,6 +799,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  LexicalCancellationHandle
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLexicalCancellationHandle(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   RegexBenchmarker
   sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     SseDeserializer deserializer,
@@ -827,6 +855,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   IndexingCancellationToken
   sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  LexicalCancellationHandle
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLexicalCancellationHandle(
     SseDeserializer deserializer,
   );
 
@@ -892,6 +926,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   IndexingCancellationToken
   sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  LexicalCancellationHandle
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLexicalCancellationHandle(
     SseDeserializer deserializer,
   );
 
@@ -1652,6 +1692,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLexicalCancellationHandle(
+    LexicalCancellationHandle self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     RegexBenchmarker self,
     SseSerializer serializer,
@@ -1710,6 +1757,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
   sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
     IndexingCancellationToken self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLexicalCancellationHandle(
+    LexicalCancellationHandle self,
     SseSerializer serializer,
   );
 
@@ -1788,6 +1842,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
   sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
     IndexingCancellationToken self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLexicalCancellationHandle(
+    LexicalCancellationHandle self,
     SseSerializer serializer,
   );
 
@@ -2733,6 +2794,22 @@ class RustLibWire implements BaseWire {
       );
 
   void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLexicalCancellationHandle(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLexicalCancellationHandle(
+        ptr,
+      );
+
+  void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLexicalCancellationHandle(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLexicalCancellationHandle(
+        ptr,
+      );
+
+  void
   rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRegexBenchmarker(
     int ptr,
   ) => wasmModule
@@ -2836,6 +2913,16 @@ extension type RustLibWasmModule._(JSObject _) implements JSObject {
 
   external void
   rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerIndexingCancellationToken(
+    int ptr,
+  );
+
+  external void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLexicalCancellationHandle(
+    int ptr,
+  );
+
+  external void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLexicalCancellationHandle(
     int ptr,
   );
 
