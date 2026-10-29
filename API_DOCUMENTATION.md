@@ -744,6 +744,18 @@ Future<void> configureUserBooksLineSource({String? dbPath}); // personal books; 
 - `DocumentInput.textStorage` (optional) accepts only `null` or `inIndex`:
   `addDocumentsBatch` / `upsertDocumentsBatch` refuse a `libraryDb` document, since a
   ready-made document cannot be tied to its row. `addPdfBook` always stores its text.
+- `addPdfBookBytes` is `addPdfBook` over one UTF-8 buffer: for page `i`, `ends[2i]` ends
+  its reference and `ends[2i + 1]` its text, each slice starting where the previous ended,
+  and `pageIndexes[i]` is its index. The bridge encodes and decodes arguments on the
+  calling thread. Pack off the UI isolate and pass `Uint8List` / `Uint32List` to avoid
+  converting ordinary Dart lists. Transfer still takes O(bytes) synchronous work and
+  can block the caller for large books; this API moves UTF-8 decoding and indexing to
+  the worker, not the transfer itself. Valid UTF-8 slices borrow the buffer on the
+  worker without per-page text copies. Invalid UTF-8, including a boundary splitting
+  a code point, is replaced. `ends` must contain exactly two offsets per page, be
+  nondecreasing, stay within the buffer, and end at its length; equal offsets allow
+  empty references or texts. An empty page list requires an empty buffer. Invalid
+  offsets return an error before any document is added.
 - Each library line carries `lineCheck`, a CRC-32 of its exact text (spacing, punctuation,
   nikud and markup included). Every library row of one result window is read in a single
   read transaction and must match its `lineCheck`, and its `lineHash` when that is not 0;
@@ -942,7 +954,7 @@ Documents match a facet query if their topic starts with any of the specified fa
 ### Dimension Facets (author / era / base)
 
 Alongside the category path, a document can carry extra facet values supplied at
-indexing time (`extraFacets` on `addTextBook`/`addTextBookBytes`/`addPdfBook`/
+indexing time (`extraFacets` on `addTextBook`/`addTextBookBytes`/`addPdfBook`/`addPdfBookBytes`/
 `addDocument`/`upsertDocument`, or `DocumentInput.extraFacets`). Three English
 roots are reserved as *filter dimensions* (they cannot collide with Hebrew
 category names): `/author/<name>`, `/era/<period>`, `/base` (foundational books).
