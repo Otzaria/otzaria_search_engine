@@ -8,14 +8,11 @@ import 'api/diagnostic_test.dart';
 import 'api/focused_benchmark.dart';
 import 'api/library_indexing.dart';
 import 'api/search_engine.dart';
-
 import 'dart:async';
 import 'dart:convert';
-
 import 'frb_generated.dart';
 import 'frb_generated.io.dart'
     if (dart.library.js_interop) 'frb_generated.web.dart';
-
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 /// Main entrypoint of the Rust API
@@ -9504,8 +9501,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   dco_decode_Map_String_Map_String_bool_None_None(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return Map.fromEntries(
-      dco_decode_list_record_string_map_string_bool_none(raw)
-          .map((e) => MapEntry(e.$1, e.$2)),
+      dco_decode_list_record_string_map_string_bool_none(
+        raw,
+      ).map((e) => MapEntry(e.$1, e.$2)),
     );
   }
 
@@ -9513,8 +9511,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Map<String, String> dco_decode_Map_String_String_None(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return Map.fromEntries(
-      dco_decode_list_record_string_string(raw)
-          .map((e) => MapEntry(e.$1, e.$2)),
+      dco_decode_list_record_string_string(
+        raw,
+      ).map((e) => MapEntry(e.$1, e.$2)),
     );
   }
 
@@ -9546,8 +9545,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Map<int, List<String>> dco_decode_Map_u_32_list_String_None(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return Map.fromEntries(
-      dco_decode_list_record_u_32_list_string(raw)
-          .map((e) => MapEntry(e.$1, e.$2)),
+      dco_decode_list_record_u_32_list_string(
+        raw,
+      ).map((e) => MapEntry(e.$1, e.$2)),
     );
   }
 
@@ -16569,7 +16569,15 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// The bridge decodes arguments on the caller's thread, and decoding a large
   /// `Vec<PdfPageInput>` there froze the app's UI (Otzaria/otzaria#3443). A
   /// buffer the app packs off its UI isolate crosses as a copy; UTF-8 is
-  /// checked here, on the worker. Invalid UTF-8 is replaced, never an error.
+  /// checked here, on the worker. Valid slices borrow the input buffer without
+  /// per-page text copies. Invalid UTF-8 (including a split code point) is
+  /// replaced. End offsets must be nondecreasing and cover the entire buffer;
+  /// equal offsets allow empty references/texts. Malformed offsets return an
+  /// error before any document is added.
+  ///
+  /// Packing off the UI isolate does not remove the bridge's synchronous
+  /// O(bytes) transfer. Use Uint8List/Uint32List on Dart to avoid list conversion;
+  /// large books can still block the caller during the transfer.
   Future<int> addPdfBookBytes({
     required String title,
     required String topics,
