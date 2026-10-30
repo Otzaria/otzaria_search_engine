@@ -1,7 +1,7 @@
 //! A regular expression the user typed into the search box wrapped in `/…/`.
 //!
 //! [`parse`] folds the pattern like the index folds text (no nikud, ASCII quotes, maqaf as a
-//! space), drops anchors at its edges and sorts it into one of three kinds:
+//! space), drops word boundaries and spaces at its edges and sorts it into one of three kinds:
 //!
 //! - [`RegexKind::Word`] — no explicit whitespace: the pattern is matched against whole index
 //!   terms, like the advanced search's regex word. `.` and negated classes stay inside a word.
@@ -9,8 +9,10 @@
 //!   no part containing whitespace of its own: an adjacent phrase of term patterns, which
 //!   may continue onto the next line like any phrase.
 //! - [`RegexKind::Line`] — anything else that can span a space (`שמע .* ישראל`,
-//!   `(\S+\s){2}ישראל`, an inner `\b`): matched against each line's text, normalized as the
-//!   app's `cleanLineForSearch` does, with a word boundary implied at both edges. Candidates
+//!   `(\S+\s){2}ישראל`, an inner `\b`), and any pattern with `^` or `$` at an edge (`^ספר$`
+//!   is a line of that one word): matched against each line's text, normalized as the app's
+//!   `cleanLineForSearch` does, with a word boundary implied at both edges. `^` and `$` also
+//!   hold past a leading or trailing enumerator (`(ג) `, `{פ}`). Candidates
 //!   come from the fixed words of the pattern when they are selective; otherwise the books
 //!   in scope are read whole, in parallel, and the search can be cancelled.
 //!
@@ -123,6 +125,7 @@ pub(crate) struct Fragment {
     pub(crate) whole: bool,
 }
 
+#[derive(Clone)]
 pub(crate) struct LinePlan {
     regex: Regex,
     /// The pattern without word-boundary assertions: a superset that the regex crate runs as a
@@ -130,11 +133,16 @@ pub(crate) struct LinePlan {
     prefilter: Regex,
     /// Fixed words: every clause (an OR of fragments) holds in every matching line.
     pub(crate) clauses: Vec<Vec<Fragment>>,
+    /// The pattern has `\A` (`\z`): it also holds after a leading (before a trailing)
+    /// enumerator such as `(ג) `, as [`crate::cross_line::content_range`] finds it.
+    starts_line: bool,
+    ends_line: bool,
 }
 
 pub(crate) struct UserRegex {
     pub(crate) kind: RegexKind,
-    /// The folded pattern without its `/…/` and edge anchors.
+    /// The folded pattern without its `/…/` and edge word boundaries; a line pattern keeps
+    /// an edge `^` (`\A`) and `$` (`\z`).
     pub(crate) pattern: String,
     pub(crate) parts: Vec<TermPart>,
     pub(crate) line: Option<LinePlan>,
@@ -168,10 +176,18 @@ pub(crate) fn parse(raw: &str) -> Result<UserRegex, String> {
             other => format!("syntax: {other}"),
         })?;
     let mut elements = top_elements(strip_captures(hir));
+    let (mut line_start, mut line_end) = (false, false);
     loop {
         let edge =
             |e: &Hir| matches!(e.kind(), HirKind::Look(_) | HirKind::Empty) || is_separator(e);
-        if elements.first().is_some_and(edge) {
+        let is_look = |e: &Hir, want: Look| matches!(e.kind(), HirKind::Look(l) if *l == want);
+        if elements.first().is_some_and(|e| is_look(e, Look::Start)) {
+            line_start = true;
+            elements.remove(0);
+        } else if elements.last().is_some_and(|e| is_look(e, Look::End)) {
+            line_end = true;
+            elements.pop();
+        } else if elements.first().is_some_and(edge) {
             elements.remove(0);
         } else if elements.last().is_some_and(edge) {
             elements.pop();
@@ -199,9 +215,18 @@ pub(crate) fn parse(raw: &str) -> Result<UserRegex, String> {
         }
     }
     let parts: Vec<Hir> = parts.into_iter().map(Hir::concat).collect();
+    // An edge `^` or `$` is kept: only a line pattern can tell where a line starts or ends.
+    if line_start {
+        elements.insert(0, Hir::look(Look::Start));
+    }
+    if line_end {
+        elements.push(Hir::look(Look::End));
+    }
     let whole = Hir::concat(elements.clone());
     let pattern = whole.to_string();
-    let spans_space = inner_looks
+    let spans_space = line_start
+        || line_end
+        || inner_looks
         || parts.iter().any(has_explicit_whitespace)
         || (parts.len() > 1 && parts.iter().any(is_wildcard_word));
     if spans_space {
@@ -258,8 +283,12 @@ fn is_dropped_mark(c: char) -> bool {
         || is_word_mark(c)
 }
 
+/// `hir` without capture groups, its multi-line anchors read as plain ones: a searched line
+/// has no line break inside it.
 fn strip_captures(hir: Hir) -> Hir {
     match hir.into_kind() {
+        HirKind::Look(Look::StartLF | Look::StartCRLF) => Hir::look(Look::Start),
+        HirKind::Look(Look::EndLF | Look::EndCRLF) => Hir::look(Look::End),
         HirKind::Capture(capture) => strip_captures(*capture.sub),
         HirKind::Concat(subs) => Hir::concat(subs.into_iter().map(strip_captures).collect()),
         HirKind::Alternation(subs) => {
@@ -954,10 +983,13 @@ fn line_plan(whole: &Hir, elements: &[Hir]) -> Result<LinePlan, String> {
             .build()
             .map_err(|e| format!("too complex: {e}"))
     };
+    let looks = whole.properties().look_set();
     Ok(LinePlan {
         regex: build(&source)?,
         prefilter: build(&without_word_looks(whole).to_string())?,
         clauses: required_clauses(elements),
+        starts_line: looks.contains(Look::Start),
+        ends_line: looks.contains(Look::End),
     })
 }
 
@@ -1061,7 +1093,10 @@ fn required_clauses(elements: &[Hir]) -> Vec<Vec<Fragment>> {
                 }
                 true
             }
-            None => is_separator(element),
+            None => {
+                is_separator(element)
+                    || matches!(element.kind(), HirKind::Look(Look::Start | Look::End))
+            }
         };
         flush(&mut run, left_bounded, bounding, &mut clauses);
         left_bounded = bounding;
@@ -1137,17 +1172,58 @@ static GLUE: Lazy<ClassUnicode> = Lazy::new(|| {
 });
 
 impl LinePlan {
-    pub(crate) fn is_match(&self, view: &str) -> bool {
-        self.prefilter.is_match(view) && self.regex.find_iter(view).any(|m| !m.is_empty())
+    /// The parts of `view` the pattern runs on: the whole line, and for an anchored pattern
+    /// also the line without its edge enumerators, so `\A` and `\z` hold at either edge.
+    fn windows(&self, view: &str) -> impl Iterator<Item = std::ops::Range<usize>> {
+        let mut edges = [0, 0, view.len(), view.len()];
+        if self.starts_line || self.ends_line {
+            let content = crate::cross_line::content_range(view);
+            if self.starts_line {
+                edges[1] = content.start;
+            }
+            if self.ends_line {
+                edges[3] = content.end;
+            }
+        }
+        [(0, 2), (1, 2), (0, 3), (1, 3)]
+            .into_iter()
+            .filter_map(move |(s, e)| {
+                let fresh = (s == 0 || edges[1] != edges[0]) && (e == 2 || edges[3] != edges[2]);
+                (fresh && edges[s] < edges[e]).then(|| edges[s]..edges[e])
+            })
     }
 
-    /// Byte ranges of the non-empty matches in `view`.
+    pub(crate) fn is_match(&self, view: &str) -> bool {
+        self.windows(view).any(|w| {
+            let part = &view[w];
+            self.prefilter.is_match(part) && self.regex.find_iter(part).any(|m| !m.is_empty())
+        })
+    }
+
+    /// Byte ranges of the non-empty matches in `view`, without overlaps.
     pub(crate) fn find(&self, view: &str) -> Vec<std::ops::Range<usize>> {
-        self.regex
-            .find_iter(view)
-            .filter(|m| !m.is_empty())
-            .map(|m| m.range())
-            .collect()
+        let mut found: Vec<std::ops::Range<usize>> = self
+            .windows(view)
+            .flat_map(|w| {
+                self.regex
+                    .find_iter(&view[w.clone()])
+                    .filter(|m| !m.is_empty())
+                    .map(move |m| w.start + m.start()..w.start + m.end())
+            })
+            .collect();
+        // The windows overlap: keep the leftmost, longest match of each place.
+        if self.starts_line || self.ends_line {
+            found.sort_by_key(|r| (r.start, std::cmp::Reverse(r.end)));
+            let mut end = 0;
+            found.retain(|r| {
+                let keep = r.start >= end;
+                if keep {
+                    end = r.end;
+                }
+                keep
+            });
+        }
+        found
     }
 }
 
@@ -1299,13 +1375,13 @@ impl LineView {
 /// Finds a pattern's matches in displayed text (markup included), in UTF-16 units.
 pub(crate) enum DisplayMatcher {
     Terms(PreparedHighlightMatcher),
-    Line(Regex),
+    Line(LinePlan),
 }
 
 impl DisplayMatcher {
     pub(crate) fn new(regex: &UserRegex) -> Option<Self> {
         match regex.kind {
-            RegexKind::Line => Some(DisplayMatcher::Line(regex.line.as_ref()?.regex.clone())),
+            RegexKind::Line => Some(DisplayMatcher::Line(regex.line.clone()?)),
             _ => {
                 let branches = regex
                     .parts
@@ -1323,13 +1399,12 @@ impl DisplayMatcher {
     pub(crate) fn find(&self, data: &str) -> Vec<Match> {
         match self {
             DisplayMatcher::Terms(matcher) => matcher.find_matches(data, &[]),
-            DisplayMatcher::Line(regex) => {
+            DisplayMatcher::Line(plan) => {
                 let view = LineView::of(data, true);
-                regex
-                    .find_iter(&view.text)
-                    .filter(|m| !m.is_empty())
-                    .map(|m| {
-                        let (start, end) = view.source_range(&m.range());
+                plan.find(&view.text)
+                    .iter()
+                    .map(|range| {
+                        let (start, end) = view.source_range(range);
                         let (start, end) = (start as usize, end as usize);
                         Match {
                             start,

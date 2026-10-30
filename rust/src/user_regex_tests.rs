@@ -23,7 +23,6 @@ fn patterns_are_classified_by_explicit_whitespace() {
     for raw in [
         "/מש.ה/",
         "/ספר.*/",
-        "/^ספר$/",
         r"/\bספר\b/",
         "/(משה|אהרן)/",
         "/משה|אהרן/",
@@ -53,6 +52,7 @@ fn patterns_are_classified_by_explicit_whitespace() {
         r"/שמע\bישראל/",
         r"/^\S+\s\S+$/",
         "/שמע\\s*ישראל/",
+        "/^ספר$/",
     ] {
         assert_eq!(kind(raw), Ok(RegexKind::Line), "{raw}");
     }
@@ -129,14 +129,15 @@ fn relaxed_term_patterns_are_verified_exactly() {
     assert!(p.accepts("ספרים") && p.accepts("ספר"));
     assert!(!p.accepts("הספר"));
 
-    // A whole term, whatever the anchors.
-    for raw in ["/ספר/", "/^ספר$/", r"/\bספר\b/"] {
+    // A whole term, whatever the word boundaries.
+    for raw in ["/ספר/", r"/\bספר\b/"] {
         let p = part(raw);
         assert!(
             p.accepts("ספר") && !p.accepts("ספרים") && !p.accepts("הספר"),
             "{raw}"
         );
     }
+    assert_eq!(kind("/^ספר$/"), Ok(RegexKind::Line));
 }
 
 #[test]
@@ -559,7 +560,8 @@ fn a_line_pattern_finds_words_glued_by_quotes_and_numerals() {
     let cases: [(&str, Vec<&str>); 10] = [
         ("/תורה .* שבת/", right_edge.clone()),
         (r"/תורה .* שבת\b/", right_edge.clone()),
-        ("/^תורה .* שבת$/", right_edge.clone()),
+        // `$`: nothing, not even a glued quote, after the word.
+        ("/^תורה .* שבת$/", vec!["תורה נביא שבת"]),
         (r"/תורה\W.*שבת/", contained),
         ("/שבת .* זה/", left.to_vec()),
         ("/א .* רמב''ם/", vec!["א ב רמב''ם", "א ב רמב׳׳ם"]),
@@ -759,9 +761,9 @@ fn a_cross_space_pattern_without_fixed_words_reads_the_books_in_scope() {
     let engine = stored_engine(dir.path(), &sample_books());
     let pattern = r"/^\S+\s\S+$/";
     assert!(parse(pattern).unwrap().line.unwrap().clauses.is_empty());
-    // Every line of two words or more.
-    assert_eq!(count(&engine, pattern, &[]), 9);
-    assert_eq!(count(&engine, pattern, &["/תנך/נביאים"]), 2);
+    // Every line of exactly two words.
+    assert_eq!(count(&engine, pattern, &[]), 5);
+    assert_eq!(count(&engine, pattern, &["/תנך/נביאים"]), 1);
     let by_book = engine
         .count_by_book_user_regex(
             pattern.to_string(),
@@ -769,7 +771,7 @@ fn a_cross_space_pattern_without_fixed_words_reads_the_books_in_scope() {
             &UserRegexCancellationToken::new(),
         )
         .unwrap();
-    assert_eq!(by_book.counts.get("a.txt"), Some(&7));
+    assert_eq!(by_book.counts.get("a.txt"), Some(&4));
     let facets = engine
         .get_facet_counts_user_regex(
             pattern.to_string(),
@@ -786,7 +788,7 @@ fn a_cross_space_pattern_without_fixed_words_reads_the_books_in_scope() {
     counts.sort();
     assert_eq!(
         counts,
-        vec![("/תנך/נביאים".to_string(), 2), ("/תנך/תורה".to_string(), 7)]
+        vec![("/תנך/נביאים".to_string(), 1), ("/תנך/תורה".to_string(), 4)]
     );
 }
 
@@ -896,7 +898,7 @@ fn a_cancelled_line_search_resumes_where_it_stopped() {
     let dir = TempDir::new().unwrap();
     let engine = three_hundred_books(dir.path());
     // Candidate lines read one by one, and books read whole: two batches each.
-    for (pattern, total) in [(r"/שמע \S+ ישראל/", 300), (r"/^\S+\s\S+$/", 600)] {
+    for (pattern, total) in [(r"/שמע \S+ ישראל/", 300), (r"/^\S+\s\S+$/", 300)] {
         let cancel = Arc::new(AtomicBool::new(false));
         let mut first = Vec::new();
         engine
@@ -1002,9 +1004,9 @@ fn a_concurrent_call_waits_for_the_running_scan() {
         release.send(()).unwrap();
         let first = first.join().unwrap();
         let second = second.join().unwrap();
-        // Two words anywhere: every line.
-        assert_eq!(last(&second).total_count, Some(600));
-        assert_eq!(last(&first).total_count, Some(600));
+        // A line of exactly two words: one in each book.
+        assert_eq!(last(&second).total_count, Some(300));
+        assert_eq!(last(&first).total_count, Some(300));
         assert!(
             second.iter().all(|e| e.progress_total == 0),
             "the waiting call read nothing itself"
@@ -1023,28 +1025,28 @@ fn a_narrower_scope_reads_nothing_after_a_complete_wider_search() {
     let pattern = r"/^\S+\s\S+$/";
     assert_eq!(
         last(&events(&engine, pattern, &[], &none)).total_count,
-        Some(9)
+        Some(5)
     );
     let narrow = events(&engine, pattern, &["/תנך/נביאים"], &none);
     let end = last(&narrow);
-    assert_eq!(end.total_count, Some(2));
+    assert_eq!(end.total_count, Some(1));
     assert_eq!(
         end.book_counts.clone().unwrap(),
-        HashMap::from([("b.txt".to_string(), 2)])
+        HashMap::from([("b.txt".to_string(), 1)])
     );
     assert!(narrow.iter().all(|e| e.progress_total == 0), "no line read");
     let hits = results(&narrow);
-    assert_eq!(hits.len(), 2);
+    assert_eq!(hits.len(), 1);
     assert!(hits.iter().all(|h| h.file_path == "b.txt"));
 
     // A finished search that does not cover the scope does not answer it.
     let other = r"/^\S+\s+\S+$/";
     assert_eq!(
         last(&events(&engine, other, &["/תנך/נביאים"], &none)).total_count,
-        Some(2)
+        Some(1)
     );
     let outside = events(&engine, other, &["/תנך/תורה"], &none);
-    assert_eq!(last(&outside).total_count, Some(7));
+    assert_eq!(last(&outside).total_count, Some(4));
     assert!(
         outside.iter().any(|e| e.progress_total > 0),
         "read its own scope"
@@ -1204,7 +1206,7 @@ fn a_cross_space_pattern_reads_library_books_whole_and_compressed() {
     let engine = library_engine(dir.path(), &[(7, first), (9, second)]);
 
     // No fixed word: every line of two words and more, read from the database.
-    let pattern = r"/^\S+\s\S+$/";
+    let pattern = r"/^\S+\s\S+/";
     let found = events(&engine, pattern, &[], &Arc::new(AtomicBool::new(false)));
     let end = last(&found);
     assert_eq!(end.total_count, Some(5));
@@ -1213,6 +1215,10 @@ fn a_cross_space_pattern_reads_library_books_whole_and_compressed() {
         .iter()
         .all(|r| r.text_status == TextStatus::Ok));
     assert_eq!(count(&engine, pattern, &["/lib/9"]), 2, "one book only");
+    // Exactly two words: the heading and `אחת שתיים`.
+    let pattern = r"/^\S+\s\S+$/";
+    assert_eq!(count(&engine, pattern, &[]), 2);
+    assert_eq!(count(&engine, pattern, &["/lib/9"]), 1);
 
     // Fixed words: candidates read one by one, the compressed row among them.
     let found = events(
@@ -2259,5 +2265,178 @@ fn hanging_letters_ignore_direction_controls_in_search_and_source_ranges() {
         assert_eq!(found.len(), 1, "{source:?}");
         assert_eq!(found[0].start, 3);
         assert_eq!(found[0].end, source.encode_utf16().count());
+    }
+}
+
+// ── Line anchors ───────────────────────────────────────────────────────────────
+
+fn whole_and_contained(raw: &str) -> Vec<Vec<String>> {
+    let plan = parse(raw).unwrap().line.unwrap();
+    plan.clauses
+        .into_iter()
+        .map(|c| {
+            c.into_iter()
+                .map(|f| match f.whole {
+                    true => f.text,
+                    false => format!("*{}*", f.text),
+                })
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn an_edge_line_anchor_makes_a_line_pattern() {
+    for raw in [
+        "/^ספר/",
+        "/ספר$/",
+        "/^ספר$/",
+        "/^שמע ישראל/",
+        "/^א.*/",
+        r"/^\bספר\b$/",
+        "/(?m)^ספר/",
+        "/(?mR)^ספר$/",
+    ] {
+        assert_eq!(kind(raw), Ok(RegexKind::Line), "{raw}");
+    }
+    // Word boundaries and spaces at the edges are still dropped.
+    assert_eq!(kind(r"/\bספר\b/"), Ok(RegexKind::Word));
+    assert_eq!(kind(r"/ \bשמע ישראל\b /"), Ok(RegexKind::Sequence));
+    for raw in ["/^$/", "/^/", "/$/", "/^ $/", r"/^\b$/", "/(?m)^$/"] {
+        assert!(kind(raw).is_err(), "{raw}");
+    }
+    // A multi-line anchor is a plain one: a searched line has no line break.
+    assert_eq!(
+        parse("/(?m)^ספר$/").unwrap().pattern,
+        parse("/^ספר$/").unwrap().pattern
+    );
+    // The pattern keys the line-search cache: anchored and unanchored stay apart.
+    assert_ne!(
+        parse("/^שמע .*/").unwrap().pattern,
+        parse("/שמע .*/").unwrap().pattern
+    );
+    // An anchor bounds the word next to it, which then narrows as a whole term.
+    assert_eq!(whole_and_contained("/^שמע .*/"), [["שמע"]]);
+    assert_eq!(whole_and_contained("/.* ישראל$/"), [["ישראל"]]);
+    assert_eq!(whole_and_contained("/^ספר$/"), [["ספר"]]);
+    assert_eq!(whole_and_contained("/^שמע.*/"), [["*שמע*"]]);
+    assert!(whole_and_contained("/^א.*/").is_empty());
+}
+
+#[test]
+fn line_anchors_hold_at_the_line_edges_and_past_enumerators() {
+    let matches = |raw: &str, line: &str| -> Vec<String> {
+        let units: Vec<u16> = line.encode_utf16().collect();
+        prepare_user_regex_matcher(raw.to_string())
+            .unwrap()
+            .find_matches(line.to_string())
+            .iter()
+            .map(|m| String::from_utf16(&units[m.start as usize..m.end as usize]).unwrap())
+            .collect()
+    };
+    let start = "/^ויאמר/";
+    assert_eq!(matches(start, "ויאמר אלהים"), ["ויאמר"]);
+    assert_eq!(matches(start, "(ג) ויאמר אלהים"), ["ויאמר"]);
+    assert_eq!(matches(start, "[יא] ויאמר אלהים"), ["ויאמר"]);
+    assert_eq!(matches(start, "{פ} ויאמר"), ["ויאמר"]);
+    assert_eq!(matches(start, "<b>(ג)</b> וַיֹּאמֶר אלהים"), ["וַיֹּאמֶר"]);
+    assert!(matches(start, "אז ויאמר אלהים").is_empty());
+    assert!(matches(start, "ויאמרו אלהים").is_empty());
+    assert!(matches(start, "(שם הספר) ויאמר").is_empty());
+    assert_eq!(matches("/(?m)^ויאמר/", "(ג) ויאמר"), ["ויאמר"]);
+    assert_eq!(matches(r"/^\(ג\) ויאמר/", "(ג) ויאמר אלהים"), ["(ג) ויאמר"]);
+    // From either start, one match: the longest.
+    assert_eq!(matches("/^.*/", "(ג) ויאמר"), ["(ג) ויאמר"]);
+    assert_eq!(matches("/^ויאמר .*/", "(ג) ויאמר אלהים"), ["ויאמר אלהים"]);
+
+    let end = "/אלהים$/";
+    assert_eq!(matches(end, "ויאמר אלהים"), ["אלהים"]);
+    assert_eq!(matches(end, "ויאמר אלהים {פ}"), ["אלהים"]);
+    assert_eq!(matches(end, "ויאמר אלהים (א):"), ["אלהים"]);
+    assert!(matches(end, "אלהים ויאמר").is_empty());
+    assert!(matches(end, "ויאמר אלהים:").is_empty());
+    assert_eq!(matches("/^ויהי כן$/", "(ז) ויהי כן {פ}"), ["ויהי כן"]);
+    assert_eq!(matches("/^ספר$/", "ספר"), ["ספר"]);
+    assert!(matches("/^ספר$/", "ספר תורה").is_empty());
+}
+
+#[test]
+fn anchored_line_patterns_search_and_paint_like_the_book_view() {
+    let lines = vec![
+        "(ג) ויאמר אלהים יהי אור",
+        "ויאמר משה אל העם",
+        "ואז ויאמר אלהים",
+        "[יא] ויאמר יהודה",
+        "ויהי ערב ויהי בקר {פ}",
+        "ספר",
+        "ספר תורה",
+    ];
+    let books = vec![TestBook {
+        title: "ספר ע",
+        topics: "/תנך/תורה",
+        path: "anchors.txt".into(),
+        order: 0,
+        lines: lines.clone(),
+    }];
+    let dir = TempDir::new().unwrap();
+    let engine = stored_engine(dir.path(), &books);
+    let sorted = |found: &[&str]| -> Vec<String> {
+        let mut found: Vec<String> = found.iter().map(|l| l.to_string()).collect();
+        found.sort();
+        found
+    };
+    for (raw, expected) in [
+        (
+            "/^ויאמר/",
+            sorted(&[
+                "(ג) ויאמר אלהים יהי אור",
+                "ויאמר משה אל העם",
+                "[יא] ויאמר יהודה",
+            ]),
+        ),
+        (r"/^\(ג\) ויאמר/", sorted(&["(ג) ויאמר אלהים יהי אור"])),
+        ("/^ספר$/", sorted(&["ספר"])),
+        ("/בקר$/", sorted(&["ויהי ערב ויהי בקר {פ}"])),
+        (r"/^\S+ \S+$/", sorted(&["ספר תורה", "[יא] ויאמר יהודה"])),
+    ] {
+        assert_eq!(found_lines(&engine, &books, raw, &[]), expected, "{raw}");
+        let matcher = prepare_user_regex_matcher(raw.to_string()).unwrap();
+        for line in &lines {
+            assert_eq!(
+                !matcher.find_matches(line.to_string()).is_empty(),
+                expected.iter().any(|f| f == line),
+                "{raw}: the book view and the search disagree on {line:?}"
+            );
+        }
+    }
+    // The enumerator is not painted.
+    let found = events(&engine, "/^ויאמר/", &[], &Arc::new(AtomicBool::new(false)));
+    let painted: Vec<&str> = results(&found).iter().map(|r| r.text.as_str()).collect();
+    assert!(
+        painted
+            .iter()
+            .any(|t| t.contains("(ג) <font color=red>ויאמר</font> אלהים")),
+        "{painted:?}"
+    );
+    // Same engine, same cache: the anchored search is its own.
+    assert_eq!(count(&engine, r"/ויאמר \S+/", &[]), 4);
+    assert_eq!(count(&engine, r"/^ויאמר \S+/", &[]), 3);
+    assert_eq!(count(&engine, "/ספר/", &[]), 2);
+}
+
+#[test]
+fn anchored_line_patterns_read_library_rows_past_enumerators() {
+    let _guard = crate::external_text_tests::guard();
+    let dir = TempDir::new().unwrap();
+    let rows: &[&str] = &["(ג) ויאמר אלהים", "*[יא] ויאמר יהודה", "ואז ויאמר אלהים"];
+    let engine = library_engine(dir.path(), &[(7, rows)]);
+    // Candidates read one by one, and the whole book read without a fixed word.
+    for pattern in ["/^ויאמר/", r"/^\S+ \S+$/"] {
+        let found = events(&engine, pattern, &[], &Arc::new(AtomicBool::new(false)));
+        let end = last(&found);
+        assert_eq!(end.total_count, Some(2), "{pattern}");
+        let mut segments: Vec<u64> = results(&found).iter().map(|r| r.segment).collect();
+        segments.sort();
+        assert_eq!(segments, [0, 1], "{pattern}");
     }
 }

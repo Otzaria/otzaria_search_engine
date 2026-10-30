@@ -16669,15 +16669,17 @@ pub enum UserRegexKind {
     /// Words separated by a space or `\s+`: an adjacent phrase of term patterns, which may
     /// continue onto the next line (`/(משה|אהרן) רבנו/`).
     WordSequence,
-    /// Anything else that spans a space: matched against each line's text (`/שמע .* ישראל/`).
+    /// Anything else that spans a space, or has `^`/`$` at an edge: matched against each
+    /// line's text (`/שמע .* ישראל/`, `/^ספר$/`).
     CrossSpace,
 }
 
 /// What [`parse_user_regex`] made of a query.
 pub struct UserRegexPlan {
     pub kind: UserRegexKind,
-    /// The pattern as searched: without `/…/` and edge anchors, folded like the index text
-    /// (no nikud, ASCII quotes, maqaf as a space). Empty when `Invalid`.
+    /// The pattern as searched: without `/…/` and edge `\b`, folded like the index text
+    /// (no nikud, ASCII quotes, maqaf as a space); an edge `^`/`$` stays as `\A`/`\z`. Empty
+    /// when `Invalid`.
     pub pattern: String,
     /// The pattern of each word, for `SingleWord` (one) and `WordSequence`; empty otherwise.
     pub words: Vec<String>,
@@ -16688,11 +16690,13 @@ pub struct UserRegexPlan {
 /// Classifies a query typed as `/pattern/`. Cheap and synchronous: parsing plus a
 /// size-limited compile, never more than a few milliseconds whatever the pattern.
 ///
-/// Rules: the outer `/…/` and `^`, `$`, `\b` at the pattern's edges are dropped (a term
-/// pattern matches whole terms, a cross-space one starts and ends on a word boundary when
-/// its edge is a letter). `.` and negated classes never cross a space by themselves; only
-/// explicit whitespace (a space, `\s`, `\W`, a class of spaces) makes a pattern
-/// cross-space — as do an inner anchor, and a sequence word that names no letter (`.*`).
+/// Rules: the outer `/…/` and `\b` at the pattern's edges are dropped (a term pattern
+/// matches whole terms, a cross-space one starts and ends on a word boundary when its edge is
+/// a letter). `^` or `$` at an edge makes the pattern cross-space, anchored to the line's
+/// start or end, or past an enumerator at that edge (`(ג) `, `{פ}`). `.` and negated
+/// classes never cross a space by themselves; only explicit whitespace (a space, `\s`, `\W`,
+/// a class of spaces) makes a pattern cross-space — as do an inner anchor, and a sequence
+/// word that names no letter (`.*`).
 /// Matching ignores case and nikud; geresh/gershayim match their ASCII forms.
 #[frb(sync)]
 pub fn parse_user_regex(raw: String) -> UserRegexPlan {
