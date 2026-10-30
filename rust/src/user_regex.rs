@@ -1,7 +1,7 @@
 //! A regular expression the user typed into the search box wrapped in `/…/`.
 //!
 //! [`parse`] folds the pattern like the index folds text (no nikud, ASCII quotes, maqaf as a
-//! space), drops anchors at its edges and sorts it into one of three kinds:
+//! space), drops word boundaries and spaces at its edges and sorts it into one of three kinds:
 //!
 //! - [`RegexKind::Word`] — no explicit whitespace: the pattern is matched against whole index
 //!   terms, like the advanced search's regex word. `.` and negated classes stay inside a word.
@@ -9,8 +9,10 @@
 //!   no part containing whitespace of its own: an adjacent phrase of term patterns, which
 //!   may continue onto the next line like any phrase.
 //! - [`RegexKind::Line`] — anything else that can span a space (`שמע .* ישראל`,
-//!   `(\S+\s){2}ישראל`, an inner `\b`): matched against each line's text, normalized as the
-//!   app's `cleanLineForSearch` does, with a word boundary implied at both edges. Candidates
+//!   `(\S+\s){2}ישראל`, an inner `\b`), and any pattern with `^` or `$` at an edge (`^ספר$`
+//!   is a line of that one word): matched against each line's text, normalized as the app's
+//!   `cleanLineForSearch` does, with a word boundary implied at both edges. `^` and `$` also
+//!   hold past a leading or trailing enumerator (`(ג) `, `{פ}`). Candidates
 //!   come from the fixed words of the pattern when they are selective; otherwise the books
 //!   in scope are read whole, in parallel, and the search can be cancelled.
 //!
@@ -26,6 +28,7 @@ use std::sync::{Arc, Mutex};
 
 use once_cell::sync::Lazy;
 use regex::{Regex, RegexBuilder};
+use regex_automata::{meta::Regex as LineRegex, Input};
 use regex_syntax::hir::{Class, ClassUnicode, ClassUnicodeRange, Hir, HirKind, Look, Repetition};
 use tantivy::collector::{Collector, Count, SegmentCollector};
 use tantivy::query::{BooleanQuery, EnableScoring, Occur, Query, TermQuery, TermSetQuery};
@@ -118,23 +121,33 @@ pub(crate) struct TermPart {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Fragment {
     pub(crate) text: String,
-    /// Bounded on both sides in the pattern: a whole term, or one glued to others by
-    /// [`GLUE`]; otherwise only contained in a term.
-    pub(crate) whole: bool,
+    /// Guaranteed tokenizer boundaries, rather than the regex's implied Unicode `\b`.
+    /// Transparent punctuation can produce a `\b` inside one indexed term (`ספר.ספר`).
+    pub(crate) left_bounded: bool,
+    pub(crate) right_bounded: bool,
 }
 
+#[derive(Clone)]
 pub(crate) struct LinePlan {
-    regex: Regex,
+    regex: LineRegex,
     /// The pattern without word-boundary assertions: a superset that the regex crate runs as a
     /// DFA on Hebrew text, where a Unicode `\b` forces its slow engines.
     prefilter: Regex,
     /// Fixed words: every clause (an OR of fragments) holds in every matching line.
     pub(crate) clauses: Vec<Vec<Fragment>>,
+    /// The pattern asserts `\A` (`\z`) somewhere: it also holds after a leading (before a
+    /// trailing) enumerator such as `(ג) `, as [`crate::cross_line::content_range`] finds it.
+    starts_line: bool,
+    ends_line: bool,
+    /// Every matching path requires this anchor: no dependency search is needed.
+    requires_start: bool,
+    requires_end: bool,
 }
 
 pub(crate) struct UserRegex {
     pub(crate) kind: RegexKind,
-    /// The folded pattern without its `/…/` and edge anchors.
+    /// The folded pattern without its `/…/` and edge word boundaries; a line pattern keeps
+    /// an edge `^` (`\A`) and `$` (`\z`).
     pub(crate) pattern: String,
     pub(crate) parts: Vec<TermPart>,
     pub(crate) line: Option<LinePlan>,
@@ -168,10 +181,22 @@ pub(crate) fn parse(raw: &str) -> Result<UserRegex, String> {
             other => format!("syntax: {other}"),
         })?;
     let mut elements = top_elements(strip_captures(hir));
+    let (mut line_start, mut line_end) = (false, false);
     loop {
         let edge =
             |e: &Hir| matches!(e.kind(), HirKind::Look(_) | HirKind::Empty) || is_separator(e);
-        if elements.first().is_some_and(edge) {
+        let is_look = |e: &Hir, want: Look| matches!(e.kind(), HirKind::Look(l) if *l == want);
+        if elements.first().is_some_and(|e| is_look(e, Look::Start)) {
+            line_start = true;
+            elements.remove(0);
+        } else if elements.last().is_some_and(|e| is_look(e, Look::End)) {
+            line_end = true;
+            elements.pop();
+        } else if elements.first().is_some_and(|e| is_look(e, Look::End))
+            || elements.last().is_some_and(|e| is_look(e, Look::Start))
+        {
+            return Err("anchor on the wrong edge".to_string());
+        } else if elements.first().is_some_and(edge) {
             elements.remove(0);
         } else if elements.last().is_some_and(edge) {
             elements.pop();
@@ -199,9 +224,18 @@ pub(crate) fn parse(raw: &str) -> Result<UserRegex, String> {
         }
     }
     let parts: Vec<Hir> = parts.into_iter().map(Hir::concat).collect();
+    // An edge `^` or `$` is kept: only a line pattern can tell where a line starts or ends.
+    if line_start {
+        elements.insert(0, Hir::look(Look::Start));
+    }
+    if line_end {
+        elements.push(Hir::look(Look::End));
+    }
     let whole = Hir::concat(elements.clone());
     let pattern = whole.to_string();
-    let spans_space = inner_looks
+    let spans_space = line_start
+        || line_end
+        || inner_looks
         || parts.iter().any(has_explicit_whitespace)
         || (parts.len() > 1 && parts.iter().any(is_wildcard_word));
     if spans_space {
@@ -258,8 +292,12 @@ fn is_dropped_mark(c: char) -> bool {
         || is_word_mark(c)
 }
 
+/// `hir` without capture groups, its multi-line anchors read as plain ones: a searched line
+/// has no line break inside it.
 fn strip_captures(hir: Hir) -> Hir {
     match hir.into_kind() {
+        HirKind::Look(Look::StartLF | Look::StartCRLF) => Hir::look(Look::Start),
+        HirKind::Look(Look::EndLF | Look::EndCRLF) => Hir::look(Look::End),
         HirKind::Capture(capture) => strip_captures(*capture.sub),
         HirKind::Concat(subs) => Hir::concat(subs.into_iter().map(strip_captures).collect()),
         HirKind::Alternation(subs) => {
@@ -941,11 +979,13 @@ fn line_plan(whole: &Hir, elements: &[Hir]) -> Result<LinePlan, String> {
     let pattern = whole.to_string();
     let (first_word, _) = edge_chars(whole, true);
     let (last_word, _) = edge_chars(whole, false);
-    let source = format!(
-        "{}(?:{pattern}){}",
-        if first_word { r"\b{start-half}" } else { "" },
-        if last_word { r"\b{end-half}" } else { "" },
-    );
+    let source = |pattern: &str| {
+        format!(
+            "{}(?:{pattern}){}",
+            if first_word { r"\b{start-half}" } else { "" },
+            if last_word { r"\b{end-half}" } else { "" },
+        )
+    };
     let build = |source: &str| {
         RegexBuilder::new(source)
             .case_insensitive(true)
@@ -954,11 +994,36 @@ fn line_plan(whole: &Hir, elements: &[Hir]) -> Result<LinePlan, String> {
             .build()
             .map_err(|e| format!("too complex: {e}"))
     };
+    let looks = whole.properties().look_set();
     Ok(LinePlan {
-        regex: build(&source)?,
+        regex: build_line_regex(&source(&pattern))?,
         prefilter: build(&without_word_looks(whole).to_string())?,
         clauses: required_clauses(elements),
+        starts_line: looks.contains(Look::Start),
+        ends_line: looks.contains(Look::End),
+        requires_start: whole.properties().look_set_prefix().contains(Look::Start),
+        requires_end: whole.properties().look_set_suffix().contains(Look::End),
     })
+}
+
+/// The same meta engine and limits as `regex::RegexBuilder`, with bounded search inputs
+/// exposed so disabling an anchor cannot let a consuming alternative eat the sentinel.
+fn build_line_regex(source: &str) -> Result<LineRegex, String> {
+    LineRegex::builder()
+        .configure(
+            LineRegex::config()
+                .match_kind(regex_automata::MatchKind::LeftmostFirst)
+                .utf8_empty(true)
+                .nfa_size_limit(Some(LINE_REGEX_SIZE_LIMIT))
+                .hybrid_cache_capacity(LINE_REGEX_SIZE_LIMIT),
+        )
+        .syntax(
+            regex_automata::util::syntax::Config::new()
+                .case_insensitive(true)
+                .utf8(true),
+        )
+        .build(source)
+        .map_err(|e| format!("too complex: {e}"))
 }
 
 fn without_word_looks(hir: &Hir) -> Hir {
@@ -1030,8 +1095,8 @@ fn is_word_char(c: char) -> bool {
 }
 
 /// The fixed words of a line pattern's top level, as AND-ed clauses: each term of a run of
-/// literal characters, whole when the run lies between two characters that end a term (or
-/// a pattern edge), and the OR of a top-level group whose every branch is a fixed word.
+/// literal characters, retaining tokenizer boundaries guaranteed by separators or line
+/// anchors, and the OR of a top-level group whose every branch is a fixed word.
 fn required_clauses(elements: &[Hir]) -> Vec<Vec<Fragment>> {
     fn flush(run: &mut String, left: bool, right: bool, clauses: &mut Vec<Vec<Fragment>>) {
         for fragment in fragments(run, left, right) {
@@ -1043,14 +1108,9 @@ fn required_clauses(elements: &[Hir]) -> Vec<Vec<Fragment>> {
     }
     let mut clauses: Vec<Vec<Fragment>> = Vec::new();
     let mut run = String::new();
-    // A pattern edge bounds a run only where `line_plan` implies a word boundary.
-    let edge = |c: Option<char>| c.is_some_and(is_word_char);
-    let mut left_bounded = edge(
-        elements
-            .first()
-            .and_then(literal_text)
-            .and_then(|t| t.chars().next()),
-    );
+    // An implied Unicode word boundary need not end an indexed token. Only an actual
+    // separator or a line anchor guarantees a tokenizer boundary on that side.
+    let mut left_bounded = false;
     for element in elements {
         let bounding = match literal_text(element) {
             Some(text) => {
@@ -1061,7 +1121,10 @@ fn required_clauses(elements: &[Hir]) -> Vec<Vec<Fragment>> {
                 }
                 true
             }
-            None => is_separator(element),
+            None => {
+                is_separator(element)
+                    || matches!(element.kind(), HirKind::Look(Look::Start | Look::End))
+            }
         };
         flush(&mut run, left_bounded, bounding, &mut clauses);
         left_bounded = bounding;
@@ -1071,8 +1134,7 @@ fn required_clauses(elements: &[Hir]) -> Vec<Vec<Fragment>> {
             }
         }
     }
-    let right_bounded = edge(run.chars().next_back());
-    flush(&mut run, left_bounded, right_bounded, &mut clauses);
+    flush(&mut run, left_bounded, false, &mut clauses);
     clauses
 }
 
@@ -1113,7 +1175,8 @@ fn fragments(run: &str, left: bool, right: bool) -> Vec<Fragment> {
             let indexed = text.len() < crate::api::search_engine::MAX_TOKEN_BYTES;
             (text.chars().count() >= 2 && indexed).then(|| Fragment {
                 text: text.to_string(),
-                whole: (left || i > 0) && (right || i < last),
+                left_bounded: left || i > 0,
+                right_bounded: right || i < last,
             })
         })
         .collect()
@@ -1137,17 +1200,115 @@ static GLUE: Lazy<ClassUnicode> = Lazy::new(|| {
 });
 
 impl LinePlan {
-    pub(crate) fn is_match(&self, view: &str) -> bool {
-        self.prefilter.is_match(view) && self.regex.find_iter(view).any(|m| !m.is_empty())
+    /// `[0, content start, len, content end]` of `view`; the content edges stay at the line's
+    /// edges unless the pattern is anchored there.
+    fn edges(&self, view: &str) -> [usize; 4] {
+        let mut edges = [0, 0, view.len(), view.len()];
+        if self.starts_line || self.ends_line {
+            let content = crate::cross_line::content_range(view);
+            // The index keeps `[א]` glued to a word inside that word's term: skip it only spaced.
+            let (lead, tail) = (&view[..content.start], &view[content.end..]);
+            if self.starts_line && !lead.ends_with(']') {
+                edges[1] = content.start;
+            }
+            if self.ends_line && !tail.starts_with('[') {
+                edges[3] = content.end;
+            }
+        }
+        edges
     }
 
-    /// Byte ranges of the non-empty matches in `view`.
+    /// The parts of `view` the pattern runs on: the whole line, and for an anchored pattern
+    /// also the line without its edge enumerators, so `\A` and `\z` hold at either edge.
+    fn windows(edges: [usize; 4]) -> impl Iterator<Item = std::ops::Range<usize>> {
+        [(0, 2), (1, 2), (0, 3), (1, 3)]
+            .into_iter()
+            .filter_map(move |(s, e)| {
+                let fresh = (s == 0 || edges[1] != edges[0]) && (e == 2 || edges[3] != edges[2]);
+                (fresh && edges[s] < edges[e]).then(|| edges[s]..edges[e])
+            })
+    }
+
+    pub(crate) fn is_match(&self, view: &str) -> bool {
+        Self::windows(self.edges(view)).any(|w| {
+            let part = &view[w];
+            self.prefilter.is_match(part) && self.regex.find_iter(part).any(|m| !m.is_empty())
+        })
+    }
+
+    /// Byte ranges of the non-empty matches in `view`, without overlaps.
     pub(crate) fn find(&self, view: &str) -> Vec<std::ops::Range<usize>> {
-        self.regex
-            .find_iter(view)
-            .filter(|m| !m.is_empty())
-            .map(|m| m.range())
-            .collect()
+        let edges = self.edges(view);
+        if edges[0] == edges[1] && edges[2] == edges[3] {
+            return self
+                .regex
+                .find_iter(view)
+                .filter(|m| !m.is_empty())
+                .map(|m| m.range())
+                .collect();
+        }
+        // Retain each match's window so each anchor can be tested independently, without
+        // changing the text available to a consuming alternative such as `אלהים\W?`.
+        let mut found: Vec<(std::ops::Range<usize>, std::ops::Range<usize>)> = Self::windows(edges)
+            .flat_map(|w| {
+                self.regex
+                    .find_iter(&view[w.clone()])
+                    .filter(|m| !m.is_empty())
+                    .map(move |m| (w.start + m.start()..w.start + m.end(), w.clone()))
+            })
+            .collect();
+        {
+            let padded = format!("\n{view}\n");
+            let depends_on =
+                |r: &std::ops::Range<usize>, w: &std::ops::Range<usize>, start: bool| {
+                    if (start && self.requires_start) || (!start && self.requires_end) {
+                        return true;
+                    }
+                    // The extra context at an enumerator boundary is punctuation or whitespace,
+                    // just like the sentinel: Unicode word assertions keep their original value.
+                    // The span prohibits consuming outside the original window; only one absolute
+                    // anchor is disabled, and the opposite edge retains its original context.
+                    let m = if start {
+                        self.regex
+                            .find(Input::new(&padded[..w.end + 1]).span(r.start + 1..w.end + 1))
+                            .map(|m| m.start() - 1..m.end() - 1)
+                    } else {
+                        self.regex
+                            .find(
+                                Input::new(&padded[w.start + 1..])
+                                    .span(r.start - w.start..w.end - w.start),
+                            )
+                            .map(|m| w.start + m.start()..w.start + m.end())
+                    };
+                    m.as_ref() != Some(r)
+                };
+            // Prefer the content edge only over matches depending on the SAME anchor.
+            if edges[1] > 0
+                && found
+                    .iter()
+                    .any(|(r, w)| r.start == edges[1] && depends_on(r, w, true))
+            {
+                found.retain(|(r, w)| r.start >= edges[1] || !depends_on(r, w, true));
+            }
+            if edges[3] < edges[2]
+                && found
+                    .iter()
+                    .any(|(r, w)| r.end == edges[3] && depends_on(r, w, false))
+            {
+                found.retain(|(r, w)| r.end <= edges[3] || !depends_on(r, w, false));
+            }
+            // The windows overlap: keep the leftmost, longest match of each place.
+            found.sort_by_key(|(r, _)| (r.start, std::cmp::Reverse(r.end)));
+            let mut end = 0;
+            found.retain(|(r, _)| {
+                let keep = r.start >= end;
+                if keep {
+                    end = r.end;
+                }
+                keep
+            });
+        }
+        found.into_iter().map(|(range, _)| range).collect()
     }
 }
 
@@ -1299,13 +1460,13 @@ impl LineView {
 /// Finds a pattern's matches in displayed text (markup included), in UTF-16 units.
 pub(crate) enum DisplayMatcher {
     Terms(PreparedHighlightMatcher),
-    Line(Regex),
+    Line(LinePlan),
 }
 
 impl DisplayMatcher {
     pub(crate) fn new(regex: &UserRegex) -> Option<Self> {
         match regex.kind {
-            RegexKind::Line => Some(DisplayMatcher::Line(regex.line.as_ref()?.regex.clone())),
+            RegexKind::Line => Some(DisplayMatcher::Line(regex.line.clone()?)),
             _ => {
                 let branches = regex
                     .parts
@@ -1323,13 +1484,12 @@ impl DisplayMatcher {
     pub(crate) fn find(&self, data: &str) -> Vec<Match> {
         match self {
             DisplayMatcher::Terms(matcher) => matcher.find_matches(data, &[]),
-            DisplayMatcher::Line(regex) => {
+            DisplayMatcher::Line(plan) => {
                 let view = LineView::of(data, true);
-                regex
-                    .find_iter(&view.text)
-                    .filter(|m| !m.is_empty())
-                    .map(|m| {
-                        let (start, end) = view.source_range(&m.range());
+                plan.find(&view.text)
+                    .iter()
+                    .map(|range| {
+                        let (start, end) = view.source_range(range);
                         let (start, end) = (start as usize, end as usize);
                         Match {
                             start,
@@ -1965,14 +2125,7 @@ fn candidate_query(
         .clauses
         .iter()
         .flatten()
-        .map(|fragment| {
-            // A word glued by a character the index drops (`יב[ע]ר` is `יבער`) is not found.
-            if fragment.whole {
-                glued_part(&fragment.text)
-            } else {
-                contains_part(&fragment.text)
-            }
-        })
+        .map(fragment_part)
         .collect::<anyhow::Result<Vec<_>>>()?;
     if ctx.cancel.load(Ordering::Relaxed) {
         anyhow::bail!(CANCELLED);
@@ -2083,6 +2236,20 @@ fn contains_part(fragment: &str) -> anyhow::Result<TermPart> {
 /// `(?:.*[glue])?fragment(?:[glue].*)?` as a term part: the term `fragment`, or one that
 /// [`GLUE`] joins it to.
 fn glued_part(fragment: &str) -> anyhow::Result<TermPart> {
+    bounded_part(fragment, true, true)
+}
+
+fn fragment_part(fragment: &Fragment) -> anyhow::Result<TermPart> {
+    match (fragment.left_bounded, fragment.right_bounded) {
+        (true, true) => glued_part(&fragment.text),
+        (false, false) => contains_part(&fragment.text),
+        (left, right) => bounded_part(&fragment.text, left, right),
+    }
+}
+
+/// Keep each guaranteed token boundary, allowing a transparent regex boundary inside
+/// the token on the other side. This retains prefix/suffix selectivity for `/^ספר/`.
+fn bounded_part(fragment: &str, left: bool, right: bool) -> anyhow::Result<TermPart> {
     let glue = || Hir::class(Class::Unicode(GLUE.clone()));
     let optional = |subs| {
         Hir::repetition(Repetition {
@@ -2093,9 +2260,17 @@ fn glued_part(fragment: &str) -> anyhow::Result<TermPart> {
         })
     };
     literal_part(Hir::concat(vec![
-        optional(vec![any_text(), glue()]),
+        if left {
+            optional(vec![any_text(), glue()])
+        } else {
+            any_text()
+        },
         Hir::literal(fragment.as_bytes().to_vec()),
-        optional(vec![glue(), any_text()]),
+        if right {
+            optional(vec![glue(), any_text()])
+        } else {
+            any_text()
+        },
     ]))
 }
 

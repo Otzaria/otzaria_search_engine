@@ -291,11 +291,13 @@ BigInt computeBookMetadataFingerprint({
 /// Classifies a query typed as `/pattern/`. Cheap and synchronous: parsing plus a
 /// size-limited compile, never more than a few milliseconds whatever the pattern.
 ///
-/// Rules: the outer `/…/` and `^`, `$`, `\b` at the pattern's edges are dropped (a term
-/// pattern matches whole terms, a cross-space one starts and ends on a word boundary when
-/// its edge is a letter). `.` and negated classes never cross a space by themselves; only
-/// explicit whitespace (a space, `\s`, `\W`, a class of spaces) makes a pattern
-/// cross-space — as do an inner anchor, and a sequence word that names no letter (`.*`).
+/// Rules: the outer `/…/` and `\b` at the pattern's edges are dropped (a term pattern
+/// matches whole terms, a cross-space one starts and ends on a word boundary when its edge is
+/// a letter). `^` or `$` at an edge makes the pattern cross-space, anchored to the line's
+/// start or end, or past an enumerator at that edge (`(ג) `, `{פ}`, a spaced `[א] `).
+/// `.` and negated classes never cross a space by themselves; only explicit whitespace (a
+/// space, `\s`, `\W`, a class of spaces) makes a pattern cross-space — as do an inner anchor,
+/// and a sequence word that names no letter (`.*`).
 /// Matching ignores case and nikud; geresh/gershayim match their ASCII forms.
 UserRegexPlan parseUserRegex({required String raw}) =>
     RustLib.instance.api.crateApiSearchEngineParseUserRegex(raw: raw);
@@ -4457,7 +4459,8 @@ enum UserRegexKind {
   /// continue onto the next line (`/(משה|אהרן) רבנו/`).
   wordSequence,
 
-  /// Anything else that spans a space: matched against each line's text (`/שמע .* ישראל/`).
+  /// Anything else that spans a space, or has `^`/`$` at an edge: matched against each
+  /// line's text (`/שמע .* ישראל/`, `/^ספר$/`).
   crossSpace,
 }
 
@@ -4485,8 +4488,9 @@ class UserRegexLineMatches {
 class UserRegexPlan {
   final UserRegexKind kind;
 
-  /// The pattern as searched: without `/…/` and edge anchors, folded like the index text
-  /// (no nikud, ASCII quotes, maqaf as a space). Empty when `Invalid`.
+  /// The pattern as searched: without `/…/`, edge `\b` and edge spaces, folded like the
+  /// index text (no nikud, ASCII quotes, maqaf as a space); an edge `^`/`$` stays as
+  /// `\A`/`\z`. Empty when `Invalid`.
   final String pattern;
 
   /// The pattern of each word, for `SingleWord` (one) and `WordSequence`; empty otherwise.

@@ -90,9 +90,10 @@ once_cell = "1.21.4"
 regex = "1.13.1"
 # Term-dictionary DFAs (see src/term_automaton.rs): byte classes, multi-pattern
 # unions and size limits in bytes instead of tantivy-fst's fixed state cap.
+# `meta` exposes bounded line-regex inputs while retaining assertion context.
 # `dfa-build` also lets `regex` build a full DFA for tiny patterns: ~0.1ms more per
 # Regex::new (measured), paid once per query, never per line.
-regex-automata = { version = "0.4.16", default-features = false, features = ["std", "syntax", "unicode", "dfa-build", "dfa-search"] }
+regex-automata = { version = "0.4.16", default-features = false, features = ["std", "syntax", "unicode", "dfa-build", "dfa-search", "meta"] }
 # רג'קס מהמשתמש (user_regex): ניתוח ה-HIR, סיווג והקלה לפני הקמפול.
 regex-syntax = "0.8.11"
 serde = { version = "1.0.228", features = ["derive"] }

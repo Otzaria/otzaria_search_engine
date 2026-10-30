@@ -203,10 +203,10 @@ Future<FacetCountsResult> getFacetCountsUserRegex({raw, facets, facetPrefix, can
 | `invalid` | not wrapped, empty, bad syntax, longer than 300 characters, or too complex (`reason`) | search the text as ordinary words |
 | `singleWord` | no explicit whitespace (`/מש.ה/`, `/[א-ת]+ים/`, `/ספר.*/`) | against whole index terms, like an advanced regex word |
 | `wordSequence` | words split at the top level by a space or `\s+` (`/(משה\|אהרן) רבנו/`) | an adjacent phrase of term patterns; continues onto the next line like any phrase |
-| `crossSpace` | anything else that spans a space (`/שמע .* ישראל/`, `/(\S+\s){2}ישראל/`, an inner `\b`) | against each line's text |
+| `crossSpace` | anything else that spans a space (`/שמע .* ישראל/`, `/(\S+\s){2}ישראל/`, an inner `\b`), or `^`/`$` at an edge (`/^ספר$/`, `/^שמע ישראל/`) | against each line's text |
 
-Rules shared by all kinds: the outer slashes and `^`, `$`, `\b` at the pattern's edges are
-dropped; case and nikud are ignored; geresh/gershayim (`׳ ״ ‘ ’ “ ”`) match their ASCII
+Rules shared by all kinds: the outer slashes and `\b` at the pattern's edges are dropped;
+case and nikud are ignored; geresh/gershayim (`׳ ״ ‘ ’ “ ”`) match their ASCII
 forms; maqaf is a space. Final letters stay distinct. `.` and negated classes never cross a
 space on their own — only explicit whitespace (a space, `\s`, `\W`, a class of spaces) makes
 a pattern `crossSpace`, as does a sequence word that names no letter (`/שמע .* ישראל/`). Term
@@ -220,13 +220,31 @@ maqaf/paseq/`|` as a space; whitespace collapsed), lowercased, quotes as ASCII. 
 text stays in the line, as it does in the index. It never continues onto the
 next line.
 
+**Line anchors.** `^` or `$` at a pattern's edge (also `(?m)^`, `(?m)$`) is kept and makes
+the pattern `crossSpace`, even when it would be a term pattern without it: `/^ספר$/` is a
+line whose whole text is `ספר`, `/^שמע ישראל/` a line that begins with the phrase (it does
+not continue onto the next line), `/^א.*/` a line that begins with `א`. `^` holds at the
+start of the line's text and also after a leading enumerator such as `(ג) `, `[יא] ` or
+`{פ} `, and `$` at its end and also before a trailing one such as ` {פ}` or ` (א):` — the
+enumerators a phrase skips when it continues across lines. An enumerator is up to 5 letters,
+digits or quotes in brackets, so a short word in parentheses at the line's edge (a citation
+such as `(שם)`) is skipped too. A `[…]` enumerator is skipped only when a space separates it
+from the word: the index keeps `[א]ויאמר` as one word, so `/^ויאמר/` does not match it.
+Only the matched words are highlighted, so `/^ויאמר/` paints `ויאמר` in `(ג) ויאמר`, once:
+an anchor that holds past the enumerator is not also matched before it (`/^\S+/` paints
+`ויאמר`, not `(ג)`); `/^\(ג\) ויאמר/` matches the enumerator itself. `$` does not skip
+anything else: punctuation (`ויאמר:`), a footnote marker or a footnote's text at the end of
+the line come before it. A pattern of anchors alone (`/^$/`), or with `$` at its start or `^`
+at its end (`/$א/`), is `invalid`.
+
 **Cost.** Term kinds cost what an advanced search costs; a pattern whose automaton would be
 large is relaxed (repetitions above 7 become unbounded, the exact pattern verifies every
 term) or refused at parse time. A `crossSpace` pattern reads candidate lines: when its fixed
 words (`שמע`, `ישראל`) narrow the scope to 5,000 lines or fewer they are read one by one;
 otherwise the books holding candidates are read, decoding only the candidate rows; a pattern
 with no selective fixed word reads every book in scope (the whole library takes on the
-order of 10–30 s). Results and progress stream as books are read, and the token stops it.
+order of 10–30 s) — so does an anchored pattern with no fixed word of 2 letters or more
+(`/^א.*/`). Results and progress stream as books are read, and the token stops it.
 
 **Stream events (`UserRegexStreamUpdate`).** Term kinds send their counts first
 (`totalCount`, `bookCounts`, `truncated`), then results in chunks. A `crossSpace` search
