@@ -6907,7 +6907,16 @@ impl SearchEngine {
                 self.semantic_sessions.epoch(),
                 limit,
             );
-            let kept = self.semantic_sessions.get(&key);
+            // A search whose semantic half failed is searched again, but its pages still page.
+            let kept = self.semantic_sessions.get(&key).filter(|kept| {
+                offset > 0
+                    || kept
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .state
+                        .fallback_reason
+                        .is_none()
+            });
             let session_restarted = offset > 0 && kept.is_none();
             let offset = if session_restarted { 0 } else { offset };
             let shared = kept.unwrap_or_else(|| {
@@ -7753,7 +7762,7 @@ impl SearchEngine {
     }
 
     /// Plan an opened vector set's scan (see `crate::semantic_moves`) for the search's filter
-    /// and the foundational books' query; a filter that cannot be planned fails the semantic half.
+    /// and the foundational books' query; a filter that cannot be planned goes unplanned.
     #[cfg(feature = "semantic-integration")]
     fn plan_semantic_scan(
         &self,
@@ -7779,16 +7788,12 @@ impl SearchEngine {
         else {
             return Ok(());
         };
-        // A filtered plan that cannot be made fails the semantic half alone; an unfiltered
-        // one goes unplanned.
+        // A plan that cannot be made leaves the search unplanned, as an unfiltered one: the
+        // app's whole-library search is filtered by "/", and must not fail with it.
         match resolver.plan(filters, &view, cancel) {
             Ok(_) => {}
             Err(ResolveError::Cancelled) => return Err(SemanticError::cancelled()),
-            Err(error) => {
-                warn!("a filtered semantic search could not be planned: {error}");
-                resolver.fail(error);
-                return Ok(());
-            }
+            Err(error) => warn!("a filtered semantic search goes unplanned: {error}"),
         }
         if !PLAN_FOUNDATIONAL_QUERY
             || request.ranking.foundational_candidate_share <= 0.0
@@ -31514,15 +31519,7 @@ mod tests {
                 unfiltered.unwrap().is_none(),
                 "no truncated unfiltered plan"
             );
-            let error = filtered
-                .err()
-                .expect("a filter cannot silently omit discovered windows");
-            assert!(
-                error
-                    .to_string()
-                    .contains("changed-book window occurrences"),
-                "{error}"
-            );
+            assert!(filtered.unwrap().is_none(), "no truncated filtered plan");
         }
 
         /// The working-set cap is shared across Rayon workers and changed books,
@@ -31590,6 +31587,112 @@ mod tests {
                 planned.unwrap().is_none(),
                 "each book fits, but their combined window working set exceeds the cap"
             );
+        }
+
+        /// The probe's semantic hit at line 1 of [`BOOK`], in a search's results.
+        fn holds_probe_hit(response: &SemanticSearchResponse) -> bool {
+            response.results.iter().any(|result| {
+                result.file_path == BOOK && result.segment == 1 && result.semantic_score.is_some()
+            })
+        }
+
+        /// The app's whole-library search is filtered by "/": past the window budget it goes
+        /// unplanned, once per generation, and its semantic half is still served.
+        #[test]
+        fn a_whole_library_filter_past_the_window_budget_still_searches_semantically() {
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            let long = (0..600)
+                .map(|n| format!("מילה{n:04}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            engine
+                .add_text_book_placed(
+                    "ספר ארוך".into(),
+                    "/other".into(),
+                    OTHER.into(),
+                    1,
+                    0,
+                    long,
+                    None,
+                    TextStorage::InIndex,
+                    None,
+                )
+                .unwrap();
+            engine.commit().unwrap();
+            let previous = crate::semantic_resolver::WINDOW_ARRIVAL_CAP.with(|cap| cap.replace(1));
+            let response = engine.search_semantic(
+                PROBE.to_string(),
+                vec!["/".to_string()],
+                10,
+                0,
+                SemanticLexicalMode::Exact,
+                0,
+                SemanticRetrievalMode::SemanticOnly,
+                None,
+                false,
+                false,
+                None,
+                &SemanticCancellationToken::new(),
+            );
+            let walked = walks(&engine);
+            assert!(walked > 0, "the plan walked the changed book");
+            let again = engine.search_semantic(
+                "ויאמר אלהים".to_string(),
+                vec!["/".to_string()],
+                10,
+                0,
+                SemanticLexicalMode::Exact,
+                0,
+                SemanticRetrievalMode::SemanticOnly,
+                None,
+                false,
+                false,
+                None,
+                &SemanticCancellationToken::new(),
+            );
+            crate::semantic_resolver::WINDOW_ARRIVAL_CAP.with(|cap| cap.set(previous));
+            let response = response.unwrap();
+            assert!(
+                response.semantic_available,
+                "{:?}",
+                response.fallback_reason
+            );
+            assert_eq!(response.fallback_kind, None);
+            assert!(holds_probe_hit(&response));
+            assert!(again.unwrap().semantic_available);
+            assert_eq!(
+                walks(&engine),
+                walked,
+                "not walked again in this generation"
+            );
+        }
+
+        /// The same query asked again after its semantic half failed searches again, rather
+        /// than repeating the failure until the session expires.
+        #[test]
+        fn a_failed_semantic_half_is_not_kept_for_the_next_search() {
+            let dir = TempDir::new().unwrap();
+            let engine = opened(&dir);
+            crate::semantic_resolver::FAIL_SCANS.with(|fail| fail.set(true));
+            let failed = unfiltered(&engine, PROBE, SemanticRetrievalMode::Hybrid);
+            crate::semantic_resolver::FAIL_SCANS.with(|fail| fail.set(false));
+            let failed = failed.unwrap();
+            assert!(!failed.semantic_available);
+            assert_eq!(failed.fallback_kind, Some(SemanticErrorKind::QueryFailed));
+            assert!(
+                failed
+                    .fallback_reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("a test made the scan fail")),
+                "{:?}",
+                failed.fallback_reason
+            );
+
+            let again = unfiltered(&engine, PROBE, SemanticRetrievalMode::Hybrid).unwrap();
+            assert!(again.semantic_available, "{:?}", again.fallback_reason);
+            assert_eq!(again.fallback_kind, None);
+            assert!(holds_probe_hit(&again));
         }
 
         fn lookups(engine: &SearchEngine) -> u64 {
@@ -31769,11 +31872,10 @@ mod tests {
             }
         }
 
-        /// A filtered search that cannot be planned — the index could not be read for it —
-        /// is a semantic half that failed, as one whose resolver cannot read the index is:
-        /// the lexical results are served, with the reason, and the next search is planned.
+        /// A filtered search that cannot be planned scans the books its filter admits, unplanned,
+        /// and its semantic half is served; the next search is planned.
         #[test]
-        fn a_filtered_search_that_cannot_be_planned_falls_back_with_a_reason() {
+        fn a_filtered_search_that_cannot_be_planned_goes_unplanned() {
             let dir = TempDir::new().unwrap();
             let engine = opened(&dir);
             let filtered = |query: &str| {
@@ -31793,27 +31895,16 @@ mod tests {
                 )
             };
             crate::semantic_resolver::FAIL_PLANS.with(|fail| fail.set(true));
-            let failed = filtered(PROBE);
+            let unplanned = filtered(PROBE);
             crate::semantic_resolver::FAIL_PLANS.with(|fail| fail.set(false));
-            let failed = failed.expect("a fallback, not an error of the call");
-            assert!(!failed.semantic_available);
-            assert_eq!(failed.fallback_kind, Some(SemanticErrorKind::QueryFailed));
+            let unplanned = unplanned.unwrap();
             assert!(
-                failed
-                    .fallback_reason
-                    .as_deref()
-                    .is_some_and(|reason| reason.contains("a test made planning fail")),
+                unplanned.semantic_available,
                 "{:?}",
-                failed.fallback_reason
+                unplanned.fallback_reason
             );
-            assert!(
-                failed
-                    .results
-                    .iter()
-                    .any(|result| result.snippet_html.contains("ויאמר")
-                        && result.source == SemanticResultSource::Lexical),
-                "the lexical results are served"
-            );
+            assert_eq!(unplanned.fallback_kind, None);
+            assert!(holds_probe_hit(&unplanned));
 
             let planned = filtered("ויאמר אלהים יהי אור").unwrap();
             assert!(planned.semantic_available, "{:?}", planned.fallback_reason);

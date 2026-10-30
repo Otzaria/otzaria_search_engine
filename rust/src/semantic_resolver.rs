@@ -112,6 +112,8 @@ const PLAN_CACHE: usize = 16;
 thread_local! {
     /// Set by a test, on its own thread, to make every plan fail as an unreadable index would.
     pub(crate) static FAIL_PLANS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Set by a test, on its own thread, to make the scan's books unreadable.
+    pub(crate) static FAIL_SCANS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Set by a test to cancel a plan just before it looks texts up in the set.
     pub(crate) static CANCEL_LOOKUPS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// [`LIBRARY_ARRIVALS`], as a test sets it.
@@ -173,6 +175,8 @@ pub(crate) struct ResolverCache {
     moved: Option<LruCache<u64, Arc<[DocAddress]>>>,
     /// The plans of the filters searched with last.
     plans: Option<LruCache<PlanKey, Arc<ScanPlan>>>,
+    /// The filters whose changed books hold more windows than a plan discovers.
+    unplannable: HashSet<PlanKey>,
     /// The plan of unfiltered searches, by view; `None` when they go unplanned.
     library: Option<(u64, Option<Arc<ScanPlan>>)>,
     /// How many books' postings plans walked in this generation.
@@ -284,6 +288,7 @@ impl ResolverCache {
     /// Let go of every plan, when the view they were made with is let go.
     pub(crate) fn forget_plans(&mut self) {
         self.plans = None;
+        self.unplannable.clear();
         self.library = None;
     }
 
@@ -443,9 +448,6 @@ pub(crate) struct LiveResolver<'a> {
     /// What the ranking takes off a short line found through an alias, so that the best
     /// hit of a line is chosen as the coordinator will score it.
     alias_penalty: f32,
-    /// Why this search's filter could not be planned, when it could not: the semantic half
-    /// of the search fails with it, as it would had the resolver failed to read the index.
-    failed: Option<ResolveError>,
 }
 
 /// `searcher`'s segments and their deletes, in order: what a reload that changed neither leaves
@@ -518,7 +520,6 @@ impl<'a> LiveResolver<'a> {
             library: None,
             plans: Vec::new(),
             alias_penalty: otzaria_semantic_search::config::profiles::DEFAULT_ALIAS_PENALTY,
-            failed: None,
         })
     }
 
@@ -1904,13 +1905,6 @@ pub(crate) struct Coverage {
 }
 
 impl LiveResolver<'_> {
-    /// Fail the semantic half of this search with `error`, which planning it met: the
-    /// sidecar is told when it asks which books the filter admits, and the search falls back
-    /// to its lexical results with the reason, as for any resolver that cannot read the index.
-    pub(crate) fn fail(&mut self, error: ResolveError) {
-        self.failed = Some(error);
-    }
-
     /// Whether this resolver reads keys from the `chunkKey` column.
     pub(crate) fn has_column(&self) -> bool {
         self.column
@@ -2020,17 +2014,18 @@ impl LiveResolver<'_> {
             view: view.id(),
             filters: format!("{filters:?}"),
         };
-        if let Some(plan) = self
-            .cache
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .at(generation)
-            .plans()
-            .get(&key)
-        {
-            let plan = Arc::clone(plan);
-            self.keep_plan(plan_key(Some(filters)), Some(Arc::clone(&plan)));
-            return Ok(Some(plan));
+        let kept = {
+            let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
+            let cache = cache.at(generation);
+            if cache.unplannable.contains(&key) {
+                Some(None)
+            } else {
+                cache.plans().get(&key).map(|plan| Some(Arc::clone(plan)))
+            }
+        };
+        if let Some(plan) = kept {
+            self.keep_plan(plan_key(Some(filters)), plan.clone());
+            return Ok(plan);
         }
 
         let directory = self.directory()?;
@@ -2052,9 +2047,18 @@ impl LiveResolver<'_> {
                 books.push((Arc::clone(name), self.postings(name)?));
             }
         }
-        let (slots, arrivals) = self
-            .gather_arrivals(books, view, usize::MAX, cancel)?
-            .unwrap_or_default();
+        // Past the window budget no plan is complete: the search goes unplanned, and is
+        // not walked again for this generation.
+        let Some((slots, arrivals)) = self.gather_arrivals(books, view, usize::MAX, cancel)? else {
+            self.cache
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .at(generation)
+                .unplannable
+                .insert(key);
+            self.keep_plan(plan_key(Some(filters)), None);
+            return Ok(None);
+        };
 
         // An arrival some admitted book's live records reach is scanned already; the vectors
         // of the others are weighed besides the scan.
@@ -2239,11 +2243,10 @@ impl LiveResolver<'_> {
         for (name, read) in read {
             match read {
                 BookArrivals::TooManyWindowOccurrences => {
-                    if cap == usize::MAX {
-                        return Err(index_error(format!(
-                            "more than {window_limit} changed-book window occurrences need discovery; update the semantic vector set before searching this filter"
-                        )));
-                    }
+                    log::warn!(
+                        "more than {window_limit} changed-book window occurrences need \
+                         discovery; searches go unplanned until the vector set is updated"
+                    );
                     return Ok(None);
                 }
                 BookArrivals::Known(arrivals) => known.push((name, arrivals)),
@@ -2663,8 +2666,9 @@ impl CandidateResolver for LiveResolver<'_> {
         &self,
         filters: Option<&SearchFilters>,
     ) -> Result<Option<BookSet>, ResolveError> {
-        if let Some(error) = &self.failed {
-            return Err(error.clone());
+        #[cfg(test)]
+        if FAIL_SCANS.with(std::cell::Cell::get) {
+            return Err(index_error("a test made the scan fail"));
         }
         let Some(compiled) = filters.and_then(SearchFilters::compile) else {
             return Ok(None);
