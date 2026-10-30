@@ -1,19 +1,40 @@
 # Changelog
 
-## Unreleased
+## 7.0.0 – 2026-10-30
 
 ### Breaking
 
 - `cancelLexicalSearch`, the three `set*DictionaryPath` methods, the three
   `has*Dictionary` methods and `bookOrderRevision` now return `Future`s. Await
   dictionary changes before searching or replacing an open dictionary file.
+- **Regex line anchors.** `^` and `$` at the edges of a `/…/` pattern now
+  anchor to the start and end of the line's normalized text and make the
+  pattern a line search (crossSpace); they used to be dropped. `/^ספר$/` was
+  the word ספר and is now a line whose whole text is that word, and
+  `/^\S+\s\S+$/` is a line of exactly two words.
 
 ### Added
 
+- **`addPdfBookBytes`** takes the pages of a PDF book as one UTF-8 buffer with
+  the end offsets of each page's reference and text, so FRB no longer decodes
+  a string per page on the calling thread (Otzaria/otzaria#3443). The offsets
+  are validated before the index changes, valid text is borrowed without a
+  copy, and malformed UTF-8 is replaced per field. Pass `Uint8List` /
+  `Uint32List`; the transfer itself is still O(bytes).
 - `await engine.lexicalCancellationHandle()` returns a reusable handle whose
   synchronous `cancel(requestId: ...)` bypasses the engine lock and FRB worker
   queue. Obtain it before starting searches or indexing. The engine's async
   `cancelLexicalSearch` remains available as a compatibility entry point.
+
+### Changed
+
+- `^` skips leading numbering such as `(ג)` or `[א]` followed by a space, and `$`
+  skips closing numbering such as `{פ}`. A pattern of anchors only, or an anchor
+  on the wrong edge (`/$א/`, `/א^/`), is invalid and falls back to a plain text
+  search. `\b` and spaces at the edges are still dropped. An anchored pattern
+  without a fixed word of two letters or more (e.g. `/^א.*/`) reads every book
+  in the search scope. A short word in parentheses at a line edge, such as
+  `(שם)`, counts as numbering.
 
 ### Fixed
 
@@ -35,6 +56,9 @@
   worker is busy.
 - The concurrent highlight-cache test no longer mistakes another thread's
   brief cache access for a lock held by the pattern computation.
+- An anchored regex match is highlighted once, and the candidate filter keeps
+  the token boundary on each side, so punctuation the index ignores
+  (`ספר.ספר`, `ספר[א]`) no longer drops a match the pattern accepts.
 
 ## 6.0.0 – 2026-10-26
 
