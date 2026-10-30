@@ -199,7 +199,7 @@ fn fixed_words_of_a_line_pattern_become_required_clauses() {
             .into_iter()
             .map(|c| {
                 c.into_iter()
-                    .map(|f| match f.whole {
+                    .map(|f| match f.left_bounded && f.right_bounded {
                         true => f.text,
                         false => format!("*{}*", f.text),
                     })
@@ -207,23 +207,23 @@ fn fixed_words_of_a_line_pattern_become_required_clauses() {
             })
             .collect()
     };
-    assert_eq!(clauses(r"/שמע \S+ ישראל/"), [["שמע"], ["ישראל"]]);
+    assert_eq!(clauses(r"/שמע \S+ ישראל/"), [["*שמע*"], ["*ישראל*"]]);
     assert_eq!(
         clauses(r"/(משה|אהרן)\W+\S*ות/"),
         [vec!["*משה*", "*אהרן*"], vec!["*ות*"]]
     );
     // Terms as the tokenizer makes them: `''` is `"`, and `""` splits a word.
-    assert_eq!(clauses("/א .* ז''ל/"), [["ז\"ל"]]);
-    assert_eq!(clauses("/א .* ג\"\"דה/"), [["דה"]]);
-    assert_eq!(clauses(r#"/א\W.*ג""דה/"#), [["דה"]]);
+    assert_eq!(clauses("/א .* ז''ל/"), [["*ז\"ל*"]]);
+    assert_eq!(clauses("/א .* ג\"\"דה/"), [["*דה*"]]);
+    assert_eq!(clauses(r#"/א\W.*ג""דה/"#), [["*דה*"]]);
     assert_eq!(clauses(r#"/א\W.*ג""דה\S/"#), [["*דה*"]]);
-    assert_eq!(clauses(r"/שבת\.ויאמר .* תוס',/"), [["שבתויאמר"], ["תוס"]]);
-    // A pattern edge bounds a word only where a word boundary is implied there.
-    assert_eq!(clauses("/שבת .* תוס'/"), [["שבת"], ["*תוס*"]]);
+    assert_eq!(clauses(r"/שבת\.ויאמר .* תוס',/"), [["*שבתויאמר*"], ["תוס"]]);
+    // An implied regex boundary is not a tokenizer boundary: punctuation may be transparent.
+    assert_eq!(clauses("/שבת .* תוס'/"), [["*שבת*"], ["*תוס*"]]);
     assert_eq!(clauses(r"/\.שבת .* זה\./"), [["*שבת*"], ["*זה*"]]);
     assert_eq!(
         clauses("/(רמב''ם|ש''ך) .* זה/"),
-        [vec!["*רמב\"ם*", "*ש\"ך*"], vec!["זה"]]
+        [vec!["*רמב\"ם*", "*ש\"ך*"], vec!["*זה*"]]
     );
     assert!(parse(r"/^\S+\s\S+$/")
         .unwrap()
@@ -636,8 +636,8 @@ fn xorshift(state: &mut u64) -> u64 {
 /// character, and characters the index splits on.
 fn glued_corpus(seed: u64, lines: usize, words: &[&str]) -> Vec<String> {
     const GLUE: &[&str] = &[
-        " ", " ", " ", " ", " ", " ", " ", " ", " ", " ", "\"", "'", "״", "׳", "''", "\"\"", "²",
-        ",", "_",
+        ".", "[א]", "*", "[", "]", " ", " ", " ", " ", " ", " ", " ", " ", " ", " ", "\"", "'",
+        "״", "׳", "''", "\"\"", "²", ",", "_",
     ];
     let mut state = seed;
     let mut pick = |n: usize| (xorshift(&mut state) % n as u64) as usize;
@@ -708,6 +708,9 @@ fn line_candidates_never_drop_a_verified_line() {
         "/ב\"שבת .* זה/",
         "/תורה''אור .* זה/",
         "/מחשבת .*/",
+        "/^תורה/",
+        "/שבת$/",
+        "/^תורה.*שבת$/",
     ];
     let large = ["תורה", "שבת", "אור", "זה"];
     for (lines, words, patterns) in [
@@ -1916,12 +1919,7 @@ fn legacy_candidate_query(
         let mut postings = 0u64;
         let mut selective = true;
         for fragment in clause {
-            // A word glued by a character the index drops (`יב[ע]ר` is `יבער`) is not found.
-            let part = if fragment.whole {
-                glued_part(&fragment.text)?
-            } else {
-                contains_part(&fragment.text)?
-            };
+            let part = fragment_part(fragment)?;
             let found = collect_part_terms(
                 ctx.searcher,
                 text_field,
@@ -2276,7 +2274,7 @@ fn whole_and_contained(raw: &str) -> Vec<Vec<String>> {
         .into_iter()
         .map(|c| {
             c.into_iter()
-                .map(|f| match f.whole {
+                .map(|f| match f.left_bounded && f.right_bounded {
                     true => f.text,
                     false => format!("*{}*", f.text),
                 })
@@ -2495,5 +2493,138 @@ fn a_bracket_enumerator_glued_to_the_word_is_part_of_it() {
                 "{raw}: the book view and the search disagree on {line:?}"
             );
         }
+    }
+}
+
+#[test]
+fn anchored_candidate_filter_preserves_transparent_boundaries() {
+    let lines = vec![
+        "ספר.ספר",
+        "ספר[א]",
+        "[א]ספר",
+        "ספר",
+        "ספר תורה",
+        "(א) ספר",
+        "ספר {פ}",
+        "הספרים",
+    ];
+    let books = [TestBook {
+        title: "ספר סקירה",
+        topics: "/review",
+        path: "review.txt".into(),
+        order: 0,
+        lines: lines.clone(),
+    }];
+    let dir = TempDir::new().unwrap();
+    let engine = stored_engine(dir.path(), &books);
+    for raw in [
+        "/^ספר/",
+        "/^ספר(?:$|)/",
+        "/ספר$/",
+        "/^ספר$/",
+        r"/^ספר\W?/",
+        r"/\W?ספר$/",
+    ] {
+        let matcher = prepare_user_regex_matcher(raw.into()).unwrap();
+        let mut expected: Vec<String> = lines
+            .iter()
+            .filter(|line| !matcher.find_matches(line.to_string()).is_empty())
+            .map(|line| line.to_string())
+            .collect();
+        expected.sort();
+        assert_eq!(found_lines(&engine, &books, raw, &[]), expected, "{raw}");
+    }
+    assert_eq!(count(&engine, "/^ספר/", &[]), 6);
+    // An optional empty branch changes no matches or counts.
+    assert_eq!(
+        count(&engine, "/^ספר/", &[]),
+        count(&engine, "/^ספר(?:$|)/", &[])
+    );
+}
+
+#[test]
+fn an_end_anchor_preserves_an_independent_start_match() {
+    let line = "(ג) אלהים";
+    let matcher = prepare_user_regex_matcher(r"/^\(ג\)|אלהים$/".into()).unwrap();
+    let units: Vec<u16> = line.encode_utf16().collect();
+    let found: Vec<_> = matcher
+        .find_matches(line.into())
+        .iter()
+        .map(|m| String::from_utf16(&units[m.start as usize..m.end as usize]).unwrap())
+        .collect();
+    assert_eq!(found, ["(ג)", "אלהים"]);
+}
+
+#[test]
+fn a_start_anchor_preserves_an_independent_end_match() {
+    let line = "ויאמר {פ}";
+    let matcher = prepare_user_regex_matcher(r"/^ויאמר|\{פ\}$/".into()).unwrap();
+    let units: Vec<u16> = line.encode_utf16().collect();
+    let found: Vec<_> = matcher
+        .find_matches(line.into())
+        .iter()
+        .map(|m| String::from_utf16(&units[m.start as usize..m.end as usize]).unwrap())
+        .collect();
+    assert_eq!(found, ["ויאמר", "{פ}"]);
+}
+
+#[test]
+fn a_consuming_alternative_keeps_the_other_anchored_match() {
+    let line = "ויאמר אלהים {פ}";
+    let matcher = prepare_user_regex_matcher(r"/\{פ\}$|אלהים\W?/".into()).unwrap();
+    let units: Vec<u16> = line.encode_utf16().collect();
+    let found: Vec<_> = matcher
+        .find_matches(line.into())
+        .iter()
+        .map(|m| String::from_utf16(&units[m.start as usize..m.end as usize]).unwrap())
+        .collect();
+    assert_eq!(found, ["אלהים ", "{פ}"]);
+}
+
+#[test]
+fn anchored_fragments_keep_their_guaranteed_token_boundary() {
+    for (raw, accepted, rejected) in [
+        (
+            "/^ספר/",
+            vec!["ספר", "ספרספר", "ספרא"],
+            vec!["הספר", "אספרא"],
+        ),
+        (
+            "/ספר$/",
+            vec!["ספר", "ספרספר", "אספר"],
+            vec!["ספרים", "אספרא"],
+        ),
+        ("/^ספר$/", vec!["ספר"], vec!["הספר", "ספרים", "ספרספר"]),
+    ] {
+        let plan = parse(raw).unwrap().line.unwrap();
+        assert_eq!(plan.clauses.len(), 1);
+        let part = fragment_part(&plan.clauses[0][0]).unwrap();
+        for term in accepted {
+            assert!(part.accepts(term), "{raw}: {term}");
+        }
+        for term in rejected {
+            assert!(!part.accepts(term), "{raw}: {term}");
+        }
+    }
+}
+
+#[test]
+fn suppressing_an_anchor_keeps_an_independent_path_to_the_same_match() {
+    for (raw, line, expected) in [
+        (r"/^\(ג\)|\(ג\)|^ויאמר/", "(ג) ויאמר", vec!["(ג)", "ויאמר"]),
+        (
+            r"/אלהים$|\{פ\}$|\{פ\}/",
+            "ויאמר אלהים {פ}",
+            vec!["אלהים", "{פ}"],
+        ),
+    ] {
+        let matcher = prepare_user_regex_matcher(raw.into()).unwrap();
+        let units: Vec<u16> = line.encode_utf16().collect();
+        let found: Vec<_> = matcher
+            .find_matches(line.into())
+            .iter()
+            .map(|m| String::from_utf16(&units[m.start as usize..m.end as usize]).unwrap())
+            .collect();
+        assert_eq!(found, expected, "{raw}");
     }
 }
