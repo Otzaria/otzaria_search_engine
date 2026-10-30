@@ -113,6 +113,53 @@ fn search_and_highlight_share_compiled_automata() {
     );
 }
 
+/// otzaria#3673: adding "קידומות ארמיות" to any set of the regular options never drops
+/// a match that set found, typo variants of a phrase word included.
+#[test]
+fn aramaic_prefixes_never_drop_matches_of_the_other_options() {
+    let (engine, _dir) = engine_with(&[
+        "לבבות דקל",
+        "ולבבות דקל",
+        "דלבבות דקל",
+        "לבוות דקל",
+        "ללבבת דקל",
+        "דקל ללבבת",
+        "דקל דללבות",
+    ]);
+    let regular = [
+        "קידומות דקדוקיות",
+        "סיומות דקדוקיות",
+        "כתיב מלא/חסר",
+        "חלק ממילה",
+        "שגיאות כתיב",
+    ];
+    let mut bases: Vec<Vec<&str>> = vec![Vec::new(), regular.to_vec()];
+    bases.extend(regular.iter().map(|o| vec![*o]));
+    for query in ["לבבות דקל", "ללבות דקל", "דקל ללבות"] {
+        for base in &bases {
+            let before = advanced_ids(&engine, query, base, ResultsOrder::Catalogue);
+            let with: Vec<&str> = base
+                .iter()
+                .chain(["קידומות ארמיות"].iter())
+                .copied()
+                .collect();
+            let after = advanced_ids(&engine, query, &with, ResultsOrder::Catalogue);
+            let lost: Vec<u64> = before
+                .iter()
+                .filter(|id| !after.contains(id))
+                .copied()
+                .collect();
+            assert!(lost.is_empty(), "{query} {base:?}: lost {lost:?}");
+        }
+    }
+    let mut all = regular.to_vec();
+    all.push("קידומות ארמיות");
+    let ids = advanced_ids(&engine, "לבבות דקל", &all, ResultsOrder::Catalogue);
+    for id in [0, 1, 2] {
+        assert!(ids.contains(&id), "{id} missing from {ids:?}");
+    }
+}
+
 fn kept_terms(engine: &SearchEngine, branches: &[&str], max_terms: u32) -> (Vec<String>, bool) {
     let field = engine.schema.get_field("text").unwrap();
     let branches: Vec<String> = branches.iter().map(|b| b.to_string()).collect();
