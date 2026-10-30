@@ -226,11 +226,16 @@ line whose whole text is `ספר`, `/^שמע ישראל/` a line that begins wit
 not continue onto the next line), `/^א.*/` a line that begins with `א`. `^` holds at the
 start of the line's text and also after a leading enumerator such as `(ג) `, `[יא] ` or
 `{פ} `, and `$` at its end and also before a trailing one such as ` {פ}` or ` (א):` — the
-enumerators a phrase skips when it continues across lines. Only the matched words are
-highlighted, so `/^ויאמר/` paints `ויאמר` in `(ג) ויאמר`; `/^\(ג\) ויאמר/` matches the
-enumerator itself. `$` does not skip anything else: punctuation (`ויאמר:`), a footnote
-marker or a footnote's text at the end of the line come before it. A pattern of anchors
-alone (`/^$/`) is `invalid`.
+enumerators a phrase skips when it continues across lines. An enumerator is up to 5 letters,
+digits or quotes in brackets, so a short word in parentheses at the line's edge (a citation
+such as `(שם)`) is skipped too. A `[…]` enumerator is skipped only when a space separates it
+from the word: the index keeps `[א]ויאמר` as one word, so `/^ויאמר/` does not match it.
+Only the matched words are highlighted, so `/^ויאמר/` paints `ויאמר` in `(ג) ויאמר`, once:
+an anchor that holds past the enumerator is not also matched before it (`/^\S+/` paints
+`ויאמר`, not `(ג)`); `/^\(ג\) ויאמר/` matches the enumerator itself. `$` does not skip
+anything else: punctuation (`ויאמר:`), a footnote marker or a footnote's text at the end of
+the line come before it. A pattern of anchors alone (`/^$/`), or with `$` at its start or `^`
+at its end (`/$א/`), is `invalid`.
 
 **Cost.** Term kinds cost what an advanced search costs; a pattern whose automaton would be
 large is relaxed (repetitions above 7 become unbounded, the exact pattern verifies every
@@ -238,7 +243,8 @@ term) or refused at parse time. A `crossSpace` pattern reads candidate lines: wh
 words (`שמע`, `ישראל`) narrow the scope to 5,000 lines or fewer they are read one by one;
 otherwise the books holding candidates are read, decoding only the candidate rows; a pattern
 with no selective fixed word reads every book in scope (the whole library takes on the
-order of 10–30 s). Results and progress stream as books are read, and the token stops it.
+order of 10–30 s) — so does an anchored pattern with no fixed word of 2 letters or more
+(`/^א.*/`). Results and progress stream as books are read, and the token stops it.
 
 **Stream events (`UserRegexStreamUpdate`).** Term kinds send their counts first
 (`totalCount`, `bookCounts`, `truncated`), then results in chunks. A `crossSpace` search

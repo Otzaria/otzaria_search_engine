@@ -2305,6 +2305,22 @@ fn an_edge_line_anchor_makes_a_line_pattern() {
     for raw in ["/^$/", "/^/", "/$/", "/^ $/", r"/^\b$/", "/(?m)^$/"] {
         assert!(kind(raw).is_err(), "{raw}");
     }
+    // An anchor that can never hold where it stands makes the pattern invalid.
+    for raw in [
+        "/$א/",
+        "/א^/",
+        "/^$א/",
+        "/א^$/",
+        "/(?m)$א/",
+        r"/ \b$א/",
+        r"/א^\b /",
+    ] {
+        assert_eq!(
+            kind(raw).err().as_deref(),
+            Some("anchor on the wrong edge"),
+            "{raw}"
+        );
+    }
     // A multi-line anchor is a plain one: a searched line has no line break.
     assert_eq!(
         parse("/(?m)^ספר$/").unwrap().pattern,
@@ -2345,8 +2361,18 @@ fn line_anchors_hold_at_the_line_edges_and_past_enumerators() {
     assert!(matches(start, "(שם הספר) ויאמר").is_empty());
     assert_eq!(matches("/(?m)^ויאמר/", "(ג) ויאמר"), ["ויאמר"]);
     assert_eq!(matches(r"/^\(ג\) ויאמר/", "(ג) ויאמר אלהים"), ["(ג) ויאמר"]);
-    // From either start, one match: the longest.
-    assert_eq!(matches("/^.*/", "(ג) ויאמר"), ["(ג) ויאמר"]);
+    // One match per anchor: past the enumerator when the pattern holds there.
+    assert_eq!(matches("/^.*/", "(ג) ויאמר"), ["ויאמר"]);
+    assert_eq!(matches(r"/^\S+/", "(ג) ויאמר אלהים"), ["ויאמר"]);
+    assert_eq!(matches(r"/\S+$/", "ויאמר אלהים {פ}"), ["אלהים"]);
+    assert_eq!(matches(r"/^\S+$/", "(ג) ויאמר {פ}"), ["ויאמר"]);
+    // A match that needs no anchor is kept beside it.
+    let line = "(ג) ויאמר אלהים";
+    assert_eq!(matches(r"/^\(ג\)|ויאמר/", line), ["(ג)", "ויאמר"]);
+    assert_eq!(matches(r"/^\(ג\) ויאמר|ויאמר/", line), ["(ג) ויאמר"]);
+    assert_eq!(matches(r"/^ויאמר|\(ג\)/", line), ["(ג)", "ויאמר"]);
+    let line = "ויאמר אלהים {פ}";
+    assert_eq!(matches(r"/אלהים$|\{פ\}/", line), ["אלהים", "{פ}"]);
     assert_eq!(matches("/^ויאמר .*/", "(ג) ויאמר אלהים"), ["ויאמר אלהים"]);
 
     let end = "/אלהים$/";
@@ -2438,5 +2464,36 @@ fn anchored_line_patterns_read_library_rows_past_enumerators() {
         let mut segments: Vec<u64> = results(&found).iter().map(|r| r.segment).collect();
         segments.sort();
         assert_eq!(segments, [0, 1], "{pattern}");
+    }
+}
+
+#[test]
+fn a_bracket_enumerator_glued_to_the_word_is_part_of_it() {
+    let lines = vec![
+        "[א]ויאמר זה",
+        "[א] ויאמר זה",
+        "ויהי אלהים[א]",
+        "ויהי אלהים [א]",
+    ];
+    let books = vec![TestBook {
+        title: "ספר ע",
+        topics: "/תנך/תורה",
+        path: "glued.txt".into(),
+        order: 0,
+        lines: lines.clone(),
+    }];
+    let dir = TempDir::new().unwrap();
+    let engine = stored_engine(dir.path(), &books);
+    for (raw, expected) in [("/^ויאמר/", "[א] ויאמר זה"), ("/אלהים$/", "ויהי אלהים [א]")]
+    {
+        assert_eq!(found_lines(&engine, &books, raw, &[]), [expected], "{raw}");
+        let matcher = prepare_user_regex_matcher(raw.to_string()).unwrap();
+        for line in &lines {
+            assert_eq!(
+                !matcher.find_matches(line.to_string()).is_empty(),
+                *line == expected,
+                "{raw}: the book view and the search disagree on {line:?}"
+            );
+        }
     }
 }

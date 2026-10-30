@@ -133,8 +133,8 @@ pub(crate) struct LinePlan {
     prefilter: Regex,
     /// Fixed words: every clause (an OR of fragments) holds in every matching line.
     pub(crate) clauses: Vec<Vec<Fragment>>,
-    /// The pattern has `\A` (`\z`): it also holds after a leading (before a trailing)
-    /// enumerator such as `(ג) `, as [`crate::cross_line::content_range`] finds it.
+    /// The pattern asserts `\A` (`\z`) somewhere: it also holds after a leading (before a
+    /// trailing) enumerator such as `(ג) `, as [`crate::cross_line::content_range`] finds it.
     starts_line: bool,
     ends_line: bool,
 }
@@ -187,6 +187,10 @@ pub(crate) fn parse(raw: &str) -> Result<UserRegex, String> {
         } else if elements.last().is_some_and(|e| is_look(e, Look::End)) {
             line_end = true;
             elements.pop();
+        } else if elements.first().is_some_and(|e| is_look(e, Look::End))
+            || elements.last().is_some_and(|e| is_look(e, Look::Start))
+        {
+            return Err("anchor on the wrong edge".to_string());
         } else if elements.first().is_some_and(edge) {
             elements.remove(0);
         } else if elements.last().is_some_and(edge) {
@@ -1172,19 +1176,27 @@ static GLUE: Lazy<ClassUnicode> = Lazy::new(|| {
 });
 
 impl LinePlan {
-    /// The parts of `view` the pattern runs on: the whole line, and for an anchored pattern
-    /// also the line without its edge enumerators, so `\A` and `\z` hold at either edge.
-    fn windows(&self, view: &str) -> impl Iterator<Item = std::ops::Range<usize>> {
+    /// `[0, content start, len, content end]` of `view`; the content edges stay at the line's
+    /// edges unless the pattern is anchored there.
+    fn edges(&self, view: &str) -> [usize; 4] {
         let mut edges = [0, 0, view.len(), view.len()];
         if self.starts_line || self.ends_line {
             let content = crate::cross_line::content_range(view);
-            if self.starts_line {
+            // The index keeps `[א]` glued to a word inside that word's term: skip it only spaced.
+            let (lead, tail) = (&view[..content.start], &view[content.end..]);
+            if self.starts_line && !lead.ends_with(']') {
                 edges[1] = content.start;
             }
-            if self.ends_line {
+            if self.ends_line && !tail.starts_with('[') {
                 edges[3] = content.end;
             }
         }
+        edges
+    }
+
+    /// The parts of `view` the pattern runs on: the whole line, and for an anchored pattern
+    /// also the line without its edge enumerators, so `\A` and `\z` hold at either edge.
+    fn windows(edges: [usize; 4]) -> impl Iterator<Item = std::ops::Range<usize>> {
         [(0, 2), (1, 2), (0, 3), (1, 3)]
             .into_iter()
             .filter_map(move |(s, e)| {
@@ -1194,7 +1206,7 @@ impl LinePlan {
     }
 
     pub(crate) fn is_match(&self, view: &str) -> bool {
-        self.windows(view).any(|w| {
+        Self::windows(self.edges(view)).any(|w| {
             let part = &view[w];
             self.prefilter.is_match(part) && self.regex.find_iter(part).any(|m| !m.is_empty())
         })
@@ -1202,8 +1214,8 @@ impl LinePlan {
 
     /// Byte ranges of the non-empty matches in `view`, without overlaps.
     pub(crate) fn find(&self, view: &str) -> Vec<std::ops::Range<usize>> {
-        let mut found: Vec<std::ops::Range<usize>> = self
-            .windows(view)
+        let edges = self.edges(view);
+        let mut found: Vec<std::ops::Range<usize>> = Self::windows(edges)
             .flat_map(|w| {
                 self.regex
                     .find_iter(&view[w.clone()])
@@ -1211,8 +1223,21 @@ impl LinePlan {
                     .map(move |m| w.start + m.start()..w.start + m.end())
             })
             .collect();
-        // The windows overlap: keep the leftmost, longest match of each place.
         if self.starts_line || self.ends_line {
+            // One match per anchor: an anchored match past the enumerator drops the one before
+            // it. A match is anchored when it fails where `\A` and `\z` cannot hold.
+            let padded = format!("\n{view}\n");
+            let anchored = |r: &std::ops::Range<usize>| {
+                let m = self.regex.find_at(&padded, r.start + 1);
+                m.map(|m| m.start() - 1..m.end() - 1).as_ref() != Some(r)
+            };
+            if edges[1] > 0 && found.iter().any(|r| r.start == edges[1] && anchored(r)) {
+                found.retain(|r| r.start >= edges[1] || !anchored(r));
+            }
+            if edges[3] < edges[2] && found.iter().any(|r| r.end == edges[3] && anchored(r)) {
+                found.retain(|r| r.end <= edges[3] || !anchored(r));
+            }
+            // The windows overlap: keep the leftmost, longest match of each place.
             found.sort_by_key(|r| (r.start, std::cmp::Reverse(r.end)));
             let mut end = 0;
             found.retain(|r| {
