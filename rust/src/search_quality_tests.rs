@@ -196,3 +196,114 @@ fn relevance_ranks_exact_then_affixed_then_spelling_then_typo() {
     assert_eq!(catalogue, [0, 1, 2, 3]);
     assert_eq!(relevance, [3, 2, 1, 0]);
 }
+
+fn word_options(query: &str, per_word: &[&[&str]]) -> HashMap<String, HashMap<String, bool>> {
+    hebrew_query::split_query_words(&hebrew_query::normalize_for_index(query))
+        .iter()
+        .zip(per_word)
+        .enumerate()
+        .map(|(i, (w, flags))| {
+            (
+                format!("{w}_{i}"),
+                flags.iter().map(|f| (f.to_string(), true)).collect(),
+            )
+        })
+        .collect()
+}
+
+fn phrase_ids(
+    engine: &SearchEngine,
+    query: &str,
+    options: HashMap<String, HashMap<String, bool>>,
+) -> Vec<u64> {
+    engine
+        .search_advanced(
+            query.to_string(),
+            String::new(),
+            Vec::new(),
+            100,
+            0,
+            0,
+            0,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            options,
+            HashMap::new(),
+            ResultsOrder::Catalogue,
+            false,
+            false,
+            SearchScope::WordDistance,
+            SearchScope::WordDistance,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect()
+}
+
+/// Otzaria/otzaria#3673: within a phrase, a typo-tolerant word of four letters
+/// or more takes any single-letter edit — not only the common confusions.
+#[test]
+fn phrase_typo_takes_any_single_letter_edit() {
+    let (engine, _dir) = engine_with(&["פאלמיטו: לבבות דקל (hearts of palm)", "לבות דקל"]);
+    const TYPO: &str = "שגיאות כתיב";
+    const GRAM_PREFIX: &str = "קידומות דקדוקיות";
+
+    // ל→ב at the first word, typo on that word only.
+    let ids = phrase_ids(
+        &engine,
+        "ללבות דקל",
+        word_options("ללבות דקל", &[&[TYPO], &[]]),
+    );
+    assert!(ids.contains(&0), "{ids:?}");
+    // The edit on the second word.
+    let ids = phrase_ids(
+        &engine,
+        "פאלמיטו ללבות",
+        word_options("פאלמיטו ללבות", &[&[], &[TYPO]]),
+    );
+    assert_eq!(ids, [0]);
+    // Insertion, deletion and transposition within a phrase.
+    for query in ["לבבבות דקל", "לבות דקל", "לבבתו דקל"] {
+        let ids = phrase_ids(&engine, query, word_options(query, &[&[TYPO], &[]]));
+        assert!(ids.contains(&0), "{query}: {ids:?}");
+    }
+    // Typo composed with a morphological option.
+    let both: &[&str] = &[TYPO, GRAM_PREFIX];
+    let ids = phrase_ids(
+        &engine,
+        "ללבות דקל",
+        word_options("ללבות דקל", &[both, both]),
+    );
+    assert!(ids.contains(&0), "{ids:?}");
+    // A three-letter word still takes only the common confusions (ל→ר is none).
+    let ids = phrase_ids(
+        &engine,
+        "לבבות דקר",
+        word_options("לבבות דקר", &[&[TYPO], &[TYPO]]),
+    );
+    assert!(ids.is_empty(), "{ids:?}");
+
+    // The opened book highlights the form the phrase matched.
+    let hl = engine
+        .generate_index_highlight_pattern(
+            "ללבות דקל".to_string(),
+            0,
+            HashMap::new(),
+            HashMap::new(),
+            word_options("ללבות דקל", &[&[TYPO], &[]]),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("a highlight pattern");
+    let word = regex::Regex::new(&hl.word_patterns[0]).unwrap();
+    assert!(word.is_match("לבבות"), "{}", hl.word_patterns[0]);
+}
