@@ -147,11 +147,6 @@ const VERB_SUFFIX_ALTS: &[&str] = &["תי", "ת", "תם", "תן"];
 /// (plural — תורות, תורותיו).
 const HE_STEM_ALTS: &[&str] = &["ות", "ת"];
 
-// Letters tried for single-insertion typo variants (ordered by frequency).
-const INSERTION_LETTERS: &[&str] = &[
-    "ו", "י", "א", "ה", "פ", "ל", "מ", "נ", "ב", "כ", "ש", "ת", "ר",
-];
-
 // ── Budget constants ───────────────────────────────────────────────────────
 
 /// Char budget for a *joined* per-word pattern on the phrase path, where
@@ -271,7 +266,7 @@ pub struct AdvancedQuery {
     /// [`prepare_advanced_query`]). When non-empty, `regex_terms` carries only
     /// the exact candidate forms and the engine adds one automaton scan per
     /// token per segment: the whole edit-distance-1 neighborhood for the cost
-    /// of a single scan, instead of ≤128 sampled literal-variant scans. The
+    /// of a single scan, instead of ~4 literal-variant scans per letter. The
     /// scan runs after the exact branches and under the same collection
     /// budgets — lowest priority, skipped if the exact forms already exhaust
     /// a budget. Empty on every other query shape.
@@ -1839,6 +1834,10 @@ pub(crate) fn escape_regex(s: &str) -> String {
 
 /// Single-char form of [`escape_regex`], for builders that walk chars.
 fn push_escaped(out: &mut String, ch: char) {
+    if ch == TYPO_ANY_LETTER {
+        out.push_str(AFFIX_LETTER);
+        return;
+    }
     if matches!(
         ch,
         '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$'
@@ -2098,39 +2097,15 @@ fn typo_substitutions(grapheme: &str) -> &'static [&'static str] {
     }
 }
 
-/// Common Hebrew letter confusions + adjacent transposition, seeded with the
-/// original word. Mirrors the Dart `generateCommonHebrewTypoVariations`.
-fn generate_common_typo_variations(word: &str) -> Vec<String> {
-    if word.is_empty() {
-        return vec![String::new()];
-    }
-    let graphemes: Vec<&str> = word.graphemes(true).collect();
-    let mut out = Vec::new();
-    let mut seen = HashSet::new();
-    push_unique(&mut out, &mut seen, word.to_string());
-
-    for (i, &g) in graphemes.iter().enumerate() {
-        for &sub in typo_substitutions(g) {
-            let mut v = graphemes.clone();
-            v[i] = sub;
-            push_unique(&mut out, &mut seen, v.concat());
-        }
-    }
-    for i in 0..graphemes.len().saturating_sub(1) {
-        if graphemes[i] != graphemes[i + 1] {
-            let mut v = graphemes.clone();
-            v.swap(i, i + 1);
-            push_unique(&mut out, &mut seen, v.concat());
-        }
-    }
-    out
-}
-
 /// Typo tolerance by word length: no letters to spare in a word of up to
 /// two letters (אב would match א, ב, אם…), only the common letter confusions
 /// in a three-letter word, and the full edit distance 1 from four letters.
 const MIN_TYPO_SUBSTITUTION_LETTERS: usize = 3;
 const MIN_TYPO_EDIT_LETTERS: usize = 4;
+
+/// Any letter in a typo variant: [`push_escaped`] renders it as [`AFFIX_LETTER`]
+/// (a Unicode noncharacter, so no query text carries it).
+const TYPO_ANY_LETTER: char = '\u{FDD0}';
 
 /// Letters of `word` that a typo may change: quotes and marks not counted.
 pub(crate) fn typo_letter_count(word: &str) -> usize {
@@ -2147,8 +2122,8 @@ pub(crate) fn takes_typo_edits(word: &str) -> bool {
 
 /// Typo variants of `word`, original first, capped at `max`: by length (see
 /// [`MIN_TYPO_EDIT_LETTERS`]) nothing, the common letter confusions, or the
-/// full edit-distance-1 expansion — confusions/transpositions, then single
-/// deletions, then single insertions.
+/// full edit-distance-1 expansion — substitutions, transpositions, deletions,
+/// then insertions, a changed or added letter written [`TYPO_ANY_LETTER`].
 fn generate_typo_variations(word: &str, max: usize) -> Vec<String> {
     if word.is_empty() {
         return vec![String::new()];
@@ -2171,41 +2146,34 @@ fn generate_typo_variations(word: &str, max: usize) -> Vec<String> {
         out.truncate(max.max(1));
         return out;
     }
+    // A substitution or insertion takes any letter in one branch each.
+    let any = TYPO_ANY_LETTER.to_string();
+    let n = graphemes.len();
+    let edit = |at: usize, len: usize, with: &[&str]| -> String {
+        [&graphemes[..at], with, &graphemes[at + len..]]
+            .concat()
+            .concat()
+    };
+    let substitutions = (0..n).map(|i| edit(i, 1, &[&any]));
+    let transpositions = (0..n - 1)
+        .filter(|&i| graphemes[i] != graphemes[i + 1])
+        .map(|i| edit(i, 2, &[graphemes[i + 1], graphemes[i]]));
+    let deletions = (0..n).map(|i| edit(i, 1, &[]));
+    // Beginning and end first, then the interior positions.
+    let insertions = [0, n].into_iter().chain(1..n).map(|i| edit(i, 0, &[&any]));
     let mut out: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
-
-    // Helper: add if new and non-empty; return false when cap is reached.
-    let mut add = |v: String| -> bool {
-        if v.is_empty() || seen.contains(&v) {
-            return true; // skip, but keep going
+    for v in std::iter::once(word.to_string())
+        .chain(substitutions)
+        .chain(transpositions)
+        .chain(deletions)
+        .chain(insertions)
+    {
+        if !v.is_empty() {
+            push_unique(&mut out, &mut seen, v);
         }
-        seen.insert(v.clone());
-        out.push(v);
-        out.len() < max
-    };
-
-    for v in generate_common_typo_variations(word) {
-        if !add(v) {
-            return out;
-        }
-    }
-    for i in 0..graphemes.len() {
-        let mut g = graphemes.clone();
-        g.remove(i);
-        if !g.is_empty() && !add(g.concat()) {
-            return out;
-        }
-    }
-    // Try beginning and end first, then the interior positions.
-    let mut positions = vec![0, graphemes.len()];
-    positions.extend(1..graphemes.len());
-    for pos in positions {
-        for &letter in INSERTION_LETTERS {
-            let mut g = graphemes.clone();
-            g.insert(pos, letter);
-            if !add(g.concat()) {
-                return out;
-            }
+        if out.len() >= max {
+            break;
         }
     }
     out
@@ -3125,14 +3093,14 @@ fn prepare_advanced_query_impl(
     // A single word whose only expansion option is typo tolerance skips the
     // literal edit-distance-1 variants entirely: the engine scans the term
     // dictionary once per candidate with a Levenshtein-1 automaton instead —
-    // every substitution/deletion/insertion/transposition, not the sampled
-    // Hebrew confusion list, for ~1/128 of the scan work. The coverage is
+    // the same edit-distance-1 neighborhood as the ~4 literal variants per
+    // letter, in a single scan. The coverage is
     // still subject to the collection budgets, and typo sits at the lowest
     // priority: when the exact forms alone exhaust a budget (an extremely
     // common word), the typo scan is skipped rather than pushing past it.
-    // Typo combined with morphology/spelling keeps the literal-variant path,
-    // which composes each variant through the pattern builder (an automaton
-    // can't).
+    // A phrase, or typo combined with morphology/spelling, keeps the literal
+    // variants: each is a regex the phrase engines and the pattern builder
+    // compose (an automaton can't).
     let first_flags = word_flags_at(&words, 0, search_options);
     let typo_tokens: Vec<String> =
         if words.len() == 1 && first_flags.typo && !first_flags.expands_beyond_typo() {
@@ -4385,13 +4353,21 @@ mod tests {
     // ── typo variations ──────────────────────────────────────────────────
 
     #[test]
-    fn common_typo_covers_substitution_and_transposition() {
-        let v = generate_common_typo_variations("בא");
-        assert_eq!(v[0], "בא");
-        assert!(v.contains(&"וא".to_string()));
-        assert!(v.contains(&"בע".to_string()));
-        assert!(v.contains(&"בה".to_string()));
-        assert!(v.contains(&"אב".to_string()));
+    fn typo_edits_change_or_add_any_letter() {
+        // ל→ב is no common confusion, yet ללבות is one edit from לבבות (#3673).
+        let flags = WordFlags {
+            typo: true,
+            ..Default::default()
+        };
+        let pattern = build_word_regex("ללבות", &flags, &[], &PHRASE_BUDGET).joined();
+        let re = regex::Regex::new(&format!("^(?:{pattern})$")).unwrap();
+        for term in ["ללבות", "לבבות", "לבות", "לללבות", "ללבתו", "ללבותי"]
+        {
+            assert!(re.is_match(term), "{term}");
+        }
+        for term in ["לבבבות", "לבבו", "ללב"] {
+            assert!(!re.is_match(term), "{term}");
+        }
     }
 
     #[test]
@@ -4431,7 +4407,8 @@ mod tests {
             assert!(!three.contains(&v.to_string()), "{v}");
         }
         let four = generate_typo_variations("ברכה", 500);
-        for v in ["ברכ", "רבכה", "בברכה", "ברקה"] {
+        let any = TYPO_ANY_LETTER;
+        for v in ["ברכ", "רבכה", &format!("בר{any}ה"), &format!("{any}ברכה")] {
             assert!(four.contains(&v.to_string()), "{v}");
         }
         // מרחק העריכה במנוע (אוטומט לבנשטיין) רק למילה של ארבע אותיות לפחות;
@@ -4462,11 +4439,13 @@ mod tests {
     fn typo_substitutions_are_nikud_free() {
         // ס/ש confuse with each other but never with the dotted (vocalized)
         // shin/sin forms, which can't exist in the nikud-free index. This also
-        // pins the substitution map output and seed-first ordering for a
-        // single-grapheme word.
-        assert_eq!(generate_common_typo_variations("ס"), vec!["ס", "ש"]);
+        // pins the substitution map output and seed-first ordering.
+        assert_eq!(
+            generate_typo_variations("סלע", 100),
+            vec!["סלע", "שלע", "סלא", "סלה"]
+        );
         // No produced variation may carry a nikud-range mark (U+0591–U+05C7).
-        let v = generate_common_typo_variations("שבת");
+        let v = generate_typo_variations("שבת", 100);
         for variant in v {
             assert!(
                 !variant
@@ -4899,16 +4878,17 @@ mod tests {
     #[test]
     fn single_word_budget_relaxes_branch_count() {
         // With the phrase budget, typo+partial caps at MAX_TYPO_VARIATIONS
-        // branches; the single-word budget must go beyond it. A long word is
-        // needed to saturate both caps — a 3-letter word's edit-distance-1
-        // neighborhood is naturally smaller than the raised phrase cap.
+        // branches; the single-word budget must go beyond it. One word's
+        // edit-distance-1 branches (~4 per letter) stay under both caps, so
+        // alternatives saturate them.
         let flags = WordFlags {
             typo: true,
             partial: true,
             ..Default::default()
         };
-        let phrase = build_word_regex("בראשית", &flags, &[], &PHRASE_BUDGET);
-        let single = build_word_regex("בראשית", &flags, &[], &SINGLE_WORD_BUDGET);
+        let alts: Vec<String> = ["בריאה", "בתחילה", "ראשית"].map(String::from).to_vec();
+        let phrase = build_word_regex("בראשית", &flags, &alts, &PHRASE_BUDGET);
+        let single = build_word_regex("בראשית", &flags, &alts, &SINGLE_WORD_BUDGET);
         assert_eq!(phrase.branches().len(), MAX_TYPO_VARIATIONS);
         assert!(
             single.branches().len() > MAX_TYPO_VARIATIONS,
