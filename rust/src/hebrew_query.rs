@@ -2337,8 +2337,8 @@ pub(crate) fn affix_arms(root: &str, flags: &WordFlags, voc: bool) -> Vec<AffixA
             trail_window = Some(user_suffix_window(letters));
         }
     }
-    // The Aramaic group contains the grammatical one slot by slot: one lead, not a
-    // second copy of every branch (which pushed typo variants out of the char budget).
+    // The Aramaic group contains the grammatical one, with no root-letter floor. A separate
+    // Aramaic arm would double every branch and push typo variants out of the char budget.
     if flags.aramaic_prefix {
         leads.push(prefix_group(ARAMAIC_PREFIX_ALTS_A, voc));
     } else if flags.gram_prefix && (abbreviation || letters >= MIN_GRAM_PREFIX_ROOT_LETTERS) {
@@ -4824,10 +4824,18 @@ mod tests {
             },
             "דאב"
         ));
+        // קידומת ארמית על שורש קצר מתחברת לחלון הסיומות.
+        let short = WordFlags {
+            aramaic_prefix: true,
+            gram_prefix: true,
+            suffix: true,
+            ..Default::default()
+        };
+        assert!(word_accepts("אב", &short, "ואבות"));
     }
 
-    /// otzaria#3673: קידומות ארמיות על כל אפשרויות הרגיל הכפילו כל ענף, ותקציב
-    /// התווים של הביטוי השמיט את וריאנטי שגיאות הכתיב.
+    /// otzaria#3673: קידומות ארמיות לא מוסיפות ענפים, כדי שתקציב התווים של הביטוי
+    /// לא ישמיט את וריאנטי שגיאות הכתיב.
     #[test]
     fn aramaic_prefix_keeps_the_phrase_branches_of_the_other_options() {
         let regular = [
