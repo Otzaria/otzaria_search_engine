@@ -31463,7 +31463,7 @@ mod tests {
 
         /// Changed-book windows have a bounded discovery budget. Exceeding it never
         /// exposes a partial arrival set as complete: unfiltered planning backs off and
-        /// filtered planning reports why an update is needed.
+        /// filtered planning backs off in the same way.
         #[test]
         fn changed_window_discovery_overflow_backs_off_without_partial_results() {
             use crate::semantic_resolver::LiveResolver;
@@ -31587,6 +31587,139 @@ mod tests {
                 planned.unwrap().is_none(),
                 "each book fits, but their combined window working set exceeds the cap"
             );
+        }
+
+        /// A cold plan must stop walking books when the shared window budget overflows.
+        /// A single worker makes the I/O bound deterministic, independent of host speed.
+        #[test]
+        fn window_discovery_overflow_stops_before_walking_the_rest_of_the_library() {
+            use crate::semantic_resolver::LiveResolver;
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            engine.set_bulk_indexing(true).unwrap();
+            let long = (0..600)
+                .map(|n| format!("מילה{n:04}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            for n in 0..32 {
+                engine
+                    .add_text_book_placed(
+                        "ספר".into(),
+                        "/root".into(),
+                        format!("/changed/{n:02}.txt"),
+                        n + 1,
+                        0,
+                        long.clone(),
+                        None,
+                        TextStorage::InIndex,
+                        None,
+                    )
+                    .unwrap();
+            }
+            engine.commit().unwrap();
+            let vectors = dir.path().join("vectors");
+            let generation = otzaria_semantic_search::semantic::segment_set::info(&vectors)
+                .unwrap()
+                .unwrap()
+                .generation;
+            let view = engine.semantic_set_view(&vectors, generation).unwrap();
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(1)
+                .build()
+                .unwrap();
+            pool.install(|| {
+                let mut resolver = LiveResolver::new(
+                    engine.index_reader.searcher(),
+                    engine.chunk_key_field,
+                    &engine.semantic_resolver,
+                )
+                .unwrap();
+                let filters = SidecarSearchFilters {
+                    book_paths: None,
+                    facets: Some(vec!["/".into()]),
+                    include_pdf: None,
+                };
+                let previous =
+                    crate::semantic_resolver::WINDOW_ARRIVAL_CAP.with(|cap| cap.replace(1));
+                let plan = resolver.plan(&filters, &view, &CancellationToken::new());
+                crate::semantic_resolver::WINDOW_ARRIVAL_CAP.with(|cap| cap.set(previous));
+                assert!(plan.unwrap().is_none(), "never expose a partial plan");
+                let walked = walks(&engine);
+                assert!(
+                    walked <= 2,
+                    "overflow should stop early, walked {walked} books"
+                );
+            });
+        }
+
+        /// Reaching the limit exactly is still a complete plan; only a further window
+        /// may trigger backoff. A cancellation at that boundary is never cached as overflow.
+        #[test]
+        fn window_discovery_keeps_exact_budget_plans_and_prioritizes_cancellation() {
+            use crate::semantic_resolver::LiveResolver;
+            use otzaria_semantic_search::semantic::resolve::ResolveError;
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            let long = (0..600)
+                .map(|n| format!("מילה{n:04}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let windows = crate::semantic_keys::window_keys(&long).len();
+            assert!(windows > 1);
+            engine
+                .add_text_book_placed(
+                    "ספר".into(),
+                    "/other".into(),
+                    OTHER.into(),
+                    1,
+                    0,
+                    long,
+                    None,
+                    TextStorage::InIndex,
+                    None,
+                )
+                .unwrap();
+            engine.commit().unwrap();
+            let vectors = dir.path().join("vectors");
+            let generation = otzaria_semantic_search::semantic::segment_set::info(&vectors)
+                .unwrap()
+                .unwrap()
+                .generation;
+            let view = engine.semantic_set_view(&vectors, generation).unwrap();
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(1)
+                .build()
+                .unwrap();
+            pool.install(|| {
+                let filters = SidecarSearchFilters {
+                    book_paths: None,
+                    facets: Some(vec!["/".into()]),
+                    include_pdf: None,
+                };
+                let mut resolver = LiveResolver::new(
+                    engine.index_reader.searcher(),
+                    engine.chunk_key_field,
+                    &engine.semantic_resolver,
+                )
+                .unwrap();
+                let cancel = CancellationToken::new();
+                let previous = crate::semantic_resolver::WINDOW_ARRIVAL_CAP
+                    .with(|cap| cap.replace(windows - 1));
+                crate::semantic_resolver::CANCEL_ON_WINDOW_OVERFLOW.with(|flag| flag.set(true));
+                let cancelled = resolver.plan(&filters, &view, &cancel);
+                crate::semantic_resolver::CANCEL_ON_WINDOW_OVERFLOW.with(|flag| flag.set(false));
+                crate::semantic_resolver::WINDOW_ARRIVAL_CAP.with(|cap| cap.set(previous));
+                assert_eq!(cancelled.err(), Some(ResolveError::Cancelled));
+
+                let previous =
+                    crate::semantic_resolver::WINDOW_ARRIVAL_CAP.with(|cap| cap.replace(windows));
+                let complete = resolver.plan(&filters, &view, &CancellationToken::new());
+                crate::semantic_resolver::WINDOW_ARRIVAL_CAP.with(|cap| cap.set(previous));
+                assert!(
+                    complete.unwrap().is_some(),
+                    "a cancelled overflow must not cache backoff; exactly the limit fits"
+                );
+            });
         }
 
         /// The probe's semantic hit at line 1 of [`BOOK`], in a search's results.
@@ -31909,6 +32042,154 @@ mod tests {
             let planned = filtered("ויאמר אלהים יהי אור").unwrap();
             assert!(planned.semantic_available, "{:?}", planned.fallback_reason);
             assert_eq!(planned.fallback_kind, None);
+        }
+
+        /// Even without a plan, the live facets exclude a book whose category changed
+        /// after the vectors were built.
+        #[test]
+        fn an_unplanned_search_still_applies_live_book_facets() {
+            let dir = TempDir::new().unwrap();
+            let mut engine = open(
+                &dir,
+                built_of_books(
+                    &dir,
+                    false,
+                    &[(BOOK, PROBE.to_string()), (OTHER, PROBE.to_string())],
+                ),
+            );
+            engine.delete_documents_by_file_path(OTHER).unwrap();
+            engine
+                .add_text_book_placed(
+                    "other".into(),
+                    "/outside".into(),
+                    OTHER.into(),
+                    1,
+                    0,
+                    PROBE.into(),
+                    None,
+                    TextStorage::InIndex,
+                    None,
+                )
+                .unwrap();
+            engine.commit().unwrap();
+            crate::semantic_resolver::FAIL_PLANS.with(|fail| fail.set(true));
+            let response = engine.search_semantic(
+                PROBE.into(),
+                vec!["/root".into()],
+                10,
+                0,
+                SemanticLexicalMode::Exact,
+                0,
+                SemanticRetrievalMode::SemanticOnly,
+                None,
+                false,
+                false,
+                None,
+                &SemanticCancellationToken::new(),
+            );
+            crate::semantic_resolver::FAIL_PLANS.with(|fail| fail.set(false));
+            let response = response.unwrap();
+            assert!(response.semantic_available);
+            assert!(!response.results.is_empty());
+            assert!(response.results.iter().all(|r| r.file_path == BOOK));
+        }
+
+        /// Cached lexical pages stay stable after a semantic failure, while an explicit
+        /// first-page search retries the recovered semantic path.
+        #[test]
+        fn a_failed_session_keeps_its_pages_but_a_new_search_retries() {
+            let dir = TempDir::new().unwrap();
+            let text = (0..12)
+                .map(|n| format!("{PROBE} תוספת{n}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let engine = open(&dir, built_of(&dir, false, text));
+            let page = |offset| {
+                engine
+                    .search_semantic(
+                        PROBE.into(),
+                        vec!["/".into()],
+                        1,
+                        offset,
+                        SemanticLexicalMode::Exact,
+                        0,
+                        SemanticRetrievalMode::Hybrid,
+                        None,
+                        false,
+                        false,
+                        None,
+                        &SemanticCancellationToken::new(),
+                    )
+                    .unwrap()
+            };
+            crate::semantic_resolver::FAIL_SCANS.with(|fail| fail.set(true));
+            let first = page(0);
+            crate::semantic_resolver::FAIL_SCANS.with(|fail| fail.set(false));
+            assert!(!first.semantic_available);
+            assert!(first.has_more);
+            let continuation = page(1);
+            assert!(!continuation.session_restarted);
+            assert!(!continuation.semantic_available);
+            assert_ne!(first.results[0].id, continuation.results[0].id);
+            let fresh = page(0);
+            assert!(fresh.semantic_available);
+            assert!(fresh.fallback_kind.is_none());
+        }
+
+        /// A commit clears an overflow backoff: a now-small plan must discover the probe
+        /// copied to another book rather than continue using the earlier unplanned scan.
+        #[test]
+        fn a_filtered_window_overflow_backoff_is_cleared_on_commit() {
+            let dir = TempDir::new().unwrap();
+            let mut engine = opened(&dir);
+            let long = (0..600)
+                .map(|n| format!("מילה{n:04}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            engine
+                .add_text_book_placed(
+                    "other".into(),
+                    "/other".into(),
+                    OTHER.into(),
+                    1,
+                    0,
+                    long,
+                    None,
+                    TextStorage::InIndex,
+                    None,
+                )
+                .unwrap();
+            engine.commit().unwrap();
+            let search = |engine: &SearchEngine| {
+                engine
+                    .search_semantic(
+                        PROBE.into(),
+                        vec!["/".into()],
+                        10,
+                        0,
+                        SemanticLexicalMode::Exact,
+                        0,
+                        SemanticRetrievalMode::SemanticOnly,
+                        None,
+                        false,
+                        false,
+                        None,
+                        &SemanticCancellationToken::new(),
+                    )
+                    .unwrap()
+            };
+            let old = crate::semantic_resolver::WINDOW_ARRIVAL_CAP.with(|cap| cap.replace(1));
+            let first = search(&engine);
+            crate::semantic_resolver::WINDOW_ARRIVAL_CAP.with(|cap| cap.set(old));
+            assert!(first.semantic_available);
+            engine.delete_documents_by_file_path(OTHER).unwrap();
+            add_copy(&mut engine, OTHER, 1);
+            let next = search(&engine);
+            assert!(next.semantic_available);
+            assert!(next
+                .results
+                .iter()
+                .any(|r| r.file_path == OTHER && r.semantic_score.is_some()));
         }
 
         /// Another process's cleanup can take an expansion's lock file in the instant between

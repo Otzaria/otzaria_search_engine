@@ -22,8 +22,11 @@
   `queryFailed`. The app searches the whole library with the facet `/`, so on
   a device where more changed books' long-line windows need discovery than
   the budget allows, every smart search fell back to its lexical results
-  (Otzaria/otzaria#3517, #3545, #3532, #3535, #3410). A filter past the budget
-  is not walked again for the index generation.
+  (Otzaria/otzaria#3517, #3545, #3532, #3535, #3410). Discovery stops on overflow,
+  including pending books' postings and further text batches in running workers.
+  Successful plans and overflow backoffs share a 16-filter LRU cache, keyed by
+  index generation and vector-set view; a recently used filter past the budget
+  is not walked again while its backoff is cached.
 - The same query asked again after its semantic half failed searches again,
   instead of repeating the failure for ten minutes; its later pages still page
   (Otzaria/otzaria#3531).
