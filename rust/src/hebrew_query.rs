@@ -155,11 +155,8 @@ const HE_STEM_ALTS: &[&str] = &["ות", "ת"];
 /// build cost: 12K keeps ~8 typo × spelling × affix branches (~60ms to build, cached).
 const MAX_PATTERN_CHARS: usize = 12_000;
 
-/// Phrase-path variation cap when typo tolerance is active (substitution +
-/// deletion + insertion can produce many candidates; we keep the most useful
-/// ones). The historical worst shape (wildcard-wrapped typo+partial branches)
-/// determinizes to roughly ~100 states per branch, so 64 branches ≈ 6.4k
-/// states — inside the vendored 8 192-state cap with margin.
+/// Phrase-path branch cap with typo tolerance: ~4 typo branches per letter of
+/// every candidate. Wildcard-wrapped branches cost ~100 DFA states each (cap 8 192).
 const MAX_TYPO_VARIATIONS: usize = 64;
 
 /// Phrase-path variation cap without typo tolerance. Raised 48→96 together
@@ -2830,6 +2827,11 @@ fn build_word_regex(
     // lose its slot to a typo variant of the primary word. Pass 0 emits the
     // exact forms; pass 1 (typo only) emits the edit-distance-1 variants,
     // whose regenerated originals dedupe against pass 0 via `seen`.
+    // A typo root skips the spelling variants: each would be a second edit.
+    let typo_flags = WordFlags {
+        spelling: false,
+        ..flags.clone()
+    };
     'passes: for pass in 0..=usize::from(flags.typo) {
         for candidate in &candidates {
             let roots: Vec<String> = if pass == 0 {
@@ -2838,7 +2840,7 @@ fn build_word_regex(
                 generate_typo_variations(candidate, budget.typo_variations)
             };
             for root in roots {
-                let pattern = word_to_pattern(&root, flags);
+                let pattern = word_to_pattern(&root, if pass == 0 { flags } else { &typo_flags });
                 push_unique(&mut branches, &mut seen, pattern);
                 if branches.len() >= max {
                     break 'passes;
@@ -3090,17 +3092,8 @@ fn prepare_advanced_query_impl(
         &PHRASE_BUDGET
     };
 
-    // A single word whose only expansion option is typo tolerance skips the
-    // literal edit-distance-1 variants entirely: the engine scans the term
-    // dictionary once per candidate with a Levenshtein-1 automaton instead —
-    // the same edit-distance-1 neighborhood as the ~4 literal variants per
-    // letter, in a single scan. The coverage is
-    // still subject to the collection budgets, and typo sits at the lowest
-    // priority: when the exact forms alone exhaust a budget (an extremely
-    // common word), the typo scan is skipped rather than pushing past it.
-    // A phrase, or typo combined with morphology/spelling, keeps the literal
-    // variants: each is a regex the phrase engines and the pattern builder
-    // compose (an automaton can't).
+    // A single word with typo as its only expansion scans one Levenshtein-1 automaton per
+    // candidate; phrases and other options keep regex variants, which they compose.
     let first_flags = word_flags_at(&words, 0, search_options);
     let typo_tokens: Vec<String> =
         if words.len() == 1 && first_flags.typo && !first_flags.expands_beyond_typo() {
@@ -4351,6 +4344,34 @@ mod tests {
     }
 
     // ── typo variations ──────────────────────────────────────────────────
+
+    #[test]
+    fn phrase_typo_with_affixes_and_spelling_keeps_every_edit() {
+        // Spelling × affixes on every typo root would overflow the phrase char
+        // budget and drop the common confusions.
+        let flags = WordFlags {
+            typo: true,
+            gram_prefix: true,
+            gram_suffix: true,
+            spelling: true,
+            ..Default::default()
+        };
+        for (word, terms) in [
+            (
+                "ברכה",
+                &["ברקה", "וברקה", "ברקתו", "ברגה", "רבכה", "ברכ"][..],
+            ),
+            ("רמב\"ם", &["רמו\"ם", "מרב\"ם", "והרמ\"ם"][..]),
+            ("שבתותיהם", &["שתותיהם", "בשתותיהם", "שבתותיכם"][..]),
+        ] {
+            let pattern = build_word_regex(word, &flags, &[], &PHRASE_BUDGET).joined();
+            assert!(budget_chars(&pattern) <= MAX_PATTERN_CHARS, "{word}");
+            let re = regex::Regex::new(&format!("^(?:{pattern})$")).unwrap();
+            for term in terms {
+                assert!(re.is_match(term), "{word} ↛ {term}");
+            }
+        }
+    }
 
     #[test]
     fn typo_edits_change_or_add_any_letter() {

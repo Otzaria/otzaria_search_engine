@@ -21776,11 +21776,8 @@ mod tests {
 
     #[test]
     fn advanced_typo_only_single_word_covers_full_edit_distance() {
-        // typo-only single word expands through a Levenshtein-1 automaton
-        // scan (VARIATION_CEILING_RESEARCH §3.ג): full edit-distance-1
-        // coverage, a superset of the historical literal variant list.
-        // "ברכגה" — an insertion of the uncommon ג — must match; a distance-2
-        // word must not. (A word needs four letters for the full distance.)
+        // A Levenshtein-1 scan: the insertion ברכגה matches, a distance-2 word
+        // does not (the full distance needs four letters).
         let (mut engine, _dir) = make_engine();
         add(&mut engine, 1, "ברכה בראשית", "/books/a.txt");
         add(&mut engine, 2, "ברכגה אחר", "/books/b.txt");
