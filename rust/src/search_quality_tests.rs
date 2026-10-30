@@ -113,6 +113,61 @@ fn search_and_highlight_share_compiled_automata() {
     );
 }
 
+/// otzaria#3673: an extra expansion option never drops a match the other options
+/// found — "קידומות ארמיות" on top of the regular options lost the typo variants.
+#[test]
+fn an_extra_option_never_drops_matches() {
+    let (engine, _dir) = engine_with(&[
+        "לבבות דקל",
+        "ולבבות דקל",
+        "דלבבות דקל",
+        "לבוות דקל",
+        "ללבבת דקל",
+        "דקל ללבבת",
+        "דקל דללבות",
+    ]);
+    let regular = [
+        "קידומות דקדוקיות",
+        "סיומות דקדוקיות",
+        "כתיב מלא/חסר",
+        "חלק ממילה",
+        "שגיאות כתיב",
+    ];
+    let advanced_only = [
+        "קידומות ארמיות",
+        "סיומות ארמיות",
+        "התעלם מגרשיים",
+        "תרגום ארמי",
+        "ראשי תיבות",
+    ];
+    let mut bases: Vec<Vec<&str>> = vec![Vec::new(), regular.to_vec()];
+    bases.extend(regular.iter().map(|o| vec![*o]));
+    for query in ["לבבות דקל", "ללבות דקל", "דקל ללבות"] {
+        for base in &bases {
+            let before = advanced_ids(&engine, query, base, ResultsOrder::Catalogue);
+            for extra in regular.iter().chain(&advanced_only) {
+                if base.contains(extra) {
+                    continue;
+                }
+                let with: Vec<&str> = base.iter().chain([extra]).copied().collect();
+                let after = advanced_ids(&engine, query, &with, ResultsOrder::Catalogue);
+                let lost: Vec<u64> = before
+                    .iter()
+                    .filter(|id| !after.contains(id))
+                    .copied()
+                    .collect();
+                assert!(lost.is_empty(), "{query} {base:?} + {extra}: lost {lost:?}");
+            }
+        }
+    }
+    let mut all = regular.to_vec();
+    all.push("קידומות ארמיות");
+    let ids = advanced_ids(&engine, "לבבות דקל", &all, ResultsOrder::Catalogue);
+    for id in [0, 1, 2] {
+        assert!(ids.contains(&id), "{id} missing from {ids:?}");
+    }
+}
+
 fn kept_terms(engine: &SearchEngine, branches: &[&str], max_terms: u32) -> (Vec<String>, bool) {
     let field = engine.schema.get_field("text").unwrap();
     let branches: Vec<String> = branches.iter().map(|b| b.to_string()).collect();

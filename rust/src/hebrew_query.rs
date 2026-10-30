@@ -558,17 +558,6 @@ impl WordFlags {
             || self.aramaic_prefix
             || self.aramaic_suffix
     }
-
-    /// האם סומנה אפשרות הרחבה שאינה ארמית — קובע אם הענף הארמי צריך
-    /// להתלוות לענף הרגיל (שממשיך לשאת את שאר האפשרויות) או לעמוד לבדו.
-    fn expands_besides_aramaic(&self) -> bool {
-        self.prefix
-            || self.suffix
-            || self.gram_prefix
-            || self.gram_suffix
-            || self.spelling
-            || self.partial
-    }
 }
 
 // ── Tokenisation ───────────────────────────────────────────────────────────
@@ -2317,9 +2306,8 @@ fn base_len(root: &str) -> usize {
     root.chars().filter(|&c| !is_attached_mark(c)).count()
 }
 
-/// The affix arms of one root form under `flags`: the Aramaic prefix arm
-/// when asked for, and the arm of the remaining options — prefix and suffix
-/// options compose (each side is the union of its selected options).
+/// The affix arms of one root form under `flags`: prefix and suffix options
+/// compose — each side is the union of its selected options.
 pub(crate) fn affix_arms(root: &str, flags: &WordFlags, voc: bool) -> Vec<AffixArm> {
     let letters = base_len(root);
     if letters == 0 {
@@ -2329,21 +2317,6 @@ pub(crate) fn affix_arms(root: &str, flags: &WordFlags, voc: bool) -> Vec<AffixA
     let gram_suffix =
         flags.gram_suffix && (abbreviation || letters >= MIN_GRAM_SUFFIX_ROOT_LETTERS);
     let mut arms = Vec::new();
-    if flags.aramaic_prefix {
-        let lead = prefix_group(ARAMAIC_PREFIX_ALTS_A, voc);
-        for (core, trail) in suffix_sides(root, letters, None, gram_suffix, voc) {
-            arms.push(AffixArm {
-                lead: lead.clone(),
-                core,
-                trail,
-            });
-        }
-        // The Aramaic arm already covers the bare form (its prefixes are
-        // optional); the base arm joins only for an option it lacks.
-        if !flags.expands_besides_aramaic() {
-            return arms;
-        }
-    }
     let both_windows = flags.partial || (flags.prefix && flags.suffix);
     let mut leads = Vec::new();
     let mut trail_window = None;
@@ -2364,7 +2337,11 @@ pub(crate) fn affix_arms(root: &str, flags: &WordFlags, voc: bool) -> Vec<AffixA
             trail_window = Some(user_suffix_window(letters));
         }
     }
-    if flags.gram_prefix && (abbreviation || letters >= MIN_GRAM_PREFIX_ROOT_LETTERS) {
+    // The Aramaic group contains the grammatical one slot by slot: one lead, not a
+    // second copy of every branch (which pushed typo variants out of the char budget).
+    if flags.aramaic_prefix {
+        leads.push(prefix_group(ARAMAIC_PREFIX_ALTS_A, voc));
+    } else if flags.gram_prefix && (abbreviation || letters >= MIN_GRAM_PREFIX_ROOT_LETTERS) {
         leads.push(prefix_group(GRAM_PREFIX_ALTS_A, voc));
     }
     let lead = alternation(leads);
@@ -4823,6 +4800,95 @@ mod tests {
         // לא נופלת בין הענפים, בשני הווריאנטים.
         for form in ["ודמלכה", "ודמלכא", "דמלכתו", "ודמלכאי"] {
             assert!(word_accepts("מלכה", &flags, form), "{form}");
+        }
+    }
+
+    #[test]
+    fn aramaic_prefix_composes_with_the_other_options() {
+        let flags = WordFlags {
+            aramaic_prefix: true,
+            partial: true,
+            gram_suffix: true,
+            ..Default::default()
+        };
+        // קידומת ארמית (כולל א וגם בשורש קצר) עם חלון חלק-ממילה ועם סיומת דקדוקית.
+        for form in ["אשבתא", "דשבתות", "דשבתאי", "שבתותיהם"] {
+            assert!(word_accepts("שבת", &flags, form), "{form}");
+        }
+        assert!(word_accepts(
+            "אב",
+            &WordFlags {
+                aramaic_prefix: true,
+                gram_prefix: true,
+                ..Default::default()
+            },
+            "דאב"
+        ));
+    }
+
+    /// otzaria#3673: קידומות ארמיות על כל אפשרויות הרגיל הכפילו כל ענף, ותקציב
+    /// התווים של הביטוי השמיט את וריאנטי שגיאות הכתיב.
+    #[test]
+    fn aramaic_prefix_keeps_the_phrase_branches_of_the_other_options() {
+        let regular = [
+            OPT_GRAM_PREFIX,
+            OPT_GRAM_SUFFIX,
+            OPT_SPELLING,
+            OPT_PARTIAL,
+            OPT_TYPO,
+        ];
+        for query in ["לבבות דקל", "ללבות דקל", "דקל ללבות"] {
+            let words = split_query_words(query);
+            let build = |extra: Option<&str>| {
+                let flags: Vec<(&str, bool)> = regular
+                    .iter()
+                    .chain(extra.iter())
+                    .map(|k| (*k, true))
+                    .collect();
+                let keys: Vec<String> = words
+                    .iter()
+                    .enumerate()
+                    .map(|(i, w)| format!("{w}_{i}"))
+                    .collect();
+                let pairs: Vec<(&str, &[(&str, bool)])> = keys
+                    .iter()
+                    .map(|k| (k.as_str(), flags.as_slice()))
+                    .collect();
+                prepare_advanced_query(
+                    query,
+                    0,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &make_options(&pairs),
+                )
+            };
+            let base = build(None);
+            let aramaic = build(Some(OPT_ARAMAIC_PREFIX));
+            for (b, a) in base.regex_terms.iter().zip(&aramaic.regex_terms) {
+                assert_eq!(a.branches().len(), b.branches().len(), "{query}");
+            }
+        }
+        let aramaic = |query: &str, word: usize| {
+            let key = format!("{}_{word}", split_query_words(query)[word]);
+            let flags: Vec<(&str, bool)> = regular
+                .iter()
+                .chain([&OPT_ARAMAIC_PREFIX])
+                .map(|k| (*k, true))
+                .collect();
+            let q = prepare_advanced_query(
+                query,
+                0,
+                &HashMap::new(),
+                &HashMap::new(),
+                &make_options(&[(key.as_str(), flags.as_slice())]),
+            );
+            q.regex_terms[word].joined()
+        };
+        for term in ["דלבבות", "אלבבות"] {
+            assert!(accepts(&aramaic("לבבות דקל", 0), term), "{term}");
+        }
+        for term in ["דללבות", "וללבות"] {
+            assert!(accepts(&aramaic("דקל ללבות", 1), term), "{term}");
         }
     }
 
