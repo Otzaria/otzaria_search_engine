@@ -112,11 +112,15 @@ const PLAN_CACHE: usize = 16;
 thread_local! {
     /// Set by a test, on its own thread, to make every plan fail as an unreadable index would.
     pub(crate) static FAIL_PLANS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Set by a test, on its own thread, to make the scan's books unreadable.
+    pub(crate) static FAIL_SCANS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Set by a test to cancel a plan just before it looks texts up in the set.
     pub(crate) static CANCEL_LOOKUPS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// [`LIBRARY_ARRIVALS`], as a test sets it.
     pub(crate) static LIBRARY_CAP: std::cell::Cell<usize> =
         const { std::cell::Cell::new(LIBRARY_ARRIVALS) };
+    /// Cancel as a worker reports overflow, to exercise cancellation's priority over backoff.
+    pub(crate) static CANCEL_ON_WINDOW_OVERFLOW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Bound changed-book window discovery without allocating a production-sized fixture.
     pub(crate) static WINDOW_ARRIVAL_CAP: std::cell::Cell<usize> =
         const { std::cell::Cell::new(LIBRARY_ARRIVALS) };
@@ -171,8 +175,9 @@ pub(crate) struct ResolverCache {
     /// Where a pass over the whole column found each value it looked for, every book's first
     /// line before any book's second: not yet held to any key; none for a value found nowhere.
     moved: Option<LruCache<u64, Arc<[DocAddress]>>>,
-    /// The plans of the filters searched with last.
-    plans: Option<LruCache<PlanKey, Arc<ScanPlan>>>,
+    /// The most recent filters: a complete plan, or `None` after window-budget overflow.
+    /// Both outcomes share the same bound, so unsuccessful filters cannot grow without limit.
+    plans: Option<LruCache<PlanKey, CachedPlan>>,
     /// The plan of unfiltered searches, by view; `None` when they go unplanned.
     library: Option<(u64, Option<Arc<ScanPlan>>)>,
     /// How many books' postings plans walked in this generation.
@@ -200,6 +205,9 @@ struct PlanKey {
     view: u64,
     filters: String,
 }
+
+/// A remembered planning outcome: `None` backs off after exceeding the window budget.
+type CachedPlan = Option<Arc<ScanPlan>>;
 
 /// How a planned search scans and resolves: see [`LiveResolver::plan`].
 pub(crate) struct ScanPlan {
@@ -268,7 +276,7 @@ impl ResolverCache {
         &mut self.window_keys.as_mut().expect("just set").1
     }
 
-    fn plans(&mut self) -> &mut LruCache<PlanKey, Arc<ScanPlan>> {
+    fn plans(&mut self) -> &mut LruCache<PlanKey, CachedPlan> {
         self.plans.get_or_insert_with(|| {
             LruCache::new(NonZeroUsize::new(PLAN_CACHE).expect("the cache holds plans"))
         })
@@ -443,9 +451,6 @@ pub(crate) struct LiveResolver<'a> {
     /// What the ranking takes off a short line found through an alias, so that the best
     /// hit of a line is chosen as the coordinator will score it.
     alias_penalty: f32,
-    /// Why this search's filter could not be planned, when it could not: the semantic half
-    /// of the search fails with it, as it would had the resolver failed to read the index.
-    failed: Option<ResolveError>,
 }
 
 /// `searcher`'s segments and their deletes, in order: what a reload that changed neither leaves
@@ -518,7 +523,6 @@ impl<'a> LiveResolver<'a> {
             library: None,
             plans: Vec::new(),
             alias_penalty: otzaria_semantic_search::config::profiles::DEFAULT_ALIAS_PENALTY,
-            failed: None,
         })
     }
 
@@ -1904,13 +1908,6 @@ pub(crate) struct Coverage {
 }
 
 impl LiveResolver<'_> {
-    /// Fail the semantic half of this search with `error`, which planning it met: the
-    /// sidecar is told when it asks which books the filter admits, and the search falls back
-    /// to its lexical results with the reason, as for any resolver that cannot read the index.
-    pub(crate) fn fail(&mut self, error: ResolveError) {
-        self.failed = Some(error);
-    }
-
     /// Whether this resolver reads keys from the `chunkKey` column.
     pub(crate) fn has_column(&self) -> bool {
         self.column
@@ -2020,17 +2017,14 @@ impl LiveResolver<'_> {
             view: view.id(),
             filters: format!("{filters:?}"),
         };
-        if let Some(plan) = self
-            .cache
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .at(generation)
-            .plans()
-            .get(&key)
-        {
-            let plan = Arc::clone(plan);
-            self.keep_plan(plan_key(Some(filters)), Some(Arc::clone(&plan)));
-            return Ok(Some(plan));
+        let kept = {
+            let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
+            let cache = cache.at(generation);
+            cache.plans().get(&key).cloned()
+        };
+        if let Some(plan) = kept {
+            self.keep_plan(plan_key(Some(filters)), plan.clone());
+            return Ok(plan);
         }
 
         let directory = self.directory()?;
@@ -2045,16 +2039,27 @@ impl LiveResolver<'_> {
             .collect();
         admitted.sort();
 
-        let mut books = Vec::with_capacity(admitted.len());
-        for name in &admitted {
-            // A PDF's lines are keyed 0: it holds no text of the set's.
-            if !directory.books[*name].is_pdf {
-                books.push((Arc::clone(name), self.postings(name)?));
-            }
-        }
-        let (slots, arrivals) = self
-            .gather_arrivals(books, view, usize::MAX, cancel)?
-            .unwrap_or_default();
+        // Read postings lazily too: after overflow the remaining books need no term lookups.
+        // A PDF's lines are keyed 0: it holds no text of the set's.
+        let books = admitted
+            .par_iter()
+            .filter(|name| !directory.books[**name].is_pdf)
+            .map(|name| {
+                self.postings(name)
+                    .map(|postings| (Arc::clone(name), postings))
+            });
+        // Past the window budget no plan is complete: remember that outcome among the
+        // recent filters, under this generation and view, rather than caching a partial plan.
+        let Some((slots, arrivals)) = self.gather_arrivals(books, view, usize::MAX, cancel)? else {
+            self.cache
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .at(generation)
+                .plans()
+                .put(key, None);
+            self.keep_plan(plan_key(Some(filters)), None);
+            return Ok(None);
+        };
 
         // An arrival some admitted book's live records reach is scanned already; the vectors
         // of the others are weighed besides the scan.
@@ -2085,7 +2090,7 @@ impl LiveResolver<'_> {
             .unwrap_or_else(PoisonError::into_inner)
             .at(generation)
             .plans()
-            .put(key, Arc::clone(&plan));
+            .put(key, Some(Arc::clone(&plan)));
         self.keep_plan(plan_key(Some(filters)), Some(Arc::clone(&plan)));
         Ok(Some(plan))
     }
@@ -2144,7 +2149,9 @@ impl LiveResolver<'_> {
         #[cfg(not(test))]
         let cap = LIBRARY_ARRIVALS;
         let books = self.library_postings()?;
-        let Some((_, arrivals)) = self.gather_arrivals(books, view, cap, cancel)? else {
+        let Some((_, arrivals)) =
+            self.gather_arrivals(books.into_par_iter().map(Ok), view, cap, cancel)?
+        else {
             log::warn!(
                 "more than {cap} texts arrived in books since the vector set was built; \
                  unfiltered semantic searches go unplanned until it is updated"
@@ -2213,7 +2220,7 @@ impl LiveResolver<'_> {
     /// `None` past `cap` arrivals.
     fn gather_arrivals(
         &self,
-        books: Vec<(Arc<str>, Postings)>,
+        books: impl ParallelIterator<Item = Result<(Arc<str>, Postings), ResolveError>>,
         view: &SetView,
         cap: usize,
         cancel: &CancellationToken,
@@ -2224,28 +2231,40 @@ impl LiveResolver<'_> {
         let window_limit = LIBRARY_ARRIVALS;
         let window_budget = std::sync::atomic::AtomicUsize::new(0);
         let read = books
-            .into_par_iter()
-            .map(|(name, postings)| {
+            .map(|book| {
                 if cancel.is_cancelled() {
                     return Err(ResolveError::Cancelled);
                 }
+                if window_budget.load(std::sync::atomic::Ordering::Relaxed) > window_limit {
+                    return Ok(None);
+                }
+                let (name, postings) = book?;
                 let arrivals =
                     self.arrivals(&name, postings, view, window_limit, &window_budget, cancel)?;
-                Ok((name, arrivals))
+                Ok(match arrivals {
+                    BookArrivals::TooManyWindowOccurrences => None,
+                    arrivals => Some((name, arrivals)),
+                })
             })
-            .collect::<Result<Vec<_>, ResolveError>>()?;
+            // Both None (overflow) and Err stop Rayon, dropping every partial result.
+            .collect::<Result<Option<Vec<_>>, ResolveError>>();
+        // Cancellation wins even if a different worker reported overflow first. It must
+        // never become a cached backoff for this filter or for the whole library.
+        if cancel.is_cancelled() {
+            return Err(ResolveError::Cancelled);
+        }
+        let Some(read) = read? else {
+            log::warn!(
+                "more than {window_limit} changed-book window occurrences need \
+                 discovery; searches go unplanned until the vector set is updated"
+            );
+            return Ok(None);
+        };
         let mut known: Vec<(Arc<str>, Arc<[Arrival]>)> = Vec::new();
         let mut unknown: Vec<(Arc<str>, Unread)> = Vec::new();
         for (name, read) in read {
             match read {
-                BookArrivals::TooManyWindowOccurrences => {
-                    if cap == usize::MAX {
-                        return Err(index_error(format!(
-                            "more than {window_limit} changed-book window occurrences need discovery; update the semantic vector set before searching this filter"
-                        )));
-                    }
-                    return Ok(None);
-                }
+                BookArrivals::TooManyWindowOccurrences => return Ok(None),
                 BookArrivals::Known(arrivals) => known.push((name, arrivals)),
                 BookArrivals::Read(unread) if !unread.values.is_empty() => {
                     unknown.push((name, unread));
@@ -2376,6 +2395,13 @@ impl LiveResolver<'_> {
         window_budget: &std::sync::atomic::AtomicUsize,
         cancel: &CancellationToken,
     ) -> Result<BookArrivals, ResolveError> {
+        let overflowed = || window_budget.load(std::sync::atomic::Ordering::Relaxed) > window_limit;
+        if cancel.is_cancelled() {
+            return Err(ResolveError::Cancelled);
+        }
+        if overflowed() {
+            return Ok(BookArrivals::TooManyWindowOccurrences);
+        }
         let term = Term::from_field_text(self.file_path, book);
         if let Some((text_hash, known)) = view.known_arrivals(book, &postings) {
             return Ok(BookArrivals::of(known, postings, text_hash));
@@ -2404,8 +2430,13 @@ impl LiveResolver<'_> {
             let mut doc = postings.doc();
             let mut checked = 0usize;
             while doc != TERMINATED {
-                if checked.is_multiple_of(4096) && cancel.is_cancelled() {
-                    return Err(ResolveError::Cancelled);
+                if checked.is_multiple_of(4096) {
+                    if cancel.is_cancelled() {
+                        return Err(ResolveError::Cancelled);
+                    }
+                    if overflowed() {
+                        return Ok(BookArrivals::TooManyWindowOccurrences);
+                    }
                 }
                 checked += 1;
                 if !reader.is_deleted(doc) {
@@ -2446,14 +2477,23 @@ impl LiveResolver<'_> {
         // unknown windowed books read their text, once for this hash and set generation.
         if view.has_windows() && (text_hash == 0 || view.book_source_hash(book) != Some(text_hash))
         {
+            if overflowed() {
+                return Ok(BookArrivals::TooManyWindowOccurrences);
+            }
             if let Some(lines) = self.book(book)? {
                 for start in (0..lines.docs.len()).step_by(1024) {
                     if cancel.is_cancelled() {
                         return Err(ResolveError::Cancelled);
                     }
+                    if overflowed() {
+                        return Ok(BookArrivals::TooManyWindowOccurrences);
+                    }
                     let end = (start + 1024).min(lines.docs.len());
                     let windows = recompute_window_keys_at(&self.searcher, &lines.docs[start..end])
                         .map_err(index_error)?;
+                    if overflowed() {
+                        return Ok(BookArrivals::TooManyWindowOccurrences);
+                    }
                     for (offset, keys) in windows.into_iter().enumerate() {
                         let position = start + offset;
                         let keys = keys.ok_or_else(|| index_error(format!(
@@ -2466,6 +2506,10 @@ impl LiveResolver<'_> {
                             if window_budget.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                                 >= window_limit
                             {
+                                #[cfg(test)]
+                                if CANCEL_ON_WINDOW_OVERFLOW.with(std::cell::Cell::get) {
+                                    cancel.cancel();
+                                }
                                 return Ok(BookArrivals::TooManyWindowOccurrences);
                             }
                             values.push((key.column_value(), lines.ordinals[position]));
@@ -2501,7 +2545,7 @@ type Gathered = (HashMap<u64, Vec<SlotRef>>, PlanArrivals);
 /// A book's arrivals as [`LiveResolver::arrivals`] finds them.
 enum BookArrivals {
     /// Changed-book window discovery exceeded its bounded working set. No partial plan
-    /// is cached or returned: unfiltered planning backs off, filtered planning fails.
+    /// is cached or returned: both filtered and unfiltered planning back off.
     TooManyWindowOccurrences,
     /// Known to the view: the live slots of their vectors, and their lines.
     Known(Arc<[Arrival]>),
@@ -2663,8 +2707,9 @@ impl CandidateResolver for LiveResolver<'_> {
         &self,
         filters: Option<&SearchFilters>,
     ) -> Result<Option<BookSet>, ResolveError> {
-        if let Some(error) = &self.failed {
-            return Err(error.clone());
+        #[cfg(test)]
+        if FAIL_SCANS.with(std::cell::Cell::get) {
+            return Err(index_error("a test made the scan fail"));
         }
         let Some(compiled) = filters.and_then(SearchFilters::compile) else {
             return Ok(None);
@@ -3118,6 +3163,79 @@ mod tests {
     use crate::api::search_engine::{live_chunk_key_field, SearchEngine, TextStorage};
     use otzaria_semantic_search::semantic::resolve::RecordRef;
     use tantivy::{Index, ReloadPolicy};
+
+    /// Successful plans and overflow backoffs must share one bound and refresh their LRU
+    /// position on reuse, so changing filters cannot accumulate unbounded negative entries.
+    #[test]
+    fn filtered_plan_cache_bounds_both_outcomes_and_keeps_recent_filters() {
+        let key = |n| PlanKey {
+            view: 7,
+            filters: format!("filter {n}"),
+        };
+        let mut cache = ResolverCache::default();
+        for n in 0..PLAN_CACHE {
+            cache.plans().put(key(n), None);
+        }
+        assert!(cache.plans().get(&key(0)).unwrap().is_none());
+        let plan = Arc::new(ScanPlan {
+            books: Some(BookSet::default()),
+            arrivals: HashMap::new(),
+            unreached: Vec::new(),
+            set_generation: 7,
+        });
+        cache.plans().put(key(PLAN_CACHE), Some(Arc::clone(&plan)));
+        assert_eq!(cache.plans().len(), PLAN_CACHE);
+        assert!(
+            cache.plans().peek(&key(1)).is_none(),
+            "evict the least recently used backoff"
+        );
+        assert!(
+            cache.plans().peek(&key(0)).unwrap().is_none(),
+            "retain a reused backoff"
+        );
+        assert!(Arc::ptr_eq(
+            cache
+                .plans()
+                .get(&key(PLAN_CACHE))
+                .unwrap()
+                .as_ref()
+                .unwrap(),
+            &plan
+        ));
+        for n in PLAN_CACHE + 1..4 * PLAN_CACHE {
+            cache.plans().put(key(n), None);
+            assert_eq!(cache.plans().len(), PLAN_CACHE);
+        }
+        assert!(
+            cache.plans().peek(&key(PLAN_CACHE)).is_none(),
+            "old successful plans also expire"
+        );
+    }
+
+    #[test]
+    fn filtered_plan_backoffs_follow_the_view_and_are_cleared_with_plans() {
+        let key = |view| PlanKey {
+            view,
+            filters: "same filter".into(),
+        };
+        let mut cache = ResolverCache::default();
+        cache.at(1).plans().put(key(7), None);
+        assert!(
+            cache.plans().get(&key(8)).is_none(),
+            "another vector view must plan anew"
+        );
+        assert!(cache.plans().get(&key(7)).unwrap().is_none());
+        cache.forget_plans();
+        assert!(
+            cache.plans().get(&key(7)).is_none(),
+            "releasing the vector view releases backoffs"
+        );
+        cache.plans().put(key(7), None);
+        assert!(
+            cache.at(2).plans().get(&key(7)).is_none(),
+            "another index generation must plan anew"
+        );
+    }
 
     /// F3: a text that left its book, now held 1,100 times by one book and once by one added
     /// later. Found by the pass over the column, each book gets its line before any repeat.
