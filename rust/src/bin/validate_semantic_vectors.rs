@@ -838,7 +838,7 @@ mod gates {
                 model_path: request.model.to_path_buf(),
                 embedding_dim: family.embedding_dim,
                 pooling: Pooling::parse(&family.pooling)?,
-                max_tokens: family.max_tokens,
+                max_tokens: family.query_max_tokens.unwrap_or(family.max_tokens),
                 batch_size: 1,
             },
             EmbeddingDeployment {

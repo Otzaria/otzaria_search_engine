@@ -230,7 +230,7 @@ pub(crate) fn check_local_model(
     let config = EmbeddingConfig {
         model_path: model.model_path.clone(),
         embedding_dim: model.embedding_dim,
-        max_tokens: model.max_tokens,
+        max_tokens: model.query_max_tokens.unwrap_or(model.max_tokens),
         batch_size: 1,
         pooling,
     };
@@ -1244,6 +1244,7 @@ mod tests {
             embedding_dim: 256,
             pooling: "in-graph".into(),
             max_tokens: 256,
+            query_max_tokens: None,
             embedding_text_version: 2,
             normalization_version: 1,
             chunking_identity: 1,
@@ -1251,7 +1252,7 @@ mod tests {
         check_local_model(&valid, |_| unreachable!("a valid identity")).unwrap();
 
         type Spoil = fn(&mut LocalModel);
-        let spoiled: [(Option<&str>, &str, Spoil); 6] = [
+        let spoiled: [(Option<&str>, &str, Spoil); 7] = [
             (
                 Some("embedding_text_version"),
                 "embedding_text_version",
@@ -1268,6 +1269,7 @@ mod tests {
             // A pooling that parses and that no backend performs.
             (Some("pooling"), "mean", |m| m.pooling = "mean".into()),
             (None, "max_tokens is 1", |m| m.max_tokens = 1),
+            (None, "max_tokens is 1", |m| m.query_max_tokens = Some(1)),
             (None, "embedding_dim is 0", |m| m.embedding_dim = 0),
         ];
         for (field, named, spoil) in spoiled {
