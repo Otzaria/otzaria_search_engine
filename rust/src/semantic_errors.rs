@@ -224,6 +224,18 @@ pub(crate) fn check_local_model(
             ))
         }
     };
+    if model
+        .query_max_tokens
+        .is_some_and(|cap| cap < 3 || cap > model.max_tokens)
+    {
+        return Err(refused(
+            K::InvalidInput,
+            SemanticSearchError::Config(
+                "query_max_tokens must be at least 3 and not exceed max_tokens".to_string(),
+            ),
+            Some("query_max_tokens"),
+        ));
+    }
     // The runtime the sidecar builds, with the one batch size it embeds queries at. Its
     // refusals here are of the width or the token cap, which say which in their text only,
     // and of a model path that names no ONNX graph.
@@ -1245,6 +1257,7 @@ mod tests {
             pooling: "in-graph".into(),
             max_tokens: 256,
             query_max_tokens: None,
+            passage_package: None,
             embedding_text_version: 2,
             normalization_version: 1,
             chunking_identity: 1,
@@ -1252,7 +1265,7 @@ mod tests {
         check_local_model(&valid, |_| unreachable!("a valid identity")).unwrap();
 
         type Spoil = fn(&mut LocalModel);
-        let spoiled: [(Option<&str>, &str, Spoil); 7] = [
+        let spoiled: [(Option<&str>, &str, Spoil); 8] = [
             (
                 Some("embedding_text_version"),
                 "embedding_text_version",
@@ -1269,7 +1282,12 @@ mod tests {
             // A pooling that parses and that no backend performs.
             (Some("pooling"), "mean", |m| m.pooling = "mean".into()),
             (None, "max_tokens is 1", |m| m.max_tokens = 1),
-            (None, "max_tokens is 1", |m| m.query_max_tokens = Some(1)),
+            (Some("query_max_tokens"), "query_max_tokens", |m| {
+                m.query_max_tokens = Some(1)
+            }),
+            (Some("query_max_tokens"), "query_max_tokens", |m| {
+                m.query_max_tokens = Some(2)
+            }),
             (None, "embedding_dim is 0", |m| m.embedding_dim = 0),
         ];
         for (field, named, spoil) in spoiled {
