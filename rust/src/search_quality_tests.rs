@@ -160,6 +160,30 @@ fn aramaic_prefixes_never_drop_matches_of_the_other_options() {
     }
 }
 
+#[test]
+fn vocalized_prefixes_survive_phrase_budget_trimming() {
+    let (engine, _dir) = engine_with(&["וּבְרֵאשִׁית שָׁלוֹם", "בְרֵאשִׁית שָׁלוֹם"]);
+    let ids = advanced_ids(
+        &engine,
+        "בראשית שלום",
+        &["ניקוד", "שגיאות כתיב", "קידומות דקדוקיות", "קידומות ארמיות"],
+        ResultsOrder::Catalogue,
+    );
+    assert_eq!(ids, [0, 1]);
+}
+
+#[test]
+fn final_letter_suffix_windows_keep_phrase_typo_results() {
+    let (engine, _dir) = engine_with(&["אברעם שלום", "ואברעם שלום", "אברהם שלום"]);
+    let ids = advanced_ids(
+        &engine,
+        "אברהם שלום",
+        &["שגיאות כתיב", "כתיב מלא/חסר", "סיומות", "קידומות ארמיות"],
+        ResultsOrder::Catalogue,
+    );
+    assert_eq!(ids, [0, 1, 2]);
+}
+
 fn kept_terms(engine: &SearchEngine, branches: &[&str], max_terms: u32) -> (Vec<String>, bool) {
     let field = engine.schema.get_field("text").unwrap();
     let branches: Vec<String> = branches.iter().map(|b| b.to_string()).collect();
