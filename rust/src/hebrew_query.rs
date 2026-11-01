@@ -558,17 +558,6 @@ impl WordFlags {
             || self.aramaic_prefix
             || self.aramaic_suffix
     }
-
-    /// האם סומנה אפשרות הרחבה שאינה ארמית — קובע אם הענף הארמי צריך
-    /// להתלוות לענף הרגיל (שממשיך לשאת את שאר האפשרויות) או לעמוד לבדו.
-    fn expands_besides_aramaic(&self) -> bool {
-        self.prefix
-            || self.suffix
-            || self.gram_prefix
-            || self.gram_suffix
-            || self.spelling
-            || self.partial
-    }
 }
 
 // ── Tokenisation ───────────────────────────────────────────────────────────
@@ -2229,10 +2218,39 @@ pub(crate) struct AffixArm {
     pub(crate) trail: String,
 }
 
-impl AffixArm {
-    fn render(&self, core: impl Fn(&str) -> String) -> String {
-        format!("{}{}{}", self.lead, core(&self.core), self.trail)
+/// Render adjacent arms with the same prefix as `lead(?:core|stem+trail)`.
+/// In particular, a final letter's bare and suffixed forms must not each pay
+/// for the entire prefix group in the phrase budget. Keep the arms themselves
+/// separate: display highlighting still needs each literal core and its affixes.
+fn render_affix_arms(arms: Vec<AffixArm>, core: impl Fn(&str) -> String) -> Vec<String> {
+    let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+    for arm in arms {
+        let body = format!("{}{}", core(&arm.core), arm.trail);
+        if let Some((lead, bodies)) = groups.last_mut() {
+            if *lead == arm.lead {
+                bodies.push(body);
+                continue;
+            }
+        }
+        groups.push((arm.lead, vec![body]));
     }
+    groups
+        .into_iter()
+        .flat_map(|(lead, bodies)| {
+            // An inner alternation costs a wrapper when spelling forms are
+            // joined outside it. Keep the original flat arms unless sharing
+            // the prefix saves at least that cost (in particular, an empty
+            // prefix must not add a wrapper around every spelling form).
+            if bodies.len() > 1 && budget_chars(&lead) * (bodies.len() - 1) >= "(?:)".len() {
+                vec![format!("{lead}{}", alternation(bodies))]
+            } else {
+                bodies
+                    .into_iter()
+                    .map(|body| format!("{lead}{body}"))
+                    .collect()
+            }
+        })
+        .collect()
 }
 
 fn user_prefix_window(root_len: usize) -> usize {
@@ -2317,9 +2335,8 @@ fn base_len(root: &str) -> usize {
     root.chars().filter(|&c| !is_attached_mark(c)).count()
 }
 
-/// The affix arms of one root form under `flags`: the Aramaic prefix arm
-/// when asked for, and the arm of the remaining options — prefix and suffix
-/// options compose (each side is the union of its selected options).
+/// The affix arms of one root form under `flags`: prefix and suffix options
+/// compose — each side is the union of its selected options.
 pub(crate) fn affix_arms(root: &str, flags: &WordFlags, voc: bool) -> Vec<AffixArm> {
     let letters = base_len(root);
     if letters == 0 {
@@ -2329,21 +2346,6 @@ pub(crate) fn affix_arms(root: &str, flags: &WordFlags, voc: bool) -> Vec<AffixA
     let gram_suffix =
         flags.gram_suffix && (abbreviation || letters >= MIN_GRAM_SUFFIX_ROOT_LETTERS);
     let mut arms = Vec::new();
-    if flags.aramaic_prefix {
-        let lead = prefix_group(ARAMAIC_PREFIX_ALTS_A, voc);
-        for (core, trail) in suffix_sides(root, letters, None, gram_suffix, voc) {
-            arms.push(AffixArm {
-                lead: lead.clone(),
-                core,
-                trail,
-            });
-        }
-        // The Aramaic arm already covers the bare form (its prefixes are
-        // optional); the base arm joins only for an option it lacks.
-        if !flags.expands_besides_aramaic() {
-            return arms;
-        }
-    }
     let both_windows = flags.partial || (flags.prefix && flags.suffix);
     let mut leads = Vec::new();
     let mut trail_window = None;
@@ -2364,7 +2366,11 @@ pub(crate) fn affix_arms(root: &str, flags: &WordFlags, voc: bool) -> Vec<AffixA
             trail_window = Some(user_suffix_window(letters));
         }
     }
-    if flags.gram_prefix && (abbreviation || letters >= MIN_GRAM_PREFIX_ROOT_LETTERS) {
+    // The Aramaic group contains the grammatical one, with no root-letter floor. A separate
+    // Aramaic arm would double every branch and push typo variants out of the char budget.
+    if flags.aramaic_prefix {
+        leads.push(prefix_group(ARAMAIC_PREFIX_ALTS_A, voc));
+    } else if flags.gram_prefix && (abbreviation || letters >= MIN_GRAM_PREFIX_ROOT_LETTERS) {
         leads.push(prefix_group(GRAM_PREFIX_ALTS_A, voc));
     }
     let lead = alternation(leads);
@@ -2516,8 +2522,8 @@ fn word_to_pattern(root: &str, flags: &WordFlags) -> String {
             vec![variant.clone()]
         };
         for form in forms {
-            for arm in affix_arms(&form, flags, false) {
-                push_unique(&mut branches, &mut seen, arm.render(escape_regex));
+            for pattern in render_affix_arms(affix_arms(&form, flags, false), escape_regex) {
+                push_unique(&mut branches, &mut seen, pattern);
             }
         }
     }
@@ -2604,13 +2610,9 @@ fn optional_alts_group(alts: &[&str], voc: bool) -> String {
 /// what was typed). Spelling variants arrive as their own root forms (see
 /// [`build_word_regex_vocalized`]).
 fn word_to_pattern_vocalized(text: &str, required: &VocalizedFlags, flags: &WordFlags) -> String {
-    let mut branches: Vec<String> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-    for arm in affix_arms(text, flags, true) {
-        let branch = arm.render(|core| vocalized_token_pattern(core, required));
-        push_unique(&mut branches, &mut seen, branch);
-    }
-    alternation(branches)
+    alternation(render_affix_arms(affix_arms(text, flags, true), |core| {
+        vocalized_token_pattern(core, required)
+    }))
 }
 
 /// Vocalized counterpart of [`build_word_regex`]: assembles the branch list
@@ -2716,41 +2718,7 @@ fn build_word_regex_vocalized(
         }
     }
 
-    // Char budget (phrase path): identical policy to `build_word_regex`.
-    let mut kept: Vec<String> = Vec::new();
-    let mut total = 0usize;
-    for b in branches {
-        if b.trim().is_empty() {
-            continue;
-        }
-        let len = budget_chars(&b);
-        if let Some(max_chars) = budget.max_pattern_chars {
-            if !kept.is_empty() && total + len > max_chars {
-                break;
-            }
-        }
-        total += len;
-        kept.push(b);
-    }
-    if kept.is_empty() {
-        return fallback();
-    }
-    if let Some(max_chars) = budget.max_pattern_chars {
-        let joined_chars = kept.iter().map(|b| budget_chars(b)).sum::<usize>()
-            + if kept.len() == 1 {
-                0
-            } else {
-                kept.len() - 1 + "(?:)".len()
-            };
-        if joined_chars > max_chars {
-            return fallback();
-        }
-    }
-    if kept.len() == 1 {
-        WordPattern::Literal(kept.into_iter().next().unwrap())
-    } else {
-        WordPattern::Alternation(kept)
-    }
+    finish_word_pattern(branches, budget, fallback)
 }
 
 /// Query-side normalisation for the vocalized field: folds presentation
@@ -2879,55 +2847,46 @@ fn build_word_regex(
         }
     }
 
-    // Apply the length budget when one exists (phrase path): keep branches
-    // while the cumulative character count stays under it (at least one
-    // branch is always kept so the term is never empty).
-    let mut kept: Vec<String> = Vec::new();
-    let mut total = 0usize;
-    for b in branches {
-        if b.trim().is_empty() {
+    finish_word_pattern(branches, budget, || {
+        WordPattern::Literal(escape_regex(word))
+    })
+}
+
+/// Keep the highest-priority branches whose *joined* pattern fits. Count
+/// separators as each branch is added, so plain and vocalized queries cannot
+/// lose every expansion merely because the final alternation adds a few chars.
+/// Only an oversized first branch (or no usable branch) needs the literal fallback.
+fn finish_word_pattern(
+    branches: Vec<String>,
+    budget: &VariationBudget,
+    fallback: impl FnOnce() -> WordPattern,
+) -> WordPattern {
+    let mut kept = Vec::new();
+    let mut total = 0;
+    for branch in branches {
+        if branch.trim().is_empty() {
             continue;
         }
-        let len = budget_chars(&b);
         if let Some(max_chars) = budget.max_pattern_chars {
-            if !kept.is_empty() && total + len > max_chars {
+            // The second branch introduces `(?:`, `|` and `)`; each later
+            // branch adds just its separator. A lone branch has no wrapper.
+            let overhead = match kept.len() {
+                0 => 0,
+                1 => "(?:|)".len(),
+                _ => 1,
+            };
+            let joined_chars = total + budget_chars(&branch) + overhead;
+            if joined_chars > max_chars {
                 break;
             }
+            total = joined_chars;
         }
-        total += len;
-        kept.push(b);
+        kept.push(branch);
     }
-
-    if kept.is_empty() {
-        return WordPattern::Literal(escape_regex(word));
-    }
-    // Final safety net (phrase path only): the branch totals passed the
-    // budget, but the joined form the exact phrase path / highlight
-    // automatons compile also carries `(?:`/`)`/pipe separators. Drop the
-    // lowest-priority branches until the joined form fits — never nuke the
-    // whole option set. Only a *single* branch that alone exceeds the budget
-    // (impossible for the builders above, possible for a hostile string-API
-    // pattern) still falls back to the plain literal, which always compiles.
-    if let Some(max_chars) = budget.max_pattern_chars {
-        let joined_chars = |kept: &[String]| {
-            kept.iter().map(|b| budget_chars(b)).sum::<usize>()
-                + if kept.len() == 1 {
-                    0
-                } else {
-                    kept.len() - 1 + "(?:)".len()
-                }
-        };
-        while kept.len() > 1 && joined_chars(&kept) > max_chars {
-            kept.pop();
-        }
-        if joined_chars(&kept) > max_chars {
-            return WordPattern::Literal(escape_regex(word));
-        }
-    }
-    if kept.len() == 1 {
-        WordPattern::Literal(kept.into_iter().next().unwrap())
-    } else {
-        WordPattern::Alternation(kept)
+    match kept.len() {
+        0 => fallback(),
+        1 => WordPattern::Literal(kept.pop().unwrap()),
+        _ => WordPattern::Alternation(kept),
     }
 }
 
@@ -4823,6 +4782,164 @@ mod tests {
         // לא נופלת בין הענפים, בשני הווריאנטים.
         for form in ["ודמלכה", "ודמלכא", "דמלכתו", "ודמלכאי"] {
             assert!(word_accepts("מלכה", &flags, form), "{form}");
+        }
+    }
+
+    #[test]
+    fn aramaic_prefix_composes_with_the_other_options() {
+        let flags = WordFlags {
+            aramaic_prefix: true,
+            partial: true,
+            gram_suffix: true,
+            ..Default::default()
+        };
+        // קידומת ארמית (כולל א וגם בשורש קצר) עם חלון חלק-ממילה ועם סיומת דקדוקית.
+        for form in ["אשבתא", "דשבתות", "דשבתאי", "שבתותיהם"] {
+            assert!(word_accepts("שבת", &flags, form), "{form}");
+        }
+        assert!(word_accepts(
+            "אב",
+            &WordFlags {
+                aramaic_prefix: true,
+                gram_prefix: true,
+                ..Default::default()
+            },
+            "דאב"
+        ));
+        // קידומת ארמית על שורש קצר מתחברת לחלון הסיומות.
+        let short = WordFlags {
+            aramaic_prefix: true,
+            gram_prefix: true,
+            suffix: true,
+            ..Default::default()
+        };
+        assert!(word_accepts("אב", &short, "ואבות"));
+    }
+
+    /// otzaria#3673: קידומות ארמיות לא מוסיפות ענפים, כדי שתקציב התווים של הביטוי
+    /// לא ישמיט את וריאנטי שגיאות הכתיב.
+    #[test]
+    fn aramaic_prefix_keeps_the_phrase_branches_of_the_other_options() {
+        let regular = [
+            OPT_GRAM_PREFIX,
+            OPT_GRAM_SUFFIX,
+            OPT_SPELLING,
+            OPT_PARTIAL,
+            OPT_TYPO,
+        ];
+        for query in ["לבבות דקל", "ללבות דקל", "דקל ללבות"] {
+            let words = split_query_words(query);
+            let build = |extra: Option<&str>| {
+                let flags: Vec<(&str, bool)> = regular
+                    .iter()
+                    .chain(extra.iter())
+                    .map(|k| (*k, true))
+                    .collect();
+                let keys: Vec<String> = words
+                    .iter()
+                    .enumerate()
+                    .map(|(i, w)| format!("{w}_{i}"))
+                    .collect();
+                let pairs: Vec<(&str, &[(&str, bool)])> = keys
+                    .iter()
+                    .map(|k| (k.as_str(), flags.as_slice()))
+                    .collect();
+                prepare_advanced_query(
+                    query,
+                    0,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &make_options(&pairs),
+                )
+            };
+            let base = build(None);
+            let aramaic = build(Some(OPT_ARAMAIC_PREFIX));
+            for (b, a) in base.regex_terms.iter().zip(&aramaic.regex_terms) {
+                assert_eq!(a.branches().len(), b.branches().len(), "{query}");
+            }
+        }
+        let aramaic = |query: &str, word: usize| {
+            let key = format!("{}_{word}", split_query_words(query)[word]);
+            let flags: Vec<(&str, bool)> = regular
+                .iter()
+                .chain([&OPT_ARAMAIC_PREFIX])
+                .map(|k| (*k, true))
+                .collect();
+            let q = prepare_advanced_query(
+                query,
+                0,
+                &HashMap::new(),
+                &HashMap::new(),
+                &make_options(&[(key.as_str(), flags.as_slice())]),
+            );
+            q.regex_terms[word].joined()
+        };
+        for term in ["דלבבות", "אלבבות"] {
+            assert!(accepts(&aramaic("לבבות דקל", 0), term), "{term}");
+        }
+        for term in ["דללבות", "וללבות"] {
+            assert!(accepts(&aramaic("דקל ללבות", 1), term), "{term}");
+        }
+    }
+
+    #[test]
+    fn vocalized_phrase_keeps_affixes_at_the_joined_budget() {
+        let flags = make_options(&[(
+            "בראשית_0",
+            &[
+                (OPT_TYPO, true),
+                (OPT_GRAM_PREFIX, true),
+                (OPT_ARAMAIC_PREFIX, true),
+            ],
+        )]);
+        let q = prepare_advanced_query_vocalized(
+            "בראשית שלום",
+            0,
+            &HashMap::new(),
+            &HashMap::new(),
+            &flags,
+            &VocalizedFlags::new(true, false),
+        );
+        let pattern = q.regex_terms[0].joined();
+        for term in ["בראשית", "ובראשית", "דבראשית", "וּבְרֵאשִׁית"]
+        {
+            assert!(accepts(&pattern, term), "lost {term}");
+        }
+        assert!(budget_chars(&pattern) <= MAX_PATTERN_CHARS);
+    }
+
+    #[test]
+    fn final_letter_suffix_windows_keep_phrase_typos() {
+        let flags = make_options(&[(
+            "אברהם_0",
+            &[
+                (OPT_TYPO, true),
+                (OPT_SPELLING, true),
+                (OPT_SUFFIX, true),
+                (OPT_ARAMAIC_PREFIX, true),
+            ],
+        )]);
+        let q = prepare_advanced_query("אברהם שלום", 0, &HashMap::new(), &HashMap::new(), &flags);
+        let pattern = q.regex_terms[0].joined();
+        for term in ["אברהם", "אברעם", "ואברעם"] {
+            assert!(accepts(&pattern, term), "lost {term}");
+        }
+        assert!(budget_chars(&pattern) <= MAX_PATTERN_CHARS);
+    }
+
+    #[test]
+    fn spelling_and_suffix_windows_keep_initial_insertion_typos() {
+        // With no prefix to share, wrapping each spelling form's arms in
+        // another alternation would spend the budget on grouping and drop
+        // these insertion variants that follow the common substitutions.
+        let flags = make_options(&[(
+            "אברהם_0",
+            &[(OPT_TYPO, true), (OPT_SPELLING, true), (OPT_SUFFIX, true)],
+        )]);
+        let q = prepare_advanced_query("אברהם שלום", 0, &HashMap::new(), &HashMap::new(), &flags);
+        let pattern = q.regex_terms[0].joined();
+        for term in ["אברהם", "ואברהם", "יאברהם"] {
+            assert!(accepts(&pattern, term), "lost {term}");
         }
     }
 
