@@ -1011,13 +1011,13 @@ Future<void> main() async {
         expect(info.generation, installed.generation);
         expect(info.libraryReleaseTag, 'otzaria-library-ffi');
         expect(info.identityDigest, hasLength(64));
+        expect(info.modelFamilyId, identity['family_id']);
         expect(info.segments.single.kind, SemanticVectorsPackageKind.base);
-        expect(
-          (await engine.semanticVectorsInfo(
-            vectorsDir: '${root.path}/not-installed',
-          )).present,
-          isFalse,
+        final absent = await engine.semanticVectorsInfo(
+          vectorsDir: '${root.path}/not-installed',
         );
+        expect(absent.present, isFalse);
+        expect(absent.modelFamilyId, isEmpty);
 
         final coverage = await engine.semanticCoverage(
           vectorsDir: vectorsDir,

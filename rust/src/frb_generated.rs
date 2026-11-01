@@ -10624,6 +10624,7 @@ impl SseDecode for crate::api::search_engine::SemanticVectorsInfo {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_present = <bool>::sse_decode(deserializer);
         let mut var_identityDigest = <String>::sse_decode(deserializer);
+        let mut var_modelFamilyId = <String>::sse_decode(deserializer);
         let mut var_libraryVersion = <u32>::sse_decode(deserializer);
         let mut var_libraryReleaseTag = <String>::sse_decode(deserializer);
         let mut var_generation = <u64>::sse_decode(deserializer);
@@ -10637,6 +10638,7 @@ impl SseDecode for crate::api::search_engine::SemanticVectorsInfo {
         return crate::api::search_engine::SemanticVectorsInfo {
             present: var_present,
             identity_digest: var_identityDigest,
+            model_family_id: var_modelFamilyId,
             library_version: var_libraryVersion,
             library_release_tag: var_libraryReleaseTag,
             generation: var_generation,
@@ -12787,6 +12789,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticVector
         [
             self.present.into_into_dart().into_dart(),
             self.identity_digest.into_into_dart().into_dart(),
+            self.model_family_id.into_into_dart().into_dart(),
             self.library_version.into_into_dart().into_dart(),
             self.library_release_tag.into_into_dart().into_dart(),
             self.generation.into_into_dart().into_dart(),
@@ -14820,6 +14823,7 @@ impl SseEncode for crate::api::search_engine::SemanticVectorsInfo {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <bool>::sse_encode(self.present, serializer);
         <String>::sse_encode(self.identity_digest, serializer);
+        <String>::sse_encode(self.model_family_id, serializer);
         <u32>::sse_encode(self.library_version, serializer);
         <String>::sse_encode(self.library_release_tag, serializer);
         <u64>::sse_encode(self.generation, serializer);

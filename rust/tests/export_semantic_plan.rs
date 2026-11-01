@@ -64,6 +64,7 @@ fn model() -> ModelIdentity {
         embedding_dim: 256,
         pooling: "in-graph".to_string(),
         max_tokens: 256,
+        query_max_tokens: None,
         embedding_text_version: chunking.embedding_text_version,
         normalization_version: chunking.normalization_version,
         chunking_identity: chunking.identity(),

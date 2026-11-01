@@ -899,6 +899,7 @@ mod tests {
             embedding_dim: 64,
             pooling: "in-graph".to_string(),
             max_tokens: 512,
+            query_max_tokens: None,
             embedding_text_version: chunking.embedding_text_version,
             normalization_version: 1,
             chunking_identity: chunking.identity(),

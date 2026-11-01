@@ -11115,20 +11115,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SemanticVectorsInfo dco_decode_semantic_vectors_info(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 11)
-      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
+    if (arr.length != 12)
+      throw Exception('unexpected arr length: expect 12 but see ${arr.length}');
     return SemanticVectorsInfo(
       present: dco_decode_bool(arr[0]),
       identityDigest: dco_decode_String(arr[1]),
-      libraryVersion: dco_decode_u_32(arr[2]),
-      libraryReleaseTag: dco_decode_String(arr[3]),
-      generation: dco_decode_u_64(arr[4]),
-      segments: dco_decode_list_semantic_segment_info(arr[5]),
-      slotsLive: dco_decode_u_64(arr[6]),
-      slotsDead: dco_decode_u_64(arr[7]),
-      bytesOnDisk: dco_decode_u_64(arr[8]),
-      needsCompaction: dco_decode_bool(arr[9]),
-      recoveredFromPrevious: dco_decode_bool(arr[10]),
+      modelFamilyId: dco_decode_String(arr[2]),
+      libraryVersion: dco_decode_u_32(arr[3]),
+      libraryReleaseTag: dco_decode_String(arr[4]),
+      generation: dco_decode_u_64(arr[5]),
+      segments: dco_decode_list_semantic_segment_info(arr[6]),
+      slotsLive: dco_decode_u_64(arr[7]),
+      slotsDead: dco_decode_u_64(arr[8]),
+      bytesOnDisk: dco_decode_u_64(arr[9]),
+      needsCompaction: dco_decode_bool(arr[10]),
+      recoveredFromPrevious: dco_decode_bool(arr[11]),
     );
   }
 
@@ -13722,6 +13723,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_present = sse_decode_bool(deserializer);
     var var_identityDigest = sse_decode_String(deserializer);
+    var var_modelFamilyId = sse_decode_String(deserializer);
     var var_libraryVersion = sse_decode_u_32(deserializer);
     var var_libraryReleaseTag = sse_decode_String(deserializer);
     var var_generation = sse_decode_u_64(deserializer);
@@ -13734,6 +13736,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return SemanticVectorsInfo(
       present: var_present,
       identityDigest: var_identityDigest,
+      modelFamilyId: var_modelFamilyId,
       libraryVersion: var_libraryVersion,
       libraryReleaseTag: var_libraryReleaseTag,
       generation: var_generation,
@@ -16108,6 +16111,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_bool(self.present, serializer);
     sse_encode_String(self.identityDigest, serializer);
+    sse_encode_String(self.modelFamilyId, serializer);
     sse_encode_u_32(self.libraryVersion, serializer);
     sse_encode_String(self.libraryReleaseTag, serializer);
     sse_encode_u_64(self.generation, serializer);

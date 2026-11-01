@@ -224,9 +224,23 @@ pub(crate) fn check_local_model(
             ))
         }
     };
-    // The runtime the sidecar builds, with the one batch size it embeds queries at. Its
-    // refusals here are of the width or the token cap, which say which in their text only,
-    // and of a model path that names no ONNX graph.
+    if model
+        .query_max_tokens
+        .is_some_and(|cap| cap < 3 || cap > model.max_tokens)
+    {
+        return Err(refused(
+            K::InvalidInput,
+            SemanticSearchError::Config(
+                "query_max_tokens must be at least 3 and not exceed max_tokens".to_string(),
+            ),
+            Some("query_max_tokens"),
+        ));
+    }
+    // The runtime loads the model at its document cap, then applies the separately
+    // checked query cap while embedding queries. Validate the loaded cap here too: a
+    // smaller query cap must not hide a document cap no runtime could load. Its refusals
+    // here are of the width or the token cap, which say which in their text only, and of a
+    // model path that names no ONNX graph.
     let config = EmbeddingConfig {
         model_path: model.model_path.clone(),
         embedding_dim: model.embedding_dim,
@@ -1233,6 +1247,60 @@ mod tests {
         assert_eq!(failed.message, "semantic search failed: Fusion error: f");
     }
 
+    /// Query limits cannot conceal a document limit refused before model loading.
+    #[test]
+    fn a_query_cap_does_not_hide_an_invalid_document_cap() {
+        let valid = LocalModel {
+            model_path: PathBuf::from(MODEL),
+            family_id: "otzaria/Meivin-Embed-QA491-native256".into(),
+            model_quantization: "int8".into(),
+            embedding_dim: 256,
+            pooling: "in-graph".into(),
+            max_tokens: 256,
+            query_max_tokens: Some(128),
+            passage_package: None,
+            embedding_text_version: 2,
+            normalization_version: 1,
+            chunking_identity: 1,
+        };
+        check_local_model(&valid, |_| unreachable!("the QA491 role caps are valid")).unwrap();
+
+        let ceiling = LocalModel {
+            max_tokens: 65_536,
+            query_max_tokens: Some(65_536),
+            ..valid.clone()
+        };
+        check_local_model(&ceiling, |_| unreachable!("the ceiling itself is valid")).unwrap();
+
+        for (max_tokens, query_max_tokens) in
+            [(65_537, Some(128)), (65_537, None), (usize::MAX, Some(128))]
+        {
+            let model = LocalModel {
+                max_tokens,
+                query_max_tokens,
+                ..valid.clone()
+            };
+            let error = check_local_model(&model, |error| format!("refused: {error}"))
+                .expect_err("the valid query cap must not mask the document cap");
+            assert_eq!(error.kind, SemanticErrorKind::InvalidInput);
+            assert_eq!(error.field, None);
+            assert!(error
+                .message
+                .contains(&format!("max_tokens is {max_tokens}")));
+        }
+
+        for query_max_tokens in [2, 257] {
+            let model = LocalModel {
+                query_max_tokens: Some(query_max_tokens),
+                ..valid.clone()
+            };
+            let error = check_local_model(&model, |error| format!("refused: {error}"))
+                .expect_err("the separate query cap must still be checked");
+            assert_eq!(error.kind, SemanticErrorKind::InvalidInput);
+            assert_eq!(error.field.as_deref(), Some("query_max_tokens"));
+        }
+    }
+
     /// The installation's own values are refused as `InvalidInput`, with the message the
     /// sidecar's own refusal of them has.
     #[test]
@@ -1244,6 +1312,8 @@ mod tests {
             embedding_dim: 256,
             pooling: "in-graph".into(),
             max_tokens: 256,
+            query_max_tokens: None,
+            passage_package: None,
             embedding_text_version: 2,
             normalization_version: 1,
             chunking_identity: 1,
@@ -1251,7 +1321,7 @@ mod tests {
         check_local_model(&valid, |_| unreachable!("a valid identity")).unwrap();
 
         type Spoil = fn(&mut LocalModel);
-        let spoiled: [(Option<&str>, &str, Spoil); 6] = [
+        let spoiled: [(Option<&str>, &str, Spoil); 8] = [
             (
                 Some("embedding_text_version"),
                 "embedding_text_version",
@@ -1268,6 +1338,12 @@ mod tests {
             // A pooling that parses and that no backend performs.
             (Some("pooling"), "mean", |m| m.pooling = "mean".into()),
             (None, "max_tokens is 1", |m| m.max_tokens = 1),
+            (Some("query_max_tokens"), "query_max_tokens", |m| {
+                m.query_max_tokens = Some(1)
+            }),
+            (Some("query_max_tokens"), "query_max_tokens", |m| {
+                m.query_max_tokens = Some(2)
+            }),
             (None, "embedding_dim is 0", |m| m.embedding_dim = 0),
         ];
         for (field, named, spoil) in spoiled {
