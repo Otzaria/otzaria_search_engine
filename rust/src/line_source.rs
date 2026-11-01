@@ -1431,6 +1431,11 @@ impl Global {
 
     fn advance_generation(&mut self) {
         self.invalidate_scans();
+        self.advance_cache_generation();
+    }
+
+    // A failed cache probe needs a fresh key, but does not replace the source.
+    fn advance_cache_generation(&mut self) {
         self.generation += 1;
     }
 
@@ -1641,7 +1646,7 @@ fn snapshot_source_generation(source: Source) -> SourceGeneration {
                 }
                 g.seen_version = Some(version);
             }
-            Err(_) => g.advance_generation(),
+            Err(_) => g.advance_cache_generation(),
         }
     }
     (
@@ -1682,7 +1687,7 @@ fn user_books_cache_generation() -> SourceGeneration {
                 g.seen_version = Some(version);
             }
             // As for the library: an unverifiable source admits no cached answer.
-            Err(_) => g.advance_generation(),
+            Err(_) => g.advance_cache_generation(),
         }
     }
     (g.generation, Some(g.content_epoch as i64), false)
@@ -1691,7 +1696,7 @@ fn user_books_cache_generation() -> SourceGeneration {
 fn source_cache_generation(source: Source) -> SourceGeneration {
     let mut g = global(source);
     let version = if g.busy_until.is_some_and(|until| Instant::now() < until) {
-        g.advance_generation();
+        g.advance_cache_generation();
         None
     } else {
         match g
@@ -1709,7 +1714,7 @@ fn source_cache_generation(source: Source) -> SourceGeneration {
                 }
                 // An unverifiable source must not admit a previously verified cached answer.
                 // Give each failed check a fresh key; a successful retry can be cached again.
-                g.advance_generation();
+                g.advance_cache_generation();
                 None
             }
         }
@@ -1913,11 +1918,7 @@ impl ScanSession {
     ) -> std::result::Result<R, SourceUnavailable> {
         let cached = {
             let g = global(self.source);
-            if !self.is_current()
-                || g.suspend_depth > 0
-                || !g.owner_ports.is_empty()
-                || g.generation != self.generation
-            {
+            if !self.is_current() || g.suspend_depth > 0 || !g.owner_ports.is_empty() {
                 return Err(SourceUnavailable::Suspended);
             }
             g.scan_codec.clone()
@@ -2045,6 +2046,34 @@ pub(crate) fn memory_for_tests() -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cache_probe_does_not_cancel_a_scan_after_the_writer_unlocks() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        reset_for_tests();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        let writer = Connection::open(&path).unwrap();
+        writer.execute_batch("CREATE TABLE line(id INTEGER PRIMARY KEY, bookId INTEGER, lineIndex INTEGER, content TEXT); INSERT INTO line VALUES(1,1,0,'text');").unwrap();
+        configure(path.to_str().unwrap()).unwrap();
+        with_store(Source::Library, |_| Ok(())).unwrap();
+        writer.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        assert!(source_cache_generation(Source::Library).1.is_none());
+        writer.execute_batch("COMMIT").unwrap();
+        let session = begin_scan(Source::Library).unwrap();
+        assert_eq!(session.read(|store| store.book_row_count(1)).unwrap(), 1);
+        // Keep the backoff active even when the test machine is slow.
+        global(Source::Library).busy_until = Some(Instant::now() + Duration::from_secs(60));
+        let first = scan_cache_generation(Source::Library);
+        assert_ne!(first, scan_cache_generation(Source::Library));
+        assert!(
+            session.is_current(),
+            "a cache probe must not cancel a readable scan"
+        );
+        assert_eq!(session.read(|store| store.book_row_count(1)).unwrap(), 1);
+        drop(session);
+        reset_for_tests();
+    }
 
     #[cfg(feature = "semantic-integration")]
     #[test]
