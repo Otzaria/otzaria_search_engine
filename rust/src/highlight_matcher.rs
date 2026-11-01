@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use regex::{Regex, RegexBuilder};
+use regex::{CaptureLocations, Regex, RegexBuilder};
 use tantivy::tokenizer::{TokenStream, Tokenizer};
 
 use crate::gap_phrase::{Proximity, WordWindows};
@@ -127,6 +127,19 @@ impl PreparedHighlightMatcher {
         let mut stream = tokenizer.token_stream(&text.text);
         let mut candidates: Vec<Vec<Option<Range>>> = vec![Vec::new(); self.words.len()];
         let mut mapped = MappedText::default();
+        let mut plans: Vec<(&Regex, CaptureLocations)> = (0..self.words.len())
+            .map(|i| {
+                let edge = self.edge(i, require_boundaries);
+                let left = if i == 0 { edge } else { Edge::WHOLE };
+                let right = if i + 1 == self.words.len() {
+                    edge
+                } else {
+                    Edge::WHOLE
+                };
+                let regex = &*self.words[i][left + 3 * right];
+                (regex, regex.capture_locations())
+            })
+            .collect();
         while stream.advance() {
             let token = stream.token();
             let position = token.position;
@@ -141,23 +154,16 @@ impl PreparedHighlightMatcher {
                 !token.text.contains(['\'', '"']),
                 &mut mapped,
             );
-            for (i, patterns) in self.words.iter().enumerate() {
+            for (i, (regex, locs)) in plans.iter_mut().enumerate() {
                 if candidates[i][position].is_some() {
                     continue;
                 }
-                let edge = self.edge(i, require_boundaries);
-                let left = if i == 0 { edge } else { Edge::WHOLE };
-                let right = if i + 1 == self.words.len() {
-                    edge
-                } else {
-                    Edge::WHOLE
-                };
-                if let Some(captures) = patterns[left + 3 * right].captures(&mapped.text) {
-                    if let Some(root) = captures.iter().skip(1).flatten().next() {
-                        if !root.is_empty() {
+                if regex.captures_read(locs, &mapped.text).is_some() {
+                    if let Some((start, end)) = first_group(locs) {
+                        if start < end {
                             candidates[i][position] = Some(Range {
-                                start: mapped.starts[root.start()],
-                                end: mapped.ends[root.end() - 1],
+                                start: mapped.starts[start],
+                                end: mapped.ends[end - 1],
                             });
                         }
                     }
@@ -176,6 +182,15 @@ impl PreparedHighlightMatcher {
         let mut stream = tokenizer.token_stream(&text.text);
         let mut ranges = Vec::new();
         let mut mapped = MappedText::default();
+        let mut plans: Vec<(&Regex, usize, CaptureLocations)> = self
+            .independent_words
+            .iter()
+            .enumerate()
+            .map(|(i, patterns)| {
+                let edge = self.edge(i, require_boundaries);
+                (&*patterns[edge], edge, patterns[edge].capture_locations())
+            })
+            .collect();
         while stream.advance() {
             let token = stream.token();
             text.normalized_token(
@@ -184,23 +199,37 @@ impl PreparedHighlightMatcher {
                 !token.text.contains(['\'', '"']),
                 &mut mapped,
             );
-            for (i, patterns) in self.independent_words.iter().enumerate() {
-                let edge = self.edge(i, require_boundaries);
+            for (regex, edge, locs) in &mut plans {
+                let haystack = mapped.text.as_str();
+                let mut at = 0;
+                let mut last_end = None;
                 // Only a waived plain word may occur more than once in a token.
-                for captures in patterns[edge].captures_iter(&mapped.text) {
-                    let Some(root) = captures.iter().skip(1).flatten().next() else {
+                while let Some(mut found) = regex.captures_read_at(locs, haystack, at) {
+                    // As in `captures_iter`: skip an empty match touching the previous one.
+                    if found.is_empty() && Some(found.end()) == last_end {
+                        if at + 1 > haystack.len() {
+                            break;
+                        }
+                        let Some(next) = regex.captures_read_at(locs, haystack, at + 1) else {
+                            break;
+                        };
+                        found = next;
+                    }
+                    let Some((start, end)) = first_group(locs) else {
                         break;
                     };
-                    if root.is_empty() {
+                    if start == end {
                         break;
                     }
                     ranges.push(Range {
-                        start: mapped.starts[root.start()],
-                        end: mapped.ends[root.end() - 1],
+                        start: mapped.starts[start],
+                        end: mapped.ends[end - 1],
                     });
-                    if edge != Edge::ANY {
+                    if *edge != Edge::ANY {
                         break;
                     }
+                    at = found.end();
+                    last_end = Some(found.end());
                 }
             }
         }
@@ -468,6 +497,11 @@ impl MappedText {
             }
         }
     }
+}
+
+/// The first participating capture group after the whole match.
+fn first_group(locs: &CaptureLocations) -> Option<(usize, usize)> {
+    (1..locs.len()).find_map(|group| locs.get(group))
 }
 
 #[cfg(test)]
