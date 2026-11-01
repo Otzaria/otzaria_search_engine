@@ -4186,6 +4186,9 @@ class SemanticVectorsInfo {
 
   /// The set's identity as 64 hex digits: what a release must name to be installed.
   final String identityDigest;
+
+  /// The model family bound into the installed set's identity, empty when absent.
+  final String modelFamilyId;
   final int libraryVersion;
   final String libraryReleaseTag;
   final BigInt generation;
@@ -4201,6 +4204,7 @@ class SemanticVectorsInfo {
   const SemanticVectorsInfo({
     required this.present,
     required this.identityDigest,
+    required this.modelFamilyId,
     required this.libraryVersion,
     required this.libraryReleaseTag,
     required this.generation,
@@ -4216,6 +4220,7 @@ class SemanticVectorsInfo {
   int get hashCode =>
       present.hashCode ^
       identityDigest.hashCode ^
+      modelFamilyId.hashCode ^
       libraryVersion.hashCode ^
       libraryReleaseTag.hashCode ^
       generation.hashCode ^
@@ -4233,6 +4238,7 @@ class SemanticVectorsInfo {
           runtimeType == other.runtimeType &&
           present == other.present &&
           identityDigest == other.identityDigest &&
+          modelFamilyId == other.modelFamilyId &&
           libraryVersion == other.libraryVersion &&
           libraryReleaseTag == other.libraryReleaseTag &&
           generation == other.generation &&

@@ -2283,13 +2283,9 @@ fn a_release_installs_through_the_api_and_reports_itself() {
     let engine = library.engine();
     let token = SemanticCancellationToken::new();
     let vectors = library.package.with_file_name("fresh");
-    assert!(
-        !engine
-            .semantic_vectors_info(dir_string(&vectors))
-            .unwrap()
-            .present,
-        "nothing installed is not an error"
-    );
+    let absent = engine.semantic_vectors_info(dir_string(&vectors)).unwrap();
+    assert!(!absent.present, "nothing installed is not an error");
+    assert!(absent.model_family_id.is_empty());
 
     let (segment, manifest, digest) = release(&library.package);
     let input = || library.install_input(&vectors, &segment, &manifest, Some(digest.clone()));
@@ -2309,6 +2305,7 @@ fn a_release_installs_through_the_api_and_reports_itself() {
         (LIBRARY_VERSION, RELEASE_TAG)
     );
     assert_eq!(info.identity_digest.len(), 64);
+    assert_eq!(info.model_family_id, library.model.family_id);
     assert_eq!(info.slots_live, u64::from(EMBEDDED));
     assert_eq!(info.bytes_on_disk, report.bytes_on_disk);
     assert_eq!(info.segments.len(), 1);

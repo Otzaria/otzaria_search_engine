@@ -839,6 +839,8 @@ pub struct SemanticVectorsInfo {
     pub present: bool,
     /// The set's identity as 64 hex digits: what a release must name to be installed.
     pub identity_digest: String,
+    /// The model family bound into the installed set's identity, empty when absent.
+    pub model_family_id: String,
     pub library_version: u32,
     pub library_release_tag: String,
     pub generation: u64,
@@ -1734,6 +1736,7 @@ fn vectors_info(
         return SemanticVectorsInfo {
             present: false,
             identity_digest: String::new(),
+            model_family_id: String::new(),
             library_version: 0,
             library_release_tag: String::new(),
             generation: 0,
@@ -1748,6 +1751,7 @@ fn vectors_info(
     SemanticVectorsInfo {
         present: true,
         identity_digest: info.identity_digest,
+        model_family_id: info.identity.model.family_id,
         library_version: info.library_version,
         library_release_tag: info.library_release_tag,
         generation: info.generation,

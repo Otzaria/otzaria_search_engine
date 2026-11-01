@@ -236,13 +236,15 @@ pub(crate) fn check_local_model(
             Some("query_max_tokens"),
         ));
     }
-    // The runtime the sidecar builds, with the one batch size it embeds queries at. Its
-    // refusals here are of the width or the token cap, which say which in their text only,
-    // and of a model path that names no ONNX graph.
+    // The runtime loads the model at its document cap, then applies the separately
+    // checked query cap while embedding queries. Validate the loaded cap here too: a
+    // smaller query cap must not hide a document cap no runtime could load. Its refusals
+    // here are of the width or the token cap, which say which in their text only, and of a
+    // model path that names no ONNX graph.
     let config = EmbeddingConfig {
         model_path: model.model_path.clone(),
         embedding_dim: model.embedding_dim,
-        max_tokens: model.query_max_tokens.unwrap_or(model.max_tokens),
+        max_tokens: model.max_tokens,
         batch_size: 1,
         pooling,
     };
@@ -1243,6 +1245,60 @@ mod tests {
         let failed = search_error(&SemanticSearchError::Fusion("f".into()), session());
         assert_eq!(failed.kind, K::Internal);
         assert_eq!(failed.message, "semantic search failed: Fusion error: f");
+    }
+
+    /// Query limits cannot conceal a document limit refused before model loading.
+    #[test]
+    fn a_query_cap_does_not_hide_an_invalid_document_cap() {
+        let valid = LocalModel {
+            model_path: PathBuf::from(MODEL),
+            family_id: "otzaria/Meivin-Embed-QA491-native256".into(),
+            model_quantization: "int8".into(),
+            embedding_dim: 256,
+            pooling: "in-graph".into(),
+            max_tokens: 256,
+            query_max_tokens: Some(128),
+            passage_package: None,
+            embedding_text_version: 2,
+            normalization_version: 1,
+            chunking_identity: 1,
+        };
+        check_local_model(&valid, |_| unreachable!("the QA491 role caps are valid")).unwrap();
+
+        let ceiling = LocalModel {
+            max_tokens: 65_536,
+            query_max_tokens: Some(65_536),
+            ..valid.clone()
+        };
+        check_local_model(&ceiling, |_| unreachable!("the ceiling itself is valid")).unwrap();
+
+        for (max_tokens, query_max_tokens) in
+            [(65_537, Some(128)), (65_537, None), (usize::MAX, Some(128))]
+        {
+            let model = LocalModel {
+                max_tokens,
+                query_max_tokens,
+                ..valid.clone()
+            };
+            let error = check_local_model(&model, |error| format!("refused: {error}"))
+                .expect_err("the valid query cap must not mask the document cap");
+            assert_eq!(error.kind, SemanticErrorKind::InvalidInput);
+            assert_eq!(error.field, None);
+            assert!(error
+                .message
+                .contains(&format!("max_tokens is {max_tokens}")));
+        }
+
+        for query_max_tokens in [2, 257] {
+            let model = LocalModel {
+                query_max_tokens: Some(query_max_tokens),
+                ..valid.clone()
+            };
+            let error = check_local_model(&model, |error| format!("refused: {error}"))
+                .expect_err("the separate query cap must still be checked");
+            assert_eq!(error.kind, SemanticErrorKind::InvalidInput);
+            assert_eq!(error.field.as_deref(), Some("query_max_tokens"));
+        }
     }
 
     /// The installation's own values are refused as `InvalidInput`, with the message the
