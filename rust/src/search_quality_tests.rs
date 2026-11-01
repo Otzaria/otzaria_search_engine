@@ -378,3 +378,110 @@ fn phrase_typo_takes_any_single_letter_edit() {
     let word = regex::Regex::new(&hl.word_patterns[0]).unwrap();
     assert!(word.is_match("לבבות"), "{}", hl.word_patterns[0]);
 }
+
+fn sorted(mut ids: Vec<u64>) -> Vec<u64> {
+    ids.sort_unstable();
+    ids
+}
+
+/// A typo substitution stands for another letter, never the typed one: with
+/// "ניקוד" on the word, the unchanged letters keep their typed marks.
+#[test]
+fn phrase_typo_keeps_the_typed_nikud_of_the_unchanged_word() {
+    let (engine, _dir) = engine_with(&["בָּרכה שלום", "בְּרכה שלום", "בְּרקה שלום", "בְּרגה שלום"]);
+    let options = HashMap::from([(
+        "בָּרכה_0".to_string(),
+        HashMap::from([
+            ("שגיאות כתיב".to_string(), true),
+            (hebrew_query::OPT_MATCH_NIKUD.to_string(), true),
+        ]),
+    )]);
+    let ids = phrase_ids(&engine, "בָּרכה שלום", options);
+    assert_eq!(sorted(ids), [0, 2, 3]);
+}
+
+/// The full edits come after every sampled typo variant and in a budget of
+/// their own: they never push one out of the phrase char budget.
+#[test]
+fn phrase_typo_edits_keep_every_sampled_variant() {
+    let (engine, _dir) = engine_with(&["ספרם שלום"]);
+    let affixes: &[&str] = &[
+        "שגיאות כתיב",
+        "קידומות דקדוקיות",
+        "סיומות דקדוקיות",
+        "קידומות ארמיות",
+        "סיומות ארמיות",
+    ];
+    let ids = phrase_ids(
+        &engine,
+        "ספרים שלום",
+        word_options("ספרים שלום", &[affixes, &[]]),
+    );
+    assert_eq!(ids, [0]);
+}
+
+/// The same on the vocalized path: the deletion ללות of לְלבות stays.
+#[test]
+fn vocalized_phrase_typo_edits_keep_every_sampled_variant() {
+    let (engine, _dir) = engine_with(&["ללִות שלום"]);
+    let options = HashMap::from([(
+        "לְלבות_0".to_string(),
+        HashMap::from(
+            [
+                "שגיאות כתיב",
+                "קידומות דקדוקיות",
+                "סיומות דקדוקיות",
+                hebrew_query::OPT_MATCH_NIKUD,
+            ]
+            .map(|f| (f.to_string(), true)),
+        ),
+    )]);
+    assert_eq!(phrase_ids(&engine, "לְלבות שלום", options), [0]);
+}
+
+/// A sampled typo variant still composes with כתיב מלא/חסר.
+#[test]
+fn phrase_typo_composes_with_spelling() {
+    let (engine, _dir) = engine_with(&["בירקה שלום", "בריקה שלום", "בורקה שלום"]);
+    let flags: &[&str] = &["שגיאות כתיב", "כתיב מלא/חסר"];
+    let ids = phrase_ids(
+        &engine,
+        "ברכה שלום",
+        word_options("ברכה שלום", &[flags, &[]]),
+    );
+    assert_eq!(sorted(ids), [0, 1, 2]);
+}
+
+/// Otzaria/otzaria#3673 with each option that composes with typo tolerance,
+/// and with all of them.
+#[test]
+fn phrase_typo_edit_survives_the_other_options() {
+    let (engine, _dir) = engine_with(&["פאלמיטו: לבבות דקל (hearts of palm)"]);
+    let extra = [
+        "קידומות דקדוקיות",
+        "סיומות דקדוקיות",
+        "כתיב מלא/חסר",
+        "קידומות ארמיות",
+        "סיומות ארמיות",
+        "חלק ממילה",
+    ];
+    let all = (1u32 << extra.len()) - 1;
+    for mask in (0..extra.len())
+        .map(|i| 1u32 << i)
+        .chain([all & !(1 << 5), all])
+    {
+        let flags: Vec<&str> = std::iter::once("שגיאות כתיב")
+            .chain(
+                (0..extra.len())
+                    .filter(|i| mask >> i & 1 == 1)
+                    .map(|i| extra[i]),
+            )
+            .collect();
+        let ids = phrase_ids(
+            &engine,
+            "ללבות דקל",
+            word_options("ללבות דקל", &[&flags, &[]]),
+        );
+        assert_eq!(ids, [0], "{flags:?}");
+    }
+}
