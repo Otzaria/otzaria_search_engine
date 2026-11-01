@@ -1230,6 +1230,57 @@ fn library_keys_recomputed_together_are_those_recomputed_alone() {
     }
 }
 
+/// A library line past the cap has the further windows a stored one has: its row is found
+/// by the `filePath` column, which the doc store does not keep.
+#[cfg(feature = "semantic-integration")]
+#[test]
+fn library_window_keys_are_those_of_stored_lines() {
+    use crate::semantic_keys::{recompute_window_keys_at, window_keys};
+    let _guard = guard();
+    let dir = TempDir::new().unwrap();
+    let long = (0..300)
+        .map(|word| format!("מילה{word}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let rows = [
+        "<h1>ספר ארוך</h1>".to_string(),
+        long.clone(),
+        "סוף".to_string(),
+    ];
+    let book = Book {
+        id: 1,
+        title: "ספר ארוך",
+        topics: "/root",
+        catalogue_order: 0,
+        generation_order: 0,
+        line_indexes: (0..rows.len() as i64).collect(),
+        rows: rows.iter().map(|row| row.as_bytes().to_vec()).collect(),
+        compressed: false,
+    };
+    let db = dir.path().join("seforim.db");
+    write_library(&db, std::slice::from_ref(&book), false);
+    configure_line_source(db.to_string_lossy().into_owned()).unwrap();
+    let expected = window_keys(&long);
+    assert!(!expected.is_empty(), "the long line has a second window");
+
+    for storage in [TextStorage::InIndex, TextStorage::LibraryDb] {
+        let path = dir.path().join(format!("{storage:?}"));
+        std::fs::create_dir_all(&path).unwrap();
+        let engine = index_library_books_committed(&path, std::slice::from_ref(&book), storage);
+        let lines: Vec<tantivy::DocAddress> = chunk_key_columns(&engine)["id:1"]
+            .iter()
+            .map(|line| line.0)
+            .collect();
+        let keys = recompute_window_keys_at(&engine.corpus_searcher(), &lines)
+            .unwrap_or_else(|error| panic!("{storage:?}: {error:#}"));
+        assert_eq!(keys.len(), 3, "{storage:?}");
+        assert_eq!(keys[1].as_deref(), Some(expected.as_slice()), "{storage:?}");
+        for short in [0, 2] {
+            assert_eq!(keys[short].as_deref(), Some(&[][..]), "{storage:?}");
+        }
+    }
+}
+
 /// The image rows of the fixture: (bookId, lineIndex, a word of the line). Book 1's row 8
 /// holds only a short `data:abc`, which cleaning keeps, so it still reads from the database.
 const IMAGE_ROWS: [(i64, i64, &str); 2] = [(1, 7, "תמונה"), (2, 1, "מילים")];

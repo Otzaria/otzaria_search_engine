@@ -516,12 +516,15 @@ pub(crate) fn recompute_window_keys_at(
     let documents = addresses
         .par_iter()
         .with_min_len(8)
-        .map(|&address| {
-            let document: TantivyDocument = searcher
-                .doc(address)
-                .with_context(|| format!("reading the document at {address:?}"))?;
-            Ok((address, document))
-        })
+        .map_init(
+            || crate::doc_store::DocumentLoader::new(searcher),
+            |loader, &address| {
+                let document: TantivyDocument = loader
+                    .load(address)
+                    .with_context(|| format!("reading the document at {address:?}"))?;
+                Ok((address, document))
+            },
+        )
         .collect::<Result<Vec<_>>>()?;
     let texts = indexed_texts(searcher, &documents)?;
     Ok(documents
@@ -1043,11 +1046,15 @@ mod tests {
     }
 
     /// A PDF's lines are not the library's text: their column holds 0, and nothing
-    /// recomputes a key for them.
+    /// recomputes a key for them, nor further windows for one past the cap.
     #[test]
     fn a_pdf_line_has_no_key() {
         use crate::api::search_engine::PdfPageInput;
 
+        let long = (0..300)
+            .map(|word| format!("מילה{word}"))
+            .collect::<Vec<_>>()
+            .join(" ");
         let dir = TempDir::new().unwrap();
         let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
         engine
@@ -1060,8 +1067,7 @@ mod tests {
                 vec![PdfPageInput {
                     page_index: 0,
                     reference: "עמוד 1".to_string(),
-                    text: "שורה ארוכה דיה כדי לעמוד בפני עצמה\nשורה שנייה ארוכה דיה גם היא"
-                        .to_string(),
+                    text: format!("שורה ארוכה דיה כדי לעמוד בפני עצמה\n{long}"),
                 }],
                 None,
             )
@@ -1085,10 +1091,22 @@ mod tests {
             );
         }
         #[cfg(feature = "semantic-integration")]
-        assert_eq!(
-            recompute_chunk_keys_at(&searcher, &[(&book, 0), (&book, 1)]).unwrap(),
-            [Some(None), Some(None)]
-        );
+        {
+            assert_eq!(
+                recompute_chunk_keys_at(&searcher, &[(&book, 0), (&book, 1)]).unwrap(),
+                [Some(None), Some(None)]
+            );
+            assert_eq!(rows[1].2, long);
+            assert!(!window_keys(&long).is_empty());
+            let windows = recompute_window_keys_at(&searcher, &book).unwrap();
+            assert_eq!(
+                windows
+                    .iter()
+                    .map(|keys| keys.as_deref())
+                    .collect::<Vec<_>>(),
+                [Some(&[][..]), Some(&[][..])]
+            );
+        }
     }
 
     /// The parallel computation answers what the sidecar's own `chunk_keys` answers, on
