@@ -485,3 +485,39 @@ fn phrase_typo_edit_survives_the_other_options() {
         assert_eq!(ids, [0], "{flags:?}");
     }
 }
+
+/// The full typo edits must not crowd an exact branch out of the dictionary
+/// scan cap before branch ranking gets a chance to keep it.
+#[test]
+fn phrase_typo_scan_cap_keeps_the_exact_match() {
+    let letters: Vec<char> = "אבגדהוזחטיכלמנסעפ".chars().collect();
+    let mut noise = String::new();
+    let mut count = 0;
+    'terms: for a in &letters {
+        for b in &letters {
+            for c in &letters {
+                for d in &letters {
+                    // ב→ג is outside the sampled confusions; all these terms
+                    // match the new typo+partial branches and sort before לבבות.
+                    noise.push_str(&format!("{a}{b}לגבות{c}{d} "));
+                    count += 1;
+                    if count > term_automaton::COLLECT_CAP {
+                        break 'terms;
+                    }
+                }
+            }
+        }
+    }
+    noise.push_str("עולם");
+    let (mut engine, _dir) = engine_with(&["לבבות שלום", &noise]);
+    engine.merge_into_one_segment();
+    let flags: &[&str] = &["שגיאות כתיב", "חלק ממילה"];
+    assert_eq!(
+        phrase_ids(
+            &engine,
+            "לבבות שלום",
+            word_options("לבבות שלום", &[flags, &[]])
+        ),
+        [0]
+    );
+}
