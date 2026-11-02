@@ -1,5 +1,30 @@
 # Changelog
 
+## 7.0.1 – 2026-11-02
+
+### Fixed
+
+- Typo-tolerant phrases and words combined with expansion options now include
+  arbitrary Hebrew single-letter substitutions and insertions for words of at
+  least four letters, within the expansion budgets. Existing typo/spelling combinations, explicit nikud requirements
+  and higher-priority variants remain available. Overflowing dictionary scans
+  collect higher-priority branches first, so broad typo expansions cannot evict
+  an earlier exact match before ranking.
+- Aramaic prefixes compose with the other search options without narrowing
+  their matches; phrase budgets retain expansions on both plain and vocalized
+  searches, including suffixed forms of words ending in a final letter.
+- Smart search reads long-line window keys through the document-column loader,
+  recovering library database paths and retaining PDF exclusion in schema 6.
+- A cache probe no longer ends a readable smart-scan session that is still in use.
+- Semantic model loading validates role-specific token caps, and installed
+  vector metadata exposes the model family from the updated sidecar.
+
+### Performance
+
+- Full typo edits are generated on demand and stop at the pattern/branch
+  budgets, avoiding quadratic retained allocations for long input tokens.
+- Display highlighting reuses capture-location buffers while scanning a line.
+
 ## 7.0.0 – 2026-10-30
 
 ### Breaking
