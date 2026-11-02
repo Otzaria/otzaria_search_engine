@@ -2265,40 +2265,55 @@ fn generate_typo_variations(word: &str, max: usize) -> Vec<String> {
 
 /// The whole edit distance 1 that [`generate_typo_variations`] samples: one
 /// wildcard root per substitution and per insertion, then the transpositions
-/// and deletions. Empty below [`MIN_TYPO_EDIT_LETTERS`].
-fn generate_typo_edits(word: &str) -> Vec<String> {
-    if typo_letter_count(word) < MIN_TYPO_EDIT_LETTERS {
-        return Vec::new();
+/// and deletions. Empty below [`MIN_TYPO_EDIT_LETTERS`]. Each root is built
+/// only when requested, so a budget can stop before allocating the whole
+/// quadratic edit neighborhood of a long word.
+fn generate_typo_edits(word: &str) -> impl Iterator<Item = String> + '_ {
+    enum Edit {
+        Substitute(usize),
+        Insert(usize),
+        Transpose(usize),
+        Delete(usize),
     }
-    let graphemes: Vec<&str> = word.graphemes(true).collect();
+
+    let enabled = typo_letter_count(word) >= MIN_TYPO_EDIT_LETTERS;
+    let graphemes: Vec<(usize, &str)> = word.grapheme_indices(true).collect();
     let n = graphemes.len();
-    let any = TYPO_ANY_LETTER.to_string();
-    let substitutes: Vec<String> = graphemes
-        .iter()
-        .map(|g| typo_substitute(g).to_string())
-        .collect();
-    let edit = |at: usize, len: usize, with: &[&str]| -> String {
-        [&graphemes[..at], with, &graphemes[at + len..]]
-            .concat()
-            .concat()
-    };
-    let substitutions = (0..n).map(|i| edit(i, 1, &[&substitutes[i]]));
-    // Beginning and end first, then the interior positions.
-    let insertions = [0, n].into_iter().chain(1..n).map(|i| edit(i, 0, &[&any]));
-    let transpositions = (0..n - 1)
-        .filter(|&i| graphemes[i] != graphemes[i + 1])
-        .map(|i| edit(i, 2, &[graphemes[i + 1], graphemes[i]]));
-    let deletions = (0..n).map(|i| edit(i, 1, &[]));
-    let mut out: Vec<String> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-    for v in substitutions
-        .chain(insertions)
-        .chain(transpositions)
-        .chain(deletions)
-    {
-        push_unique(&mut out, &mut seen, v);
-    }
-    out
+    let edits = (0..n)
+        .map(Edit::Substitute)
+        // Beginning and end first, then the interior positions.
+        .chain([0, n].into_iter().chain(1..n).map(Edit::Insert))
+        .chain((0..n.saturating_sub(1)).map(Edit::Transpose))
+        .chain((0..n).map(Edit::Delete));
+    let mut seen = HashSet::new();
+    edits
+        .take(if enabled { usize::MAX } else { 0 })
+        .filter_map(move |edit| {
+            let (at, len) = match edit {
+                Edit::Substitute(at) | Edit::Delete(at) => (at, 1),
+                Edit::Insert(at) => (at, 0),
+                Edit::Transpose(at) => {
+                    if graphemes[at].1 == graphemes[at + 1].1 {
+                        return None;
+                    }
+                    (at, 2)
+                }
+            };
+            let boundary = |i| graphemes.get(i).map_or(word.len(), |&(start, _)| start);
+            let mut variant = String::with_capacity(word.len() + TYPO_ANY_LETTER.len_utf8());
+            variant.push_str(&word[..boundary(at)]);
+            match edit {
+                Edit::Substitute(at) => variant.push(typo_substitute(graphemes[at].1)),
+                Edit::Insert(_) => variant.push(TYPO_ANY_LETTER),
+                Edit::Transpose(at) => {
+                    variant.push_str(graphemes[at + 1].1);
+                    variant.push_str(graphemes[at].1);
+                }
+                Edit::Delete(_) => {}
+            }
+            variant.push_str(&word[boundary(at + len)..]);
+            seen.insert(variant.clone()).then_some(variant)
+        })
 }
 
 // ── Affix arms: the one source of the morphology options ──────────────────
@@ -2977,7 +2992,7 @@ fn build_word_regex(
             .filter(|(_, pattern)| kept.contains(pattern))
             .map(|(root, _)| root.as_str())
             .collect();
-        typo_edit_branches(flags, &candidates, max, kept, |root| {
+        typo_edit_branches(flags, &candidates, max, kept, move |root| {
             (!covered.contains(root)).then(|| word_to_pattern(root, &edit_flags))
         })
     };
@@ -2990,10 +3005,10 @@ fn build_word_regex(
 /// full typo `edits` within [`MAX_TYPO_EDIT_CHARS`] of their own, so they never
 /// displace a branch. Only an oversized first branch (or no usable branch)
 /// needs the literal fallback.
-fn finish_word_pattern(
+fn finish_word_pattern<I: IntoIterator<Item = String>>(
     branches: Vec<String>,
     budget: &VariationBudget,
-    edits: impl FnOnce(&[String]) -> Vec<String>,
+    edits: impl FnOnce(&[String]) -> I,
     fallback: impl FnOnce() -> WordPattern,
 ) -> WordPattern {
     let mut kept = Vec::new();
@@ -3013,7 +3028,11 @@ fn finish_word_pattern(
 /// Appends `branches` to `kept` while what they add to the joined pattern fits
 /// `max_chars`. Separators count as each branch is added, so plain and
 /// vocalized queries cannot lose every expansion to the final alternation.
-fn keep_joined(kept: &mut Vec<String>, branches: Vec<String>, max_chars: Option<usize>) {
+fn keep_joined(
+    kept: &mut Vec<String>,
+    branches: impl IntoIterator<Item = String>,
+    max_chars: Option<usize>,
+) {
     let mut total = 0;
     for branch in branches {
         if branch.trim().is_empty() {
@@ -3044,30 +3063,29 @@ const MAX_TYPO_EDIT_CHARS: usize = 6_000;
 
 /// The patterns `pattern` renders for the full typo edits of `candidates`
 /// (none without typo tolerance), absent from `kept`, at most `max`;
-/// `pattern` returns `None` for a covered root.
-fn typo_edit_branches(
+/// `pattern` returns `None` for a covered root. Rendering stays lazy too:
+/// [`keep_joined`] stops requesting patterns as soon as the char budget is full.
+fn typo_edit_branches<'a>(
     flags: &WordFlags,
-    candidates: &[String],
+    candidates: &'a [String],
     max: usize,
     kept: &[String],
-    mut pattern: impl FnMut(&str) -> Option<String>,
-) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    if !flags.typo {
-        return out;
-    }
-    let mut seen: HashSet<String> = kept.iter().cloned().collect();
-    for candidate in candidates {
-        for root in generate_typo_edits(candidate) {
-            if let Some(p) = pattern(&root) {
-                push_unique(&mut out, &mut seen, p);
-                if out.len() >= max {
-                    return out;
-                }
-            }
-        }
-    }
-    out
+    mut pattern: impl FnMut(&str) -> Option<String> + 'a,
+) -> impl Iterator<Item = String> + 'a {
+    let enabled = flags.typo;
+    let mut seen: HashSet<String> = if enabled {
+        kept.iter().cloned().collect()
+    } else {
+        HashSet::new()
+    };
+    candidates
+        .iter()
+        .flat_map(|candidate| generate_typo_edits(candidate))
+        .filter_map(move |root| {
+            let pattern = pattern(&root)?;
+            seen.insert(pattern.clone()).then_some(pattern)
+        })
+        .take(if enabled { max } else { 0 })
 }
 
 // ── Input parsing helpers ──────────────────────────────────────────────────
@@ -4583,6 +4601,46 @@ mod tests {
     }
 
     #[test]
+    fn typo_edit_iterator_keeps_graphemes_and_priority() {
+        let edits: Vec<String> = generate_typo_edits("אָבגד").collect();
+        assert_eq!(edits.len(), 16);
+        assert_eq!(edits[0], format!("{}בגד", typo_substitute("אָ")));
+        assert_eq!(edits[4], format!("{TYPO_ANY_LETTER}אָבגד"));
+        assert_eq!(edits[5], format!("אָבגד{TYPO_ANY_LETTER}"));
+        assert_eq!(edits[9], "באָגד");
+        assert_eq!(edits[12], "בגד");
+        // Equal adjacent graphemes do not transpose; identical deletions dedupe.
+        assert_eq!(generate_typo_edits("ממממ").count(), 10);
+    }
+
+    #[test]
+    fn phrase_typo_char_budget_stops_rendering_extra_edits() {
+        let word = "מ".repeat(4_096);
+        let candidates = [word.clone()];
+        let flags = WordFlags {
+            typo: true,
+            prefix: true,
+            ..Default::default()
+        };
+        let rendered = std::cell::Cell::new(0);
+        let pattern = finish_word_pattern(
+            vec![word],
+            &PHRASE_BUDGET,
+            |kept| {
+                typo_edit_branches(&flags, &candidates, MAX_TYPO_VARIATIONS, kept, |root| {
+                    rendered.set(rendered.get() + 1);
+                    Some(word_to_pattern(root, &flags))
+                })
+            },
+            || panic!("the exact branch fits"),
+        );
+        // One edit fits the extra 6K budget; the next ends generation. Do not
+        // render 64 branches or materialize every edit of this long token.
+        assert_eq!(pattern.branches().len(), 2);
+        assert_eq!(rendered.get(), 2);
+    }
+
+    #[test]
     fn typo_substitution_never_keeps_the_letter() {
         // A substitution matching its own letter would drop the typed marks.
         let flags = WordFlags {
@@ -4671,8 +4729,8 @@ mod tests {
             assert!(four.contains(&v.to_string()), "{v}");
         }
         // The full edits: any letter but כ in its place, any letter before it.
-        assert!(generate_typo_edits("שבת").is_empty());
-        let edits = generate_typo_edits("ברכה");
+        assert!(generate_typo_edits("שבת").next().is_none());
+        let edits: Vec<String> = generate_typo_edits("ברכה").collect();
         let other_kaf = typo_substitute("כ");
         for v in [format!("בר{other_kaf}ה"), format!("{TYPO_ANY_LETTER}ברכה")] {
             assert!(edits.contains(&v), "{v}");
@@ -5310,7 +5368,7 @@ mod tests {
         };
         let phrase = build_word_regex("בראשית", &flags, &[], &PHRASE_BUDGET);
         let single = build_word_regex("בראשית", &flags, &[], &SINGLE_WORD_BUDGET);
-        let first_edit = word_to_pattern(&generate_typo_edits("בראשית")[0], &flags);
+        let first_edit = word_to_pattern(&generate_typo_edits("בראשית").next().unwrap(), &flags);
         let first_edit_at = phrase.branches().iter().position(|b| *b == first_edit);
         assert_eq!(first_edit_at, Some(MAX_TYPO_VARIATIONS));
         assert_eq!(
