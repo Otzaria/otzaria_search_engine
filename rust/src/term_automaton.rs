@@ -42,8 +42,9 @@ pub(crate) struct TermDfa {
     start: StateID,
     /// Global index of this DFA's pattern 0.
     first_branch: usize,
-    /// The branches it was built from, for `Debug`: the page cache keys queries by it.
-    branches: String,
+    /// Source patterns for priority-first collection when the combined scan hits its cap.
+    /// Also part of `Debug`: the page cache keys queries by it.
+    branches: Vec<String>,
 }
 
 impl std::fmt::Debug for TermDfa {
@@ -69,12 +70,14 @@ impl TermDfa {
             dfa,
             start,
             first_branch,
-            branches: format!("{branches:?}"),
+            branches: branches.to_vec(),
         })
     }
 
     pub(crate) fn memory_usage(&self) -> usize {
-        self.dfa.memory_usage() + self.branches.len()
+        self.dfa.memory_usage()
+            + self.branches.capacity() * std::mem::size_of::<String>()
+            + self.branches.iter().map(String::capacity).sum::<usize>()
     }
 
     /// The lowest global branch index that accepts `term` in full.
@@ -325,8 +328,9 @@ pub(crate) const COLLECT_CAP: usize = 50_000;
 /// Every term `automata` (then each of `extra`) matches in `segments`,
 /// ranked by branch, then length — the affix letters around the typed root
 /// — then document frequency (descending). Scans run in parallel; at most
-/// `cap` distinct terms are gathered, in automaton order, and the flag
-/// reports whether the cap cut the scan.
+/// `cap` distinct terms are gathered. The usual combined scan is fast; if it
+/// reaches the cap before ranking, retry in branch order so newly added broad
+/// branches cannot evict an earlier exact branch. The flag reports truncation.
 pub(crate) fn collect_ranked<T>(
     segments: &[Arc<InvertedIndexReader>],
     automata: &TermAutomata,
@@ -391,6 +395,128 @@ where
             }
         }
     }
+    // A union DFA visits terms in dictionary order, not branch order. A
+    // low-priority wildcard may fill the scan cap before a late-sorting exact
+    // term. Only overflowing queries need the more expensive ordered retry.
+    drop(index);
+    if capped {
+        drop(ranked);
+        let ranked = collect_in_branch_order(segments, automata, extra, cap, &cancellation)?;
+        return Ok((sort_ranked(ranked), true));
+    }
+    Ok((sort_ranked(ranked), false))
+}
+
+/// Retry an overflowing union one branch at a time, with the same bounded
+/// scans and cancellation checks. Earlier branches finish across every segment
+/// before a later branch may consume a slot. Individual DFAs share the cache.
+fn collect_in_branch_order<T>(
+    segments: &[Arc<InvertedIndexReader>],
+    automata: &TermAutomata,
+    extra: &[T],
+    cap: usize,
+    cancellation: &crate::lexical_cancellation::LexicalFlag,
+) -> tantivy::Result<Vec<RankedTerm>>
+where
+    T: tantivy_fst::Automaton + Sync,
+    T::State: Clone,
+{
+    let mut index = std::collections::HashMap::new();
+    let mut ranked = Vec::new();
+    let mut branch = 0;
+    for part in &automata.parts {
+        for pattern in &part.branches {
+            if ranked.len() >= cap {
+                return Ok(ranked);
+            }
+            cancellation.check_tantivy()?;
+            let dfa = compile_pattern(pattern).map_err(tantivy::TantivyError::InvalidArgument)?;
+            collect_one_branch(
+                segments,
+                dfa.as_ref(),
+                branch,
+                cap,
+                cancellation,
+                &mut index,
+                &mut ranked,
+            )?;
+            branch += 1;
+        }
+    }
+    for automaton in extra {
+        if ranked.len() >= cap {
+            break;
+        }
+        cancellation.check_tantivy()?;
+        collect_one_branch(
+            segments,
+            automaton,
+            branch,
+            cap,
+            cancellation,
+            &mut index,
+            &mut ranked,
+        )?;
+        branch += 1;
+    }
+    Ok(ranked)
+}
+
+fn collect_one_branch<A>(
+    segments: &[Arc<InvertedIndexReader>],
+    automaton: &A,
+    branch: usize,
+    cap: usize,
+    cancellation: &crate::lexical_cancellation::LexicalFlag,
+    index: &mut std::collections::HashMap<String, usize>,
+    ranked: &mut Vec<RankedTerm>,
+) -> tantivy::Result<()>
+where
+    A: tantivy_fst::Automaton + Sync,
+    A::State: Clone,
+{
+    // Stream each segment directly into the bounded set. Unlike the fast
+    // parallel union scan, the retry does not retain per-segment hit buffers.
+    for inverted in segments {
+        let mut stream = inverted
+            .terms()
+            .search(QuoteTransparent::new(automaton))
+            .into_stream()?;
+        let mut visited = 0;
+        while stream.advance() {
+            cancellation.check_tantivy()?;
+            if visited >= cap {
+                break;
+            }
+            visited += 1;
+            let Ok(term) = std::str::from_utf8(stream.key()) else {
+                continue;
+            };
+            match index.get(term) {
+                Some(&i) => {
+                    let entry = &mut ranked[i];
+                    // A term accepted by multiple branches already has its
+                    // complete frequency from the first branch's segment scans.
+                    if entry.branch == branch {
+                        entry.doc_freq += u64::from(stream.value().doc_freq);
+                    }
+                }
+                None if ranked.len() < cap => {
+                    index.insert(term.to_owned(), ranked.len());
+                    ranked.push(RankedTerm {
+                        term: term.to_owned(),
+                        branch,
+                        doc_freq: u64::from(stream.value().doc_freq),
+                    });
+                }
+                None => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+fn sort_ranked(ranked: Vec<RankedTerm>) -> Vec<RankedTerm> {
     let mut keyed: Vec<(usize, RankedTerm)> = ranked
         .into_iter()
         .map(|t| (t.term.chars().count(), t))
@@ -403,7 +529,7 @@ where
             &b.term,
         ))
     });
-    Ok((keyed.into_iter().map(|(_, t)| t).collect(), capped))
+    keyed.into_iter().map(|(_, t)| t).collect()
 }
 
 /// The branch [`TermDfa::matched_branch`] gives `term` as written or without its
@@ -565,5 +691,92 @@ mod tests {
         assert!(compile_branches(&bad).is_err());
         assert!(compile_branches(&bad).is_err());
         assert_eq!(builds_on_this_thread() - before, 1);
+    }
+
+    fn segments_with_terms(batches: &[&[&str]]) -> Vec<Arc<InvertedIndexReader>> {
+        let mut schema = tantivy::schema::Schema::builder();
+        let field = schema.add_text_field("term", tantivy::schema::STRING);
+        let index = tantivy::Index::create_in_ram(schema.build());
+        let mut writer = index.writer_with_num_threads(1, 50_000_000).unwrap();
+        writer.set_merge_policy(Box::new(tantivy::merge_policy::NoMergePolicy));
+        for batch in batches {
+            for term in *batch {
+                writer.add_document(tantivy::doc!(field => *term)).unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        let reader = index.reader().unwrap();
+        reader
+            .searcher()
+            .segment_readers()
+            .iter()
+            .map(|s| s.inverted_index(field).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn capped_union_keeps_branch_priority_and_segment_frequencies() {
+        let segments = segments_with_terms(&[&["a", "b", "z", "z"], &["c", "d", "z"]]);
+        let patterns = ["z".to_owned(), ".*".to_owned()];
+        for split in [false, true] {
+            let automata = if split {
+                // Force a split independently of the platform's DFA size.
+                TermAutomata {
+                    parts: patterns
+                        .iter()
+                        .enumerate()
+                        .map(|(i, p)| {
+                            Arc::new(
+                                TermDfa::new(
+                                    build_dfa(&[parse(p).unwrap()]).unwrap(),
+                                    i,
+                                    std::slice::from_ref(p),
+                                )
+                                .unwrap(),
+                            )
+                        })
+                        .collect(),
+                }
+            } else {
+                build_uncached(&patterns).unwrap()
+            };
+            let (ranked, capped) = collect_ranked::<TermDfa>(&segments, &automata, &[], 3).unwrap();
+            assert!(capped);
+            assert_eq!(ranked.len(), 3);
+            assert_eq!(
+                ranked[0],
+                RankedTerm {
+                    term: "z".into(),
+                    branch: 0,
+                    doc_freq: 3
+                }
+            );
+            // The broad branch also accepts z, but must not count its frequency twice.
+            assert!(ranked[1..].iter().all(|t| t.branch == 1 && t.doc_freq == 1));
+        }
+    }
+
+    #[test]
+    fn capped_union_keeps_quote_transparent_exact_terms() {
+        let segments = segments_with_terms(&[&["a", "aa", "aaa", "רמב\"ם"]]);
+        let automata = compile_branches(&["רמבם".into(), "a.*".into()]).unwrap();
+        let (ranked, capped) = collect_ranked::<TermDfa>(&segments, &automata, &[], 2).unwrap();
+        assert!(capped);
+        assert_eq!(ranked.len(), 2);
+        assert_eq!(ranked[0].term, "רמב\"ם");
+        assert_eq!(ranked[0].branch, 0);
+    }
+
+    #[test]
+    fn capped_extra_automaton_stays_after_regex_branches() {
+        let segments = segments_with_terms(&[&["a", "aa", "aaa", "z"]]);
+        let automata = compile_branches(&["z".into()]).unwrap();
+        let extra = [tantivy_fst::Regex::new("a.*").unwrap()];
+        let (ranked, capped) = collect_ranked(&segments, &automata, &extra, 3).unwrap();
+        assert!(capped);
+        assert_eq!(ranked.len(), 3);
+        assert_eq!(ranked[0].term, "z");
+        assert_eq!(ranked[0].branch, 0);
+        assert!(ranked[1..].iter().all(|t| t.branch == 1));
     }
 }

@@ -267,3 +267,257 @@ fn relevance_ranks_exact_then_affixed_then_spelling_then_typo() {
     assert_eq!(catalogue, [0, 1, 2, 3]);
     assert_eq!(relevance, [3, 2, 1, 0]);
 }
+
+fn word_options(query: &str, per_word: &[&[&str]]) -> HashMap<String, HashMap<String, bool>> {
+    hebrew_query::split_query_words(&hebrew_query::normalize_for_index(query))
+        .iter()
+        .zip(per_word)
+        .enumerate()
+        .map(|(i, (w, flags))| {
+            (
+                format!("{w}_{i}"),
+                flags.iter().map(|f| (f.to_string(), true)).collect(),
+            )
+        })
+        .collect()
+}
+
+fn phrase_ids(
+    engine: &SearchEngine,
+    query: &str,
+    options: HashMap<String, HashMap<String, bool>>,
+) -> Vec<u64> {
+    engine
+        .search_advanced(
+            query.to_string(),
+            String::new(),
+            Vec::new(),
+            100,
+            0,
+            0,
+            0,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            options,
+            HashMap::new(),
+            ResultsOrder::Catalogue,
+            false,
+            false,
+            SearchScope::WordDistance,
+            SearchScope::WordDistance,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect()
+}
+
+/// Otzaria/otzaria#3673: within a phrase, a typo-tolerant word of four letters
+/// or more takes any single-letter edit — not only the common confusions.
+#[test]
+fn phrase_typo_takes_any_single_letter_edit() {
+    let (engine, _dir) = engine_with(&["פאלמיטו: לבבות דקל (hearts of palm)", "לבות דקל"]);
+    const TYPO: &str = "שגיאות כתיב";
+    const GRAM_PREFIX: &str = "קידומות דקדוקיות";
+
+    // ל→ב at the first word, typo on that word only.
+    let ids = phrase_ids(
+        &engine,
+        "ללבות דקל",
+        word_options("ללבות דקל", &[&[TYPO], &[]]),
+    );
+    assert!(ids.contains(&0), "{ids:?}");
+    // The edit on the second word.
+    let ids = phrase_ids(
+        &engine,
+        "פאלמיטו ללבות",
+        word_options("פאלמיטו ללבות", &[&[], &[TYPO]]),
+    );
+    assert_eq!(ids, [0]);
+    // Insertion, deletion and transposition within a phrase.
+    for query in ["לבבבות דקל", "לבות דקל", "לבבתו דקל"] {
+        let ids = phrase_ids(&engine, query, word_options(query, &[&[TYPO], &[]]));
+        assert!(ids.contains(&0), "{query}: {ids:?}");
+    }
+    // Typo composed with a morphological option.
+    let both: &[&str] = &[TYPO, GRAM_PREFIX];
+    let ids = phrase_ids(
+        &engine,
+        "ללבות דקל",
+        word_options("ללבות דקל", &[both, both]),
+    );
+    assert!(ids.contains(&0), "{ids:?}");
+    // A three-letter word still takes only the common confusions (ל→ר is none).
+    let ids = phrase_ids(
+        &engine,
+        "לבבות דקר",
+        word_options("לבבות דקר", &[&[TYPO], &[TYPO]]),
+    );
+    assert!(ids.is_empty(), "{ids:?}");
+
+    // The opened book highlights the form the phrase matched.
+    let hl = engine
+        .generate_index_highlight_pattern(
+            "ללבות דקל".to_string(),
+            0,
+            HashMap::new(),
+            HashMap::new(),
+            word_options("ללבות דקל", &[&[TYPO], &[]]),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("a highlight pattern");
+    let word = regex::Regex::new(&hl.word_patterns[0]).unwrap();
+    assert!(word.is_match("לבבות"), "{}", hl.word_patterns[0]);
+}
+
+fn sorted(mut ids: Vec<u64>) -> Vec<u64> {
+    ids.sort_unstable();
+    ids
+}
+
+/// A typo substitution stands for another letter, never the typed one: with
+/// "ניקוד" on the word, the unchanged letters keep their typed marks.
+#[test]
+fn phrase_typo_keeps_the_typed_nikud_of_the_unchanged_word() {
+    let (engine, _dir) = engine_with(&["בָּרכה שלום", "בְּרכה שלום", "בְּרקה שלום", "בְּרגה שלום"]);
+    let options = HashMap::from([(
+        "בָּרכה_0".to_string(),
+        HashMap::from([
+            ("שגיאות כתיב".to_string(), true),
+            (hebrew_query::OPT_MATCH_NIKUD.to_string(), true),
+        ]),
+    )]);
+    let ids = phrase_ids(&engine, "בָּרכה שלום", options);
+    assert_eq!(sorted(ids), [0, 2, 3]);
+}
+
+/// The full edits come after every sampled typo variant and in a budget of
+/// their own: they never push one out of the phrase char budget.
+#[test]
+fn phrase_typo_edits_keep_every_sampled_variant() {
+    let (engine, _dir) = engine_with(&["ספרם שלום"]);
+    let affixes: &[&str] = &[
+        "שגיאות כתיב",
+        "קידומות דקדוקיות",
+        "סיומות דקדוקיות",
+        "קידומות ארמיות",
+        "סיומות ארמיות",
+    ];
+    let ids = phrase_ids(
+        &engine,
+        "ספרים שלום",
+        word_options("ספרים שלום", &[affixes, &[]]),
+    );
+    assert_eq!(ids, [0]);
+}
+
+/// The same on the vocalized path: the deletion ללות of לְלבות stays.
+#[test]
+fn vocalized_phrase_typo_edits_keep_every_sampled_variant() {
+    let (engine, _dir) = engine_with(&["ללִות שלום"]);
+    let options = HashMap::from([(
+        "לְלבות_0".to_string(),
+        HashMap::from(
+            [
+                "שגיאות כתיב",
+                "קידומות דקדוקיות",
+                "סיומות דקדוקיות",
+                hebrew_query::OPT_MATCH_NIKUD,
+            ]
+            .map(|f| (f.to_string(), true)),
+        ),
+    )]);
+    assert_eq!(phrase_ids(&engine, "לְלבות שלום", options), [0]);
+}
+
+/// A sampled typo variant still composes with כתיב מלא/חסר.
+#[test]
+fn phrase_typo_composes_with_spelling() {
+    let (engine, _dir) = engine_with(&["בירקה שלום", "בריקה שלום", "בורקה שלום"]);
+    let flags: &[&str] = &["שגיאות כתיב", "כתיב מלא/חסר"];
+    let ids = phrase_ids(
+        &engine,
+        "ברכה שלום",
+        word_options("ברכה שלום", &[flags, &[]]),
+    );
+    assert_eq!(sorted(ids), [0, 1, 2]);
+}
+
+/// Otzaria/otzaria#3673 with each option that composes with typo tolerance,
+/// and with all of them.
+#[test]
+fn phrase_typo_edit_survives_the_other_options() {
+    let (engine, _dir) = engine_with(&["פאלמיטו: לבבות דקל (hearts of palm)"]);
+    let extra = [
+        "קידומות דקדוקיות",
+        "סיומות דקדוקיות",
+        "כתיב מלא/חסר",
+        "קידומות ארמיות",
+        "סיומות ארמיות",
+        "חלק ממילה",
+    ];
+    let all = (1u32 << extra.len()) - 1;
+    for mask in (0..extra.len())
+        .map(|i| 1u32 << i)
+        .chain([all & !(1 << 5), all])
+    {
+        let flags: Vec<&str> = std::iter::once("שגיאות כתיב")
+            .chain(
+                (0..extra.len())
+                    .filter(|i| mask >> i & 1 == 1)
+                    .map(|i| extra[i]),
+            )
+            .collect();
+        let ids = phrase_ids(
+            &engine,
+            "ללבות דקל",
+            word_options("ללבות דקל", &[&flags, &[]]),
+        );
+        assert_eq!(ids, [0], "{flags:?}");
+    }
+}
+
+/// The full typo edits must not crowd an exact branch out of the dictionary
+/// scan cap before branch ranking gets a chance to keep it.
+#[test]
+fn phrase_typo_scan_cap_keeps_the_exact_match() {
+    let letters: Vec<char> = "אבגדהוזחטיכלמנסעפ".chars().collect();
+    let mut noise = String::new();
+    let mut count = 0;
+    'terms: for a in &letters {
+        for b in &letters {
+            for c in &letters {
+                for d in &letters {
+                    // ב→ג is outside the sampled confusions; all these terms
+                    // match the new typo+partial branches and sort before לבבות.
+                    noise.push_str(&format!("{a}{b}לגבות{c}{d} "));
+                    count += 1;
+                    if count > term_automaton::COLLECT_CAP {
+                        break 'terms;
+                    }
+                }
+            }
+        }
+    }
+    noise.push_str("עולם");
+    let (mut engine, _dir) = engine_with(&["לבבות שלום", &noise]);
+    engine.merge_into_one_segment();
+    let flags: &[&str] = &["שגיאות כתיב", "חלק ממילה"];
+    assert_eq!(
+        phrase_ids(
+            &engine,
+            "לבבות שלום",
+            word_options("לבבות שלום", &[flags, &[]])
+        ),
+        [0]
+    );
+}
