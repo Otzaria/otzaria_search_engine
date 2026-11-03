@@ -516,6 +516,11 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// Delete all documents. Does not commit.
   Future<void> clear();
 
+  /// Closes the writer without committing, exactly as dropping the engine does. Dropping
+  /// a writer waits for its indexing threads to drain the queued documents, so the app
+  /// awaits this (never sync) before disposing of the engine. The next write reopens it.
+  Future<void> closeIndexWriter();
+
   /// Flush pending writes to disk and refresh the reader.
   Future<void> commit();
 

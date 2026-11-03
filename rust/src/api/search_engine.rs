@@ -9030,6 +9030,13 @@ impl SearchEngine {
         self.ensure_writer()
     }
 
+    /// Closes the writer without committing, exactly as dropping the engine does. Dropping
+    /// a writer waits for its indexing threads to drain the queued documents, so the app
+    /// awaits this (never sync) before disposing of the engine. The next write reopens it.
+    pub fn close_index_writer(&mut self) {
+        drop(self.index_writer.take());
+    }
+
     /// Indexes a whole PDF book in ONE FFI call. Does not commit.
     ///
     /// The whole-book replacement for the app's per-page PDF pipeline (Dart
@@ -18105,6 +18112,25 @@ mod tests {
         drop(first);
         second.open_index_writer().unwrap();
         assert!(!owned.exists());
+    }
+
+    #[test]
+    fn closing_the_writer_discards_uncommitted_writes_and_releases_the_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut first = SearchEngine::new(dir.path().to_str().unwrap());
+        first.open_index_writer().unwrap();
+        for id in 1..=200 {
+            add(&mut first, id, "שלום עולם", "id:1");
+        }
+        first.close_index_writer();
+        assert!(!first.holds_writer_for_tests());
+        first.close_index_writer();
+
+        let mut second = SearchEngine::new(dir.path().to_str().unwrap());
+        second.open_index_writer().unwrap();
+        second.commit().unwrap();
+        assert_eq!(second.searcher_for_tests().num_docs(), 0);
+        drop(first);
     }
 
     #[test]
