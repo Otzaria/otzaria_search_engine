@@ -135,6 +135,9 @@ jobs:
       - name: Compile the production semantic backend
         run: cargo check --manifest-path rust/Cargo.toml --locked --lib --features semantic
 
+      - name: Test writer shutdown and index replacement
+        run: cargo test --manifest-path rust/Cargo.toml --locked --test index_writer_shutdown -- --test-threads=1
+
       # The GC regression is platform-sensitive: Windows cannot unlink files
       # still held by a searcher. These tests all create and compact temporary
       # indexes, so run them serially to avoid concurrent file cleanup on Windows.
