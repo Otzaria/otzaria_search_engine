@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Compare the same opt-in public-API fixture on two checked-out revisions."""
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,11 +13,12 @@ import subprocess
 
 
 def build(root, label, output, env):
+    build_environment = env | {"CARGO_TARGET_DIR": str(output / "target" / label)}
     completed = subprocess.run(
         ["cargo", "test", "--manifest-path", str(root / "rust/Cargo.toml"),
          "--locked", "--release", "--test", "indexing_throughput", "--no-run",
          "--message-format=json"],
-        check=True, text=True, stdout=subprocess.PIPE, env=env,
+        check=True, text=True, stdout=subprocess.PIPE, env=build_environment,
     )
     executables = []
     for line in completed.stdout.splitlines():
@@ -29,6 +31,14 @@ def build(root, label, output, env):
     binary = output / label
     shutil.copy2(executables[0], binary)
     return binary
+
+
+def binary_sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as binary:
+        for chunk in iter(lambda: binary.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def main():
@@ -45,8 +55,7 @@ def main():
     shutil.copy2(args.head / "rust/tests/indexing_throughput.rs", args.base / "rust/tests/indexing_throughput.rs")
     cpus = sorted(os.sched_getaffinity(0))
     environment = os.environ | {
-        "CARGO_BUILD_JOBS": "1", "CARGO_TARGET_DIR": str(args.out / "target"),
-        "OTZARIA_BENCH_LINES": "3000",
+        "CARGO_BUILD_JOBS": "1", "OTZARIA_BENCH_LINES": "12000",
     }
     environment.pop("OTZARIA_BENCH_ECONOMY", None)
     binaries = {label: build(path, label, args.out, environment)
@@ -56,6 +65,8 @@ def main():
         "base": subprocess.check_output(["git", "-C", str(args.base), "rev-parse", "HEAD"], text=True).strip(),
         "head": subprocess.check_output(["git", "-C", str(args.head), "rev-parse", "HEAD"], text=True).strip(),
         "rustc": subprocess.check_output(["rustc", "--version"], text=True).strip(),
+        "fixture_lines_per_book": int(environment["OTZARIA_BENCH_LINES"]),
+        "binary_sha256": {label: binary_sha256(binary) for label, binary in binaries.items()},
         "notes": ["Synthetic, local SQLite fixture; not a full library or slow-storage experiment.",
                   "Repeated exact search with warm caches, not cold-query latency.",
                   "CPU affinity is a constrained-core scenario, not a different CPU or RAM device.",
@@ -89,6 +100,8 @@ def main():
                     for key in diagnostic_fields:
                         match = re.search(rf"\b{key}: (\d+)", result["diagnostics"])
                         result[key] = int(match[1]) if match else None
+                    if label == "after" and any(result[key] is None for key in diagnostic_fields):
+                        raise RuntimeError("head binary is missing indexing diagnostics; refusing a stale-build comparison")
                     if result["search_samples"] == 0:
                         raise RuntimeError("no search overlapped indexing")
                     if expected_stamps is None:

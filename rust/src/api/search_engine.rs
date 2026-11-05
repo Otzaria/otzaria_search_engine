@@ -12318,7 +12318,10 @@ impl SearchEngine {
         Ok((
             Box::new(BooleanQuery::new(vec![
                 (Occur::Must, positive_query),
-                (Occur::MustNot, negative),
+                (
+                    Occur::MustNot,
+                    Box::new(crate::negative_query::NegativeQuery::new(negative)),
+                ),
             ])),
             positive_truncated || negative_truncated,
         ))
