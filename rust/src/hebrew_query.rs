@@ -1412,8 +1412,17 @@ fn space_entity_len(at: &[u8]) -> Option<usize> {
 
 /// Feeds `f` [`strip_html_for_indexing`]'s output piece by piece, without building it.
 fn for_each_html_stripped_piece(text: &str, mut f: impl FnMut(&str)) {
+    for_each_html_stripped_piece_at(text, |_, piece| f(piece));
+}
+
+/// The same stream, with the original byte range each piece came from. Display-only
+/// annotations use these ranges; tokenization still consumes the unchanged pieces.
+pub(crate) fn for_each_html_stripped_piece_at(
+    text: &str,
+    mut f: impl FnMut(std::ops::Range<usize>, &str),
+) {
     if !text.contains(['<', '&']) {
-        f(text);
+        f(0..text.len(), text);
         return;
     }
     let bytes = text.as_bytes();
@@ -1456,16 +1465,16 @@ fn for_each_html_stripped_piece(text: &str, mut f: impl FnMut(&str)) {
             }
         };
         if copied < i {
-            f(&text[copied..i]);
+            f(copied..i, &text[copied..i]);
         }
         if !replacement.is_empty() {
-            f(replacement);
+            f(i..next, replacement);
         }
         i = next;
         copied = next;
     }
     if copied < bytes.len() {
-        f(&text[copied..]);
+        f(copied..bytes.len(), &text[copied..]);
     }
 }
 

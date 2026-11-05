@@ -16,6 +16,8 @@ mod frb_generated;
 mod highlight_cache;
 mod highlight_matcher;
 mod id_lookup;
+// Display metadata only: note boundaries never enter a token, hash or semantic chunk.
+mod note_spans;
 mod quote_expansion;
 #[cfg(test)]
 mod quote_parity_tests;
