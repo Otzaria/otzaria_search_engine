@@ -3042,6 +3042,12 @@ pub struct HighlightMatcher {
 }
 
 impl HighlightMatcher {
+    /// Whether a display caller may join adjacent lines to complete this pattern.
+    #[frb(sync)]
+    pub fn allows_cross_line(&self) -> bool {
+        self.plan.allows_cross_line()
+    }
+
     #[frb(sync)]
     pub fn find_matches(
         &self,
@@ -3597,6 +3603,20 @@ pub fn generate_highlight_pattern(
 #[frb(sync)]
 pub fn generate_literal_highlight_pattern(query: String) -> Option<String> {
     display_highlight::build_literal_pattern(&query)
+}
+
+/// A smart display fallback with literal word alternatives and quotation groups.
+/// Pure string preparation: no index, dictionary, model or I/O is accessed.
+#[frb(sync)]
+pub fn generate_smart_highlight_pattern(
+    query: String,
+    lexical_mode: SemanticLexicalMode,
+) -> Option<HighlightPattern> {
+    let exact = matches!(lexical_mode, SemanticLexicalMode::Exact)
+        || smart_query::whole_query_quoted(&query);
+    smart_query::display_pattern(&query, exact, |words| Ok(words.to_vec()))
+        .expect("literal smart display preparation has no fallible term lookup")
+        .map(|pattern| pattern.to_api())
 }
 
 /// Normalises a search query exactly like the engine does internally, so the
@@ -10321,6 +10341,61 @@ impl SearchEngine {
 
     // -- Exact -------------------------------------------------------------------
 
+    /// Smart lexical matching without a model or a ranked semantic candidate window.
+    /// Pagination and ordering are applied after all literal quotation constraints.
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_smart_lexical(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        limit: u32,
+        offset: u32,
+        lexical_mode: SemanticLexicalMode,
+        fuzzy_max_distance: u8,
+        order: ResultsOrder,
+        match_nikud: bool,
+        match_taamim: bool,
+        cancel_request_id: Option<u32>,
+    ) -> Result<Vec<SearchResult>> {
+        let request = self.lexical_cancellations.begin(cancel_request_id);
+        request.scope(|| {
+            request.check()?;
+            if limit == 0 {
+                return Ok(Vec::new());
+            }
+            let voc = VocalizedFlags::new(match_nikud, match_taamim);
+            let exact = matches!(lexical_mode, SemanticLexicalMode::Exact)
+                || self.whole_query_quoted(&query)?;
+            let (search_query, _) = if exact {
+                self.build_smart_exact_query(&query, &facets, &voc, true)?
+            } else {
+                self.build_smart_fuzzy_query(
+                    &query,
+                    &facets,
+                    fuzzy_max_distance,
+                    &voc,
+                    matches!(order, ResultsOrder::Relevance),
+                )?
+            };
+            self.run_search(
+                search_query,
+                |searcher| {
+                    if exact {
+                        self.smart_exact_highlight_plan(searcher, &query, &voc)
+                    } else {
+                        self.smart_fuzzy_highlight_plan(searcher, &query, fuzzy_max_distance, &voc)
+                    }
+                },
+                self.search_text_field(&voc)?,
+                limit,
+                offset,
+                &order,
+                &HighlightConfig::default(),
+                None,
+            )
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn search_exact(
         &self,
@@ -13496,7 +13571,6 @@ impl SearchEngine {
 
     /// Whether one quotation contains every searchable word of the query. Independent
     /// quotations remain independent phrases, even when no words stand outside them.
-    #[cfg(feature = "semantic-integration")]
     fn whole_query_quoted(&self, query: &str) -> Result<bool> {
         let phrases = quoted_phrases(query);
         if phrases.len() != 1 {
@@ -15278,6 +15352,60 @@ impl SearchEngine {
                 || self.compute_index_fuzzy_highlight_pattern(&searcher, &query, max_distance),
             )?;
             Ok(pattern.map(|pattern| pattern.to_api()))
+        })
+    }
+
+    /// Display matching for smart lexical results: literal quotations stay grouped,
+    /// while outside words include their original, canonical and dictionary forms.
+    pub fn generate_index_smart_highlight_pattern(
+        &self,
+        query: String,
+        lexical_mode: SemanticLexicalMode,
+        max_distance: u8,
+        cancel_request_id: Option<u32>,
+    ) -> Result<Option<HighlightPattern>> {
+        let request = self.lexical_cancellations.begin(cancel_request_id);
+        request.scope(|| {
+            let searcher = self.index_reader.searcher();
+            let exact = matches!(lexical_mode, SemanticLexicalMode::Exact)
+                || self.whole_query_quoted(&query)?;
+            if !exact {
+                anyhow::ensure!(
+                    max_distance <= 2,
+                    "fuzzy highlight distance is limited to 2, got {max_distance}"
+                );
+            }
+            let pattern = self.highlight_cache.pattern(
+                searcher.generation().generation_id(),
+                format!("smart {query:?} {exact} {max_distance}"),
+                || {
+                    self.compute_index_smart_highlight_pattern(
+                        &searcher,
+                        &query,
+                        exact,
+                        max_distance,
+                    )
+                },
+            )?;
+            Ok(pattern.map(|pattern| pattern.to_api()))
+        })
+    }
+
+    fn compute_index_smart_highlight_pattern(
+        &self,
+        searcher: &Searcher,
+        query: &str,
+        exact: bool,
+        max_distance: u8,
+    ) -> Result<Option<DisplayPattern>> {
+        smart_query::display_pattern(query, exact, |alternatives| {
+            Ok(self
+                .lexical_phrase_per_word_terms(searcher, alternatives, max_distance)?
+                .into_iter()
+                .flatten()
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect())
         })
     }
 
