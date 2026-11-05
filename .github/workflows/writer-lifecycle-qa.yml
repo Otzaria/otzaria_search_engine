@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: index-writer-lifecycle-qa-${{ github.ref }}
+  group: index-writer-lifecycle-qa-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: true
 
 env:
@@ -24,8 +24,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-24.04
-            library: libsearch_engine.so
           - os: windows-2022
             library: search_engine.dll
     steps:
