@@ -18,8 +18,9 @@
 #![cfg(all(feature = "semantic-onnx", not(feature = "semantic-mock")))]
 
 use search_engine::api::search_engine::{
-    SearchEngine, SemanticBookInput, SemanticBookLineInput, SemanticConfigInput, SemanticError,
-    SemanticErrorKind,
+    SearchEngine, SemanticBookInput, SemanticBookLineInput, SemanticCancellationToken,
+    SemanticConfigInput, SemanticError, SemanticErrorKind, SemanticExecutedMode,
+    SemanticLexicalMode, SemanticResultSource, SemanticRetrievalMode,
 };
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
@@ -300,6 +301,32 @@ fn an_onnx_runtime_that_does_not_load_is_onnx_runtime_unusable() {
     );
 }
 
+fn assert_lexical_fallback(engine: &SearchEngine) {
+    let response = engine
+        .search_semantic(
+            "שורה".to_string(),
+            Vec::new(),
+            10,
+            0,
+            SemanticLexicalMode::Exact,
+            0,
+            SemanticRetrievalMode::Hybrid,
+            None,
+            false,
+            false,
+            None,
+            &SemanticCancellationToken::new(),
+        )
+        .expect("an unavailable native runtime must leave lexical search usable");
+    assert_eq!(response.executed_mode, SemanticExecutedMode::LexicalOnly);
+    assert!(!response.semantic_available);
+    assert_eq!(response.fallback_kind, Some(SemanticErrorKind::QueryFailed));
+    assert_eq!(response.lexical_total_count, 1);
+    assert_eq!(response.results.len(), 1);
+    assert_eq!(response.results[0].source, SemanticResultSource::Lexical);
+    assert!(response.results[0].semantic_score.is_none());
+}
+
 /// A path the application passes is the only place looked: one that names no file is a
 /// missing runtime even with a file beside the graph, which the lookup without a path would
 /// have found and called unusable. The message names the path and where it came from, which
@@ -333,6 +360,7 @@ fn a_passed_runtime_path_that_names_no_file_is_onnx_runtime_missing() {
         "{}",
         error.message
     );
+    assert_lexical_fallback(&engine);
 }
 
 /// A passed path that names a file that is not a runtime: unusable, named as the
@@ -368,4 +396,5 @@ fn a_passed_runtime_that_does_not_load_is_onnx_runtime_unusable() {
         "{}",
         error.message
     );
+    assert_lexical_fallback(&engine);
 }
