@@ -413,6 +413,131 @@ fn an_installed_vector_set_opens_and_reports_itself() {
     assert_eq!(again.vector_count, EMBEDDED);
 }
 
+#[test]
+fn smart_placeholders_embed_canonically_and_keep_unembedded_personal_matches() {
+    use search_engine::api::search_engine::SemanticHighlightTarget;
+    let clause = "תחילת דוגמה \u{05d9}\u{05d4}\u{05d5}\u{05d4} מילה נוספת וביאור מפורט";
+    let canonical = format!("{clause}. משפט אחר לחלוטין שמתאר תוכן נוסף בסוף הדוגמה");
+    let placeholder = canonical.replace("\u{05d9}\u{05d4}\u{05d5}\u{05d4}", "יקוק");
+    let library = build_library_of(
+        &[("original", "/official", GENESIS, 0, canonical.clone())],
+        false,
+    );
+    let mut engine = library.engine();
+    engine
+        .add_text_book(
+            "personal".to_string(),
+            "/personal".to_string(),
+            "/books/personal.txt".to_string(),
+            placeholder.clone(),
+            None,
+            TextStorage::InIndex,
+            None,
+            None,
+        )
+        .unwrap();
+    engine.commit().unwrap();
+    engine.open_semantic_artifact(library.input()).unwrap();
+
+    let semantic = search(
+        &engine,
+        &placeholder,
+        &[],
+        SemanticRetrievalMode::SemanticOnly,
+    );
+    assert!(semantic.semantic_available);
+    assert!(semantic.fallback_kind.is_none());
+    assert_eq!(semantic.lexical_total_count, 2);
+    let hit = semantic
+        .results
+        .iter()
+        .find(|hit| hit.file_path == GENESIS)
+        .unwrap();
+    let canonical_response = search(
+        &engine,
+        &canonical,
+        &[],
+        SemanticRetrievalMode::SemanticOnly,
+    );
+    assert!(canonical_response.semantic_available);
+    assert!(canonical_response.fallback_kind.is_none());
+    // The raw queries retain distinct lexical/session semantics. The mock hashes
+    // different query and passage role prefixes, so compare the query-side scores
+    // directly instead of assuming an identical passage must have cosine 1.
+    assert_eq!(canonical_response.lexical_total_count, 1);
+    let canonical_hit = canonical_response
+        .results
+        .iter()
+        .find(|hit| hit.file_path == GENESIS)
+        .unwrap();
+    assert_eq!(
+        hit.semantic_score.unwrap(),
+        canonical_hit.semantic_score.unwrap()
+    );
+    for lexical in [SemanticLexicalMode::Exact, SemanticLexicalMode::Fuzzy] {
+        for mode in [
+            SemanticRetrievalMode::Hybrid,
+            SemanticRetrievalMode::LexicalOnly,
+        ] {
+            let response = engine
+                .search_semantic(
+                    placeholder.clone(),
+                    vec![],
+                    10,
+                    0,
+                    lexical,
+                    0,
+                    mode,
+                    None,
+                    false,
+                    false,
+                    None,
+                    &SemanticCancellationToken::new(),
+                )
+                .unwrap();
+            assert_eq!(response.lexical_total_count, 2);
+            let personal = response
+                .results
+                .iter()
+                .find(|hit| hit.file_path == "/books/personal.txt")
+                .unwrap();
+            assert!(personal.source == SemanticResultSource::Lexical);
+            assert!(personal.is_highlighted, "{}", personal.snippet_html);
+            assert!(response
+                .results
+                .iter()
+                .any(|hit| hit.file_path == GENESIS && hit.lexical_score.is_some()));
+        }
+    }
+
+    let target = || {
+        vec![SemanticHighlightTarget {
+            file_path: GENESIS.to_string(),
+            id: hit.id,
+            window: hit.matched_window,
+        }]
+    };
+    let token = SemanticCancellationToken::new();
+    let canonical_mark = engine
+        .semantic_passage_highlights(clause.to_string(), target(), &token)
+        .unwrap();
+    let placeholder_mark = engine
+        .semantic_passage_highlights(
+            clause.replace("\u{05d9}\u{05d4}\u{05d5}\u{05d4}", "יקוק"),
+            target(),
+            &token,
+        )
+        .unwrap();
+    assert!(canonical_mark[0].is_highlighted);
+    assert!(canonical_mark[0].span_score.is_some());
+    assert!(placeholder_mark[0].is_highlighted);
+    assert_eq!(
+        placeholder_mark[0].snippet_html,
+        canonical_mark[0].snippet_html
+    );
+    assert_eq!(placeholder_mark[0].span_score, canonical_mark[0].span_score);
+}
+
 /// A model-identity field, and one edit of it alone.
 type IdentityEdit = (&'static str, fn(&mut ModelIdentity));
 

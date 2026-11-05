@@ -61,6 +61,7 @@ use crate::quote_expansion::{self, AutomatonQuery, QuoteTransparent};
 use crate::search_cancellation::{self, SearchCancellation, SearchCheckpoint};
 use crate::section_scope::{SectionFilteredQuery, SectionIdsCollector};
 use crate::semantic_keys::{self, ChunkKeyRecipe};
+use crate::smart_query;
 use crate::term_automaton::{self, TermDfa};
 use otzaria_semantic_search::semantic::chunk_key::LineRef;
 
@@ -7402,9 +7403,10 @@ impl SearchEngine {
         search_cancellation::look(cancel, SearchCheckpoint::Highlight)?;
         let failed = |err: SemanticSearchError| semantic_errors::search_error(&err, open.call());
         if query_side.vector.is_none() {
+            let canonical = smart_query::canonical(query);
             let vector = open
                 .coordinator
-                .embed_query_cached(query, cancel)
+                .embed_query_cached(&canonical, cancel)
                 .map_err(failed)?;
             query_side.vector = Some(vector);
         }
@@ -7438,7 +7440,12 @@ impl SearchEngine {
             return Ok(Some(Highlight::none()));
         };
         if query_side.tokens.is_none() {
-            query_side.tokens = Some(self.index_token_texts(query)?.into_iter().collect());
+            query_side.tokens = Some(
+                self.index_token_texts(query)?
+                    .iter()
+                    .flat_map(|token| smart_query::alternatives(token))
+                    .collect(),
+            );
         }
         let tokens = query_side.tokens.as_ref().expect("set above");
         let span = passage::widen_to_query_words(
@@ -7464,7 +7471,11 @@ impl SearchEngine {
     #[cfg(feature = "semantic-integration")]
     fn passage_query_words(&self, query: &str) -> Result<HashSet<String>> {
         let mut words = HashSet::new();
-        for token in self.index_token_texts(query)? {
+        for token in self
+            .index_token_texts(query)?
+            .iter()
+            .flat_map(|token| smart_query::alternatives(token))
+        {
             if let Some(clean) = Self::quoteless_variant(&token) {
                 words.insert(clean);
             }
@@ -7542,6 +7553,7 @@ impl SearchEngine {
         // The lexical phase on its own thread, the semantic half on this one, where a test's
         // probes see it.
         let semantic_started = Instant::now();
+        let canonical = smart_query::canonical(request.query);
         let ((lexical, lexical_ms), (prepared, semantic_ms)) = std::thread::scope(|scope| {
             let lexical = scope.spawn(|| {
                 let started = Instant::now();
@@ -7554,7 +7566,7 @@ impl SearchEngine {
                 // here itself; a test is told how far the search got.
                 search_cancellation::reached(SearchCheckpoint::Sidecar, cancel);
                 open.coordinator
-                    .prepare_semantic(request.query, &params, &resolver, cancel)
+                    .prepare_semantic(&canonical, &params, &resolver, cancel)
                     .map_err(|err| semantic_errors::search_error(&err, open.call()))
             });
             let semantic_ms = elapsed_ms(semantic_started);
@@ -7721,12 +7733,11 @@ impl SearchEngine {
                 None
             } else {
                 Some(match request.lexical_mode {
-                    SemanticLexicalMode::Exact => self.count_exact_with_status(
-                        request.query.to_string(),
-                        request.facets.to_vec(),
+                    SemanticLexicalMode::Exact => self.count_smart_exact(
+                        request.query,
+                        request.facets,
                         request.match_nikud,
                         request.match_taamim,
-                        None,
                     )?,
                     SemanticLexicalMode::Fuzzy => self.count_smart_fuzzy(
                         request.query,
@@ -7913,13 +7924,9 @@ impl SearchEngine {
         let fallback_kind = Some(why.kind);
         if matches!(requested_mode, SemanticRetrievalMode::SemanticOnly) {
             let count = match lexical_mode {
-                SemanticLexicalMode::Exact => self.count_exact_with_status(
-                    query.to_string(),
-                    facets.to_vec(),
-                    match_nikud,
-                    match_taamim,
-                    None,
-                )?,
+                SemanticLexicalMode::Exact => {
+                    self.count_smart_exact(query, facets, match_nikud, match_taamim)?
+                }
                 SemanticLexicalMode::Fuzzy => self.count_smart_fuzzy(
                     query,
                     facets,
@@ -7953,16 +7960,14 @@ impl SearchEngine {
             SemanticGroupingMode::IdenticalText => ResultGrouping::IdenticalText,
         });
         let page = match lexical_mode {
-            SemanticLexicalMode::Exact => self.search_and_count_exact(
-                query.to_string(),
-                facets.to_vec(),
+            SemanticLexicalMode::Exact => self.search_and_count_smart_exact(
+                query,
+                facets,
                 limit,
                 offset,
-                ResultsOrder::Relevance,
                 match_nikud,
                 match_taamim,
                 grouping,
-                None,
             )?,
             SemanticLexicalMode::Fuzzy => self.search_and_count_smart_fuzzy(
                 query,
@@ -10377,6 +10382,46 @@ impl SearchEngine {
         })
     }
 
+    fn search_and_count_smart_exact(
+        &self,
+        query: &str,
+        facets: &[String],
+        limit: u32,
+        offset: u32,
+        match_nikud: bool,
+        match_taamim: bool,
+        grouping: Option<ResultGrouping>,
+    ) -> Result<SearchPageResult> {
+        let voc = VocalizedFlags::new(match_nikud, match_taamim);
+        let (q, truncated) = self.build_smart_exact_query(query, facets, &voc, true)?;
+        self.run_search_and_count(
+            q,
+            |s| self.smart_exact_highlight_plan(s, query, &voc),
+            self.search_text_field(&voc)?,
+            limit,
+            offset,
+            &ResultsOrder::Relevance,
+            &HighlightConfig::default(),
+            truncated,
+            grouping.as_ref(),
+        )
+    }
+
+    fn count_smart_exact(
+        &self,
+        query: &str,
+        facets: &[String],
+        match_nikud: bool,
+        match_taamim: bool,
+    ) -> Result<CountResult> {
+        let voc = VocalizedFlags::new(match_nikud, match_taamim);
+        let (query, truncated) = self.build_smart_exact_query(query, facets, &voc, true)?;
+        Ok(CountResult {
+            count: self.run_count(query)?,
+            truncated,
+        })
+    }
+
     /// Collect scored, ungrouped Tantivy hits for the semantic coordinator.
     /// This bypasses snippet construction: the coordinator needs original line
     /// text and actual BM25 scores, while painting happens after fusion and
@@ -10393,7 +10438,7 @@ impl SearchEngine {
         with_highlight: bool,
     ) -> Result<SemanticLexicalPhase> {
         let voc = VocalizedFlags::new(match_nikud, match_taamim);
-        let (search_query, truncated) = self.build_exact_query_with(query, facets, &voc, false)?;
+        let (search_query, truncated) = self.build_smart_exact_query(query, facets, &voc, false)?;
         if !with_highlight {
             return self.semantic_candidates_from_query(
                 searcher,
@@ -10410,11 +10455,13 @@ impl SearchEngine {
         // expose no terms for it and leave every line unpainted. Facets are
         // dropped here — they filter documents, never highlights.
         let plain = VocalizedFlags::new(false, false);
-        let (display_query, _) = self.build_exact_query_with(query, &[], &plain, false)?;
+        let (display_query, _) = self.build_smart_exact_query(query, &[], &plain, false)?;
         let HighlightPlan {
             query: plan_query,
             phrase,
-        } = Self::resolve_highlight(searcher, |s| self.exact_highlight_plan(s, query, &plain));
+        } = Self::resolve_highlight(searcher, |s| {
+            self.smart_exact_highlight_plan(s, query, &plain)
+        });
         let highlight = SemanticHighlight {
             query: plan_query.unwrap_or(display_query),
             phrase,
@@ -13015,6 +13062,82 @@ impl SearchEngine {
         }
     }
 
+    /// Smart queries add alternatives at each word position, retaining the typed spelling.
+    fn build_smart_exact_query(
+        &self,
+        query: &str,
+        facets: &[String],
+        voc: &VocalizedFlags,
+        cross_line: bool,
+    ) -> Result<(Box<dyn Query>, bool)> {
+        if !smart_query::has_alternatives(query) {
+            return self.build_exact_query_with(query, facets, voc, cross_line);
+        }
+        if voc.any() {
+            let patterns = self
+                .index_token_texts_with("hebrew_vocalized_query", query)?
+                .iter()
+                .map(|token| smart_query::vocalized_pattern(token, voc))
+                .collect::<Vec<_>>();
+            return self.build_vocalized_exact_patterns(&patterns, facets);
+        }
+        let alternatives = self
+            .index_token_texts(query)?
+            .iter()
+            .map(|token| smart_query::alternatives(token))
+            .collect::<Vec<_>>();
+        let searcher = self.index_reader.searcher();
+        let field = self.schema.get_field("text")?;
+        let filter = (!facets.is_empty())
+            .then(|| self.facet_filter_query(facets))
+            .transpose()?;
+        let query = match alternatives.as_slice() {
+            [] => Box::new(EmptyQuery) as Box<dyn Query>,
+            [word] => quote_expansion::alternatives_term_query(
+                &searcher,
+                field,
+                word,
+                IndexRecordOption::Basic,
+            )?,
+            _ => {
+                let phrase =
+                    quote_expansion::alternatives_phrase_query(&searcher, field, &alternatives, 0)?;
+                if cross_line {
+                    let words = alternatives
+                        .iter()
+                        .map(|words| {
+                            Ok(cross_line::CrossLineWord::Terms(
+                                quote_expansion::spelling_terms(&searcher, field, words)?
+                                    .into_iter()
+                                    .filter_map(|term| term.value().as_str().map(str::to_string))
+                                    .collect(),
+                            ))
+                        })
+                        .collect::<tantivy::Result<Vec<_>>>()?;
+                    self.with_cross_line(
+                        phrase,
+                        field,
+                        &words,
+                        &vec![0; words.len() - 1],
+                        filter.as_deref(),
+                    )?
+                } else {
+                    phrase
+                }
+            }
+        };
+        Ok((
+            match filter {
+                None => query,
+                Some(filter) => Box::new(BooleanQuery::new(vec![
+                    (Occur::Must, query),
+                    (Occur::Must, filter),
+                ])),
+            },
+            false,
+        ))
+    }
+
     /// `inline` or the same phrase continuing from the end of a line onto the next
     /// line (see [`cross_line`]). Only the plain `text` field records line edges.
     fn with_cross_line(
@@ -13049,16 +13172,24 @@ impl SearchEngine {
         facets: &[String],
         voc: &VocalizedFlags,
     ) -> Result<(Box<dyn Query>, bool)> {
-        let voc_field = self.schema.get_field("textVocalized")?;
         let tokens = self.index_token_texts_with("hebrew_vocalized_query", query_str)?;
         let patterns: Vec<String> = tokens
             .iter()
             .map(|t| hebrew_query::vocalized_token_pattern(t, voc))
             .collect();
+        self.build_vocalized_exact_patterns(&patterns, facets)
+    }
+
+    fn build_vocalized_exact_patterns(
+        &self,
+        patterns: &[String],
+        facets: &[String],
+    ) -> Result<(Box<dyn Query>, bool)> {
+        let voc_field = self.schema.get_field("textVocalized")?;
         let (main_query, truncated): (Box<dyn Query>, bool) = match patterns.len() {
             0 => (Box::new(EmptyQuery), false),
             1 => self.single_regex_term_query(
-                &patterns,
+                patterns,
                 &[],
                 voc_field,
                 VOC_EXACT_SINGLE_MAX_EXPANSIONS,
@@ -13385,7 +13516,9 @@ impl SearchEngine {
         voc: &VocalizedFlags,
         rank: bool,
     ) -> Result<(Box<dyn Query>, bool)> {
-        let (fuzzy, mut truncated) = if voc.any() {
+        let (fuzzy, mut truncated) = if smart_query::has_alternatives(query) {
+            self.build_smart_fuzzy_alternatives(query, facets, max_distance, voc, rank)?
+        } else if voc.any() {
             self.build_fuzzy_query_vocalized(query, facets, max_distance, voc)?
         } else {
             let words = self.index_token_texts(query)?;
@@ -13403,9 +13536,108 @@ impl SearchEngine {
             // A quote's own words must occur literally and consecutively. This includes
             // single-word quotes and works without lexical.db. Preserve typed vocalization.
             let (literal, literal_truncated) =
-                self.build_exact_query_with(&phrase, &[], voc, false)?;
+                self.build_smart_exact_query(&phrase, &[], voc, false)?;
             truncated |= literal_truncated;
             clauses.push((Occur::Must, literal));
+        }
+        Ok((Box::new(BooleanQuery::new(clauses)), truncated))
+    }
+
+    fn build_smart_fuzzy_alternatives(
+        &self,
+        query: &str,
+        facets: &[String],
+        max_distance: u8,
+        voc: &VocalizedFlags,
+        rank: bool,
+    ) -> Result<(Box<dyn Query>, bool)> {
+        anyhow::ensure!(
+            max_distance <= 2,
+            "fuzzy distance is limited to 2, got {max_distance}"
+        );
+        let analyzer = if voc.any() {
+            "hebrew_vocalized_query"
+        } else {
+            "hebrew_query"
+        };
+        let words = self
+            .index_token_texts_with(analyzer, query)?
+            .iter()
+            .map(|word| smart_query::alternatives(word))
+            .collect::<Vec<_>>();
+        if words.is_empty() {
+            return Ok((Box::new(EmptyQuery), false));
+        }
+        let mut clauses = Vec::new();
+        let mut truncated = false;
+        for alternatives in &words {
+            let mut choices = Vec::new();
+            for word in alternatives {
+                let (query, capped) = if voc.any() {
+                    self.build_fuzzy_query_vocalized(word, &[], max_distance, voc)?
+                } else {
+                    (
+                        self.build_fuzzy_search_query(
+                            std::slice::from_ref(word),
+                            &[],
+                            &[],
+                            max_distance,
+                            rank,
+                        )?,
+                        false,
+                    )
+                };
+                choices.push((Occur::Should, query));
+                truncated |= capped;
+            }
+            clauses.push((
+                Occur::Must,
+                Box::new(BooleanQuery::new(choices)) as Box<dyn Query>,
+            ));
+        }
+        if rank && !voc.any() && words.len() >= 2 {
+            let searcher = self.index_reader.searcher();
+            let field = self.schema.get_field("text")?;
+            let exact = quote_expansion::alternatives_phrase_query(
+                &searcher,
+                field,
+                &words,
+                LEXICAL_FUZZY_PHRASE_SLOP,
+            )?;
+            clauses.push((
+                Occur::Should,
+                Box::new(ConstScoreQuery::new(exact, FUZZY_BOOST_PHRASE)),
+            ));
+            if LEXICAL_FUZZY_EXPANDED_PHRASE_BOOST {
+                if let Some(dict) = &self.magic_dict {
+                    let terms = words
+                        .iter()
+                        .map(|alternatives| {
+                            let forms = self
+                                .lexical_fuzzy_phrase_terms(dict, alternatives, max_distance)?
+                                .into_iter()
+                                .flatten()
+                                .collect::<Vec<_>>();
+                            Ok(quote_expansion::spelling_terms(&searcher, field, &forms)?)
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    let expanded = TermListPhraseQuery::new(
+                        field,
+                        terms,
+                        Proximity::Ordered(vec![LEXICAL_FUZZY_PHRASE_SLOP; words.len() - 1]),
+                    );
+                    clauses.push((
+                        Occur::Should,
+                        Box::new(ConstScoreQuery::new(
+                            Box::new(expanded),
+                            FUZZY_BOOST_LEXICAL,
+                        )),
+                    ));
+                }
+            }
+        }
+        if !facets.is_empty() {
+            clauses.push((Occur::Must, self.facet_filter_query(facets)?));
         }
         Ok((Box::new(BooleanQuery::new(clauses)), truncated))
     }
@@ -15319,6 +15551,49 @@ impl SearchEngine {
         })
     }
 
+    fn smart_exact_highlight_plan(
+        &self,
+        searcher: &Searcher,
+        query: &str,
+        voc: &VocalizedFlags,
+    ) -> Result<HighlightPlan> {
+        if !smart_query::has_alternatives(query) {
+            return self.exact_highlight_plan(searcher, query, voc);
+        }
+        let field = self.search_text_field(voc)?;
+        let (sets, analyzer) = if voc.any() {
+            let patterns = self
+                .index_token_texts_with("hebrew_vocalized_query", query)?
+                .iter()
+                .map(|token| smart_query::vocalized_pattern(token, voc))
+                .collect::<Vec<_>>();
+            (
+                self.phrase_per_word_terms(searcher, &patterns, field)?,
+                VOCALIZED_DISPLAY_ANALYZER,
+            )
+        } else {
+            (
+                self.index_token_texts(query)?
+                    .iter()
+                    .map(|token| smart_query::alternatives(token).into_iter().collect())
+                    .collect::<Vec<HashSet<String>>>(),
+                DISPLAY_ANALYZER,
+            )
+        };
+        let query = self.terms_query_from_word_sets(&sets, field)?;
+        Ok(HighlightPlan {
+            query,
+            phrase: (sets.len() >= 2).then(|| PhraseHighlight {
+                proximity: Proximity::adjacent(sets.len()),
+                per_word_terms: sets,
+                analyzer,
+                cross_line: !voc.any(),
+                alternatives: Vec::new(),
+                allow_term_fallback: true,
+            }),
+        })
+    }
+
     /// Quotations paint complete literal occurrences; only outside words can
     /// contribute edit-distance or dictionary forms. Single-word alternatives
     /// keep those outside words independent of the quotations' positions.
@@ -15336,7 +15611,11 @@ impl SearchEngine {
             } else {
                 self.fuzzy_highlight_plan(
                     searcher,
-                    &self.index_token_texts(query)?,
+                    &self
+                        .index_token_texts(query)?
+                        .iter()
+                        .flat_map(|token| smart_query::alternatives(token))
+                        .collect::<Vec<_>>(),
                     &[],
                     max_distance,
                 )
@@ -15363,13 +15642,13 @@ impl SearchEngine {
             let per_word_terms = if voc.any() {
                 let patterns = tokens
                     .iter()
-                    .map(|token| hebrew_query::vocalized_token_pattern(token, voc))
+                    .map(|token| smart_query::vocalized_pattern(token, voc))
                     .collect::<Vec<_>>();
                 self.phrase_per_word_terms(searcher, &patterns, field)?
             } else {
                 tokens
                     .into_iter()
-                    .map(|token| HashSet::from([token]))
+                    .map(|token| smart_query::alternatives(&token).into_iter().collect())
                     .collect()
             };
             if per_word_terms.is_empty() {
@@ -15385,6 +15664,10 @@ impl SearchEngine {
                 allow_term_fallback: false,
             });
         }
+        let outside = outside
+            .iter()
+            .flat_map(|token| smart_query::alternatives(token))
+            .collect::<Vec<_>>();
         let outside_sets = if voc.any() {
             let mut patterns = Vec::new();
             for token in &outside {
