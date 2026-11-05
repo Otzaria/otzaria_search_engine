@@ -2339,6 +2339,79 @@ fn a_release_installs_through_the_api_and_reports_itself() {
     );
 }
 
+/// Replacing the model through the public install API collects the incompatible backup,
+/// while an update of the same model keeps its usable rollback generation.
+#[test]
+fn a_new_model_release_discards_the_old_models_backup() {
+    let mut library = build_library();
+    let engine = library.engine();
+    let token = SemanticCancellationToken::new();
+    let (segment, manifest, digest) = release(&library.package);
+    engine
+        .install_semantic_vectors(
+            library.install_input(&library.vectors, &segment, &manifest, Some(digest)),
+            &token,
+        )
+        .unwrap();
+    assert!(
+        library.vectors.join("PREVIOUS").is_file(),
+        "an update of the same model keeps its usable rollback"
+    );
+    let old = engine
+        .semantic_vectors_info(dir_string(&library.vectors))
+        .unwrap();
+    let old_segments: Vec<_> = old
+        .segments
+        .iter()
+        .map(|segment| {
+            library
+                .vectors
+                .join("segments")
+                .join(format!("{}.oxv", segment.id))
+        })
+        .collect();
+    assert!(old_segments.iter().all(|segment| segment.is_file()));
+
+    library.model.family_id = "test-mock@new-model".to_string();
+    std::fs::write(library.work.join("model.json"), library.model_json()).unwrap();
+    let package = library.package.with_file_name("new-model-package");
+    build_package(
+        &library.index,
+        &library.work,
+        &library.model_file,
+        LIBRARY_VERSION,
+        RELEASE_TAG,
+        &package,
+        None,
+    );
+    let (segment, manifest, digest) = release(&package);
+    let installed = engine
+        .install_semantic_vectors(
+            library.install_input(&library.vectors, &segment, &manifest, Some(digest)),
+            &token,
+        )
+        .unwrap();
+    assert!(installed.generation > old.generation);
+    assert!(
+        !library.vectors.join("PREVIOUS").exists(),
+        "a different model cannot use the previous model's rollback"
+    );
+    assert!(
+        old_segments.iter().all(|segment| !segment.exists()),
+        "the incompatible model's vectors no longer occupy disk space"
+    );
+    let info = engine
+        .semantic_vectors_info(dir_string(&library.vectors))
+        .unwrap();
+    assert_eq!(info.model_family_id, library.model.family_id);
+    assert!(!info.recovered_from_previous);
+    engine.open_semantic_artifact(library.input()).unwrap();
+    assert_eq!(
+        semantic_lines(&engine, PROBE_LINE, &[]).first(),
+        Some(&(GENESIS.to_string(), PROBE_LINE.to_string(), 3))
+    );
+}
+
 /// A release manifest's `requires` is information, and nothing reads it: the published v30
 /// release says `indexSchemaVersion: 5` — the schema whose `chunkKey` column it is resolved
 /// through — and a device whose index has no column this build uses installs, opens and
