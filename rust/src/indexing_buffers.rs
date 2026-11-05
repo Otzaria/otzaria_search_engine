@@ -17,6 +17,14 @@ pub(crate) struct PreparationPolicy {
 
 impl PreparationPolicy {
     pub(crate) fn new(economy: bool, cores: usize) -> Self {
+        Self::for_platform(
+            economy,
+            cores,
+            cfg!(any(target_os = "android", target_os = "ios")),
+        )
+    }
+
+    fn for_platform(economy: bool, cores: usize, mobile: bool) -> Self {
         if economy {
             Self {
                 book_workers: 1,
@@ -27,13 +35,18 @@ impl PreparationPolicy {
                 window_bytes: 1 << 20,
             }
         } else {
+            let cpu_threads = if mobile {
+                1
+            } else {
+                preparation_threads(cores)
+            };
             Self {
-                book_workers: 4,
-                cpu_threads: cores.max(1),
-                text_bytes: 32 << 20,
-                document_bytes: 64 << 20,
-                window_lines: 16_384,
-                window_bytes: 16 << 20,
+                book_workers: (cpu_threads / 2).clamp(1, 4),
+                cpu_threads,
+                text_bytes: if mobile { 8 << 20 } else { 32 << 20 },
+                document_bytes: if mobile { 16 << 20 } else { 64 << 20 },
+                window_lines: if mobile { 2_048 } else { 16_384 },
+                window_bytes: if mobile { 2 << 20 } else { 16 << 20 },
             }
         }
     }
@@ -43,19 +56,50 @@ impl PreparationPolicy {
     }
 }
 
+/// Leave CPU capacity for searches, rendering and the writer. Pools have four
+/// reusable sizes, so repeated engine creation never creates another CPU pool.
+fn preparation_threads(cores: usize) -> usize {
+    match cores / 2 {
+        0 | 1 => 1,
+        2 | 3 => 2,
+        4..=7 => 4,
+        _ => 8,
+    }
+}
+
+pub(crate) fn writer_threads(economy: bool, cores: usize, mobile: bool) -> usize {
+    if economy || mobile {
+        1
+    } else {
+        (cores / 4).clamp(1, 8)
+    }
+}
+
 pub(crate) fn preparation_cpu<T: Send>(
-    economy: bool,
+    threads: usize,
     prepare: impl FnOnce() -> T + Send,
 ) -> Result<T> {
-    if economy {
-        static POOL: once_cell::sync::OnceCell<rayon::ThreadPool> =
-            once_cell::sync::OnceCell::new();
-        let pool =
-            POOL.get_or_try_init(|| rayon::ThreadPoolBuilder::new().num_threads(1).build())?;
-        Ok(pool.install(prepare))
-    } else {
-        Ok(prepare())
-    }
+    use once_cell::sync::OnceCell;
+    static POOLS: [OnceCell<rayon::ThreadPool>; 4] = [
+        OnceCell::new(),
+        OnceCell::new(),
+        OnceCell::new(),
+        OnceCell::new(),
+    ];
+    let slot = match threads {
+        1 => 0,
+        2 => 1,
+        4 => 2,
+        8 => 3,
+        _ => anyhow::bail!("unsupported preparation thread count: {threads}"),
+    };
+    let pool = POOLS[slot].get_or_try_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .thread_name(move |index| format!("otzaria-prepare-{threads}-{index}"))
+            .build()
+    })?;
+    Ok(pool.install(prepare))
 }
 
 const SPOOL_PREFIX: &str = ".otzaria-prepare-";
@@ -382,32 +426,55 @@ mod tests {
     use std::io::Read;
 
     #[test]
-    fn economy_cpu_uses_one_reused_worker_without_changing_normal_pool() {
-        let normal = preparation_cpu(false, rayon::current_num_threads).unwrap();
-        for _ in 0..3 {
-            assert_eq!(
-                preparation_cpu(true, rayon::current_num_threads).unwrap(),
-                1
-            );
-            assert_eq!(
-                preparation_cpu(false, rayon::current_num_threads).unwrap(),
-                normal
-            );
+    fn preparation_pools_are_bounded_reused_and_do_not_change_search_pool() {
+        let global = rayon::current_num_threads();
+        for threads in [1, 2, 4, 8] {
+            let first = preparation_cpu(threads, std::thread::current).unwrap().id();
+            for _ in 0..3 {
+                assert_eq!(
+                    preparation_cpu(threads, rayon::current_num_threads).unwrap(),
+                    threads
+                );
+                assert_eq!(rayon::current_num_threads(), global);
+            }
+            if threads == 1 {
+                assert_eq!(
+                    preparation_cpu(threads, std::thread::current).unwrap().id(),
+                    first
+                );
+            }
         }
     }
 
     #[test]
-    fn only_explicit_economy_limits_preparation_parallelism_and_small_buffers() {
-        for cores in [1, 2, 4, 8, 64] {
-            let normal = PreparationPolicy::new(false, cores);
-            let economy = PreparationPolicy::new(true, cores);
-            assert_eq!(normal.cpu_threads, cores);
-            assert_eq!(normal.book_workers, 4);
-            assert_eq!(normal.reservation() * normal.book_workers, 384 << 20);
+    fn preparation_reserves_cpu_capacity_and_bounds_live_book_buffers() {
+        for (cores, threads, workers) in [
+            (0, 1, 1),
+            (1, 1, 1),
+            (2, 1, 1),
+            (4, 2, 1),
+            (8, 4, 2),
+            (16, 8, 4),
+            (64, 8, 4),
+        ] {
+            let normal = PreparationPolicy::for_platform(false, cores, false);
+            let economy = PreparationPolicy::for_platform(true, cores, false);
+            assert_eq!(
+                (normal.cpu_threads, normal.book_workers),
+                (threads, workers)
+            );
+            assert_eq!(
+                normal.reservation() * normal.book_workers,
+                workers * (96 << 20)
+            );
             assert_eq!(economy.reservation(), 3 << 20);
             assert_eq!((economy.book_workers, economy.cpu_threads), (1, 1));
-            assert!(normal.window_bytes > economy.window_bytes);
-            assert!(normal.window_lines > economy.window_lines);
+            assert_eq!(writer_threads(true, cores, false), 1);
+            assert_eq!(writer_threads(false, cores, false), (cores / 4).clamp(1, 8));
+            let mobile = PreparationPolicy::for_platform(false, cores, true);
+            assert_eq!((mobile.book_workers, mobile.cpu_threads), (1, 1));
+            assert_eq!(mobile.reservation(), 24 << 20);
+            assert_eq!(writer_threads(false, cores, true), 1);
         }
     }
 

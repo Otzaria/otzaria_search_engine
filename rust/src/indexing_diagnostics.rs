@@ -10,6 +10,10 @@ static LOCK_WAIT: AtomicU64 = AtomicU64::new(0);
 static LOCK_HOLD: AtomicU64 = AtomicU64::new(0);
 static SOURCE_READ: AtomicU64 = AtomicU64::new(0);
 static PREPARE: AtomicU64 = AtomicU64::new(0);
+static ACTIVE_PREPARATIONS: AtomicU64 = AtomicU64::new(0);
+static PEAK_PREPARATIONS: AtomicU64 = AtomicU64::new(0);
+static RESERVED: AtomicU64 = AtomicU64::new(0);
+static PEAK_RESERVED: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy)]
 pub struct IndexingDiagnostics {
@@ -22,6 +26,12 @@ pub struct IndexingDiagnostics {
     pub source_lock_hold_micros: u64,
     pub source_read_micros: u64,
     pub prepare_micros: u64,
+    pub active_preparations: u64,
+    pub peak_active_preparations: u64,
+    /// Admission reservations, including completed books waiting to enqueue.
+    /// This is a capacity bound, not the bytes actually allocated.
+    pub reserved_bytes: u64,
+    pub peak_reserved_bytes: u64,
 }
 
 pub fn snapshot() -> IndexingDiagnostics {
@@ -33,6 +43,10 @@ pub fn snapshot() -> IndexingDiagnostics {
         source_lock_hold_micros: LOCK_HOLD.load(Ordering::Relaxed) / 1000,
         source_read_micros: SOURCE_READ.load(Ordering::Relaxed),
         prepare_micros: PREPARE.load(Ordering::Relaxed),
+        active_preparations: ACTIVE_PREPARATIONS.load(Ordering::Relaxed),
+        peak_active_preparations: PEAK_PREPARATIONS.load(Ordering::Relaxed),
+        reserved_bytes: RESERVED.load(Ordering::Relaxed),
+        peak_reserved_bytes: PEAK_RESERVED.load(Ordering::Relaxed),
     }
 }
 
@@ -48,6 +62,36 @@ pub fn reset() {
         counter.store(0, Ordering::Relaxed);
     }
     PEAK_BUFFERED.store(BUFFERED.load(Ordering::Relaxed), Ordering::Relaxed);
+    PEAK_PREPARATIONS.store(
+        ACTIVE_PREPARATIONS.load(Ordering::Relaxed),
+        Ordering::Relaxed,
+    );
+    PEAK_RESERVED.store(RESERVED.load(Ordering::Relaxed), Ordering::Relaxed);
+}
+
+pub(crate) struct ActivePreparation;
+
+impl ActivePreparation {
+    pub(crate) fn start() -> Self {
+        let active = ACTIVE_PREPARATIONS.fetch_add(1, Ordering::Relaxed) + 1;
+        PEAK_PREPARATIONS.fetch_max(active, Ordering::Relaxed);
+        Self
+    }
+}
+
+impl Drop for ActivePreparation {
+    fn drop(&mut self) {
+        ACTIVE_PREPARATIONS.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+pub(crate) fn reserve(bytes: usize) {
+    let current = RESERVED.fetch_add(bytes as u64, Ordering::Relaxed) + bytes as u64;
+    PEAK_RESERVED.fetch_max(current, Ordering::Relaxed);
+}
+
+pub(crate) fn release(bytes: usize) {
+    RESERVED.fetch_sub(bytes as u64, Ordering::Relaxed);
 }
 
 #[derive(Default, Debug)]
