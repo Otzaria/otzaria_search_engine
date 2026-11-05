@@ -153,7 +153,8 @@ unicode-normalization-alignments = "0.1.12"
 tantivy-fst = { path = "vendor/tantivy-fst" }
 # TODO: return to crates.io once a tantivy release includes quickwit-oss/tantivy#3059,
 # #3134-#3138 and #3189-#3191. Otzaria/tantivy@otzaria-0.26 is 0.26.2 plus those PRs.
-tantivy = { git = "https://github.com/Otzaria/tantivy", rev = "8b8832069b871e11fe0fd0da1c4c2de8c270596f" }
+# The pinned shutdown fix also drains merges before releasing the writer lock.
+tantivy = { git = "https://github.com/Otzaria/tantivy", rev = "b6dfc7bc93336df1b996a6701b8c86c80206b8d1" }
 
 # Applies to the build hook's `--release` builds as well: it passes no profile overrides.
 [profile.release]

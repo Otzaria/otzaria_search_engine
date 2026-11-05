@@ -112,6 +112,7 @@ Future<void> main() async {
   test('close and dispose allow replacing the index directory', () async {
     final root = await Directory.systemTemp.createTemp('otzaria_close_replace');
     final path = '${root.path}/index';
+    await Directory(path).create();
     final engine = await SearchEngine.newInstance(path: path);
     SearchEngine? replacement;
     try {
@@ -127,6 +128,7 @@ Future<void> main() async {
       engine.dispose();
 
       await Directory(path).rename('${root.path}/retired');
+      await Directory(path).create();
       replacement = await SearchEngine.newInstance(path: path);
       await replacement.addTextBook(
         title: 'replacement',

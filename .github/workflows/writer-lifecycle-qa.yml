@@ -36,12 +36,14 @@ jobs:
           workspaces: rust
           save-if: false
           key: default
-      - name: Verify the pinned writer shutdown behavior
-        shell: bash
-        run: cargo test --manifest-path rust/Cargo.toml --locked --test writer_shutdown_probe -- --nocapture
-      - name: Observe replacement during an accepted merge metadata write
-        shell: bash
-        run: cargo test --manifest-path rust/Cargo.toml --locked --test writer_replacement_probe -- --nocapture
+      - name: Fetch the original dependency pin for the negative control
+        run: git fetch --no-tags --depth=1 origin 13f19d11eb5a4ba4c2e04a5c097e7500b4e6e827
+      - name: Verify lockfile changes are limited to Tantivy sources
+        run: python .qa/verify_lock_scope.py
+      - name: Prove accepted merge regression against the original dependency
+        run: python .qa/prove_merge_regression.py
+      - name: Verify writer shutdown and replacement with the fixed dependency
+        run: cargo test --manifest-path rust/Cargo.toml --locked --test index_writer_shutdown -- --nocapture --test-threads=1
       - name: Writer close correctness
         shell: bash
         run: cargo test --manifest-path rust/Cargo.toml --locked --lib closing_the_writer_ -- --nocapture --test-threads=1
@@ -73,5 +75,7 @@ jobs:
           name: writer-lifecycle-${{ matrix.os }}
           path: |
             close-writer-benchmark.log
+            merge-before.log
+            rust/Cargo.lock
             rust/target/release/${{ matrix.library }}
           if-no-files-found: ignore
