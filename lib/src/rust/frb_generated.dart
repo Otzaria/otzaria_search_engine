@@ -16749,9 +16749,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   Future<void> clear() =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineClear(that: this);
 
-  /// Closes the writer without committing, exactly as dropping the engine does. Dropping
-  /// a writer waits for its indexing threads to drain the queued documents, so the app
-  /// awaits this (never sync) before disposing of the engine. The next write reopens it.
+  /// Permanently closes this engine's writer without committing, before disposal.
+  /// Runs off the UI; queued writes cannot reopen the writer after it closes.
   Future<void> closeIndexWriter() => RustLib.instance.api
       .crateApiSearchEngineSearchEngineCloseIndexWriter(that: this);
 
@@ -17705,8 +17704,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
       .api
       .crateApiSearchEngineSearchEngineLexicalCancellationHandle(that: this);
 
-  /// Opens the index writer if it is closed (it reopens lazily after some maintenance
-  /// calls); [`Self::add_library_books`] does not open it itself.
+  /// Opens the writer on demand, but fails after [`Self::close_index_writer`].
+  /// [`Self::add_library_books`] does not open it itself.
   Future<void> openIndexWriter() => RustLib.instance.api
       .crateApiSearchEngineSearchEngineOpenIndexWriter(that: this);
 
