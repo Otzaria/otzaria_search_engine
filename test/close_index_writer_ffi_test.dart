@@ -31,6 +31,9 @@ Future<void> main() async {
       await expectLater(second.openIndexWriter(), throwsA(anything));
 
       await first.closeIndexWriter();
+      await first.closeIndexWriter();
+      await expectLater(first.openIndexWriter(), throwsA(anything));
+      await expectLater(first.commit(), throwsA(anything));
       await second.openIndexWriter();
       await second.commit();
       expect(

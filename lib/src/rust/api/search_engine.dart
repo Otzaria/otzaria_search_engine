@@ -516,9 +516,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// Delete all documents. Does not commit.
   Future<void> clear();
 
-  /// Closes the writer without committing, exactly as dropping the engine does. Dropping
-  /// a writer waits for its indexing threads to drain the queued documents, so the app
-  /// awaits this (never sync) before disposing of the engine. The next write reopens it.
+  /// Permanently closes this engine's writer without committing, before disposal.
+  /// Runs off the UI; queued writes cannot reopen the writer after it closes.
   Future<void> closeIndexWriter();
 
   /// Flush pending writes to disk and refresh the reader.
@@ -1123,8 +1122,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
   static Future<SearchEngine> newInstance({required String path}) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineNew(path: path);
 
-  /// Opens the index writer if it is closed (it reopens lazily after some maintenance
-  /// calls); [`Self::add_library_books`] does not open it itself.
+  /// Opens the writer on demand, but fails after [`Self::close_index_writer`].
+  /// [`Self::add_library_books`] does not open it itself.
   Future<void> openIndexWriter();
 
   /// Open the vector set installed on this device and serve semantic and hybrid
