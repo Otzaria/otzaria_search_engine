@@ -39,6 +39,9 @@ jobs:
       - name: Verify the pinned writer shutdown behavior
         shell: bash
         run: cargo test --manifest-path rust/Cargo.toml --locked --test writer_shutdown_probe -- --nocapture
+      - name: Observe replacement during an accepted merge metadata write
+        shell: bash
+        run: cargo test --manifest-path rust/Cargo.toml --locked --test writer_replacement_probe -- --nocapture
       - name: Writer close correctness
         shell: bash
         run: cargo test --manifest-path rust/Cargo.toml --locked --lib closing_the_writer_ -- --nocapture --test-threads=1
@@ -49,7 +52,7 @@ jobs:
       - name: Resolve Dart dependencies
         run: flutter pub get
       - name: Analyze benchmark
-        run: flutter analyze --no-pub tool/close_writer_benchmark_test.dart
+        run: flutter analyze --no-pub tool/close_writer_benchmark_test.dart test/close_index_writer_ffi_test.dart
       - name: Build the measured native library in release mode
         run: cargo build --manifest-path rust/Cargo.toml --locked --release --lib
       - name: Measure Dart isolate timer gaps
