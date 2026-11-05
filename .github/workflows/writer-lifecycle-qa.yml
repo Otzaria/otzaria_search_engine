@@ -1,0 +1,74 @@
+name: Index writer lifecycle QA
+
+on:
+  push:
+    branches: [qa/index-writer-lifecycle-3964-20261105]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: index-writer-lifecycle-qa-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+
+jobs:
+  lifecycle:
+    name: Writer lifecycle (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            library: libsearch_engine.so
+          - os: windows-2022
+            library: search_engine.dll
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          save-if: false
+          key: default
+      - name: Verify the pinned writer shutdown behavior
+        shell: bash
+        run: cargo test --manifest-path rust/Cargo.toml --locked --test writer_shutdown_probe -- --nocapture
+      - name: Writer close correctness
+        shell: bash
+        run: cargo test --manifest-path rust/Cargo.toml --locked --lib closing_the_writer_ -- --nocapture --test-threads=1
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Resolve Dart dependencies
+        run: flutter pub get
+      - name: Analyze benchmark
+        run: flutter analyze --no-pub tool/close_writer_benchmark_test.dart
+      - name: Build the measured native library in release mode
+        run: cargo build --manifest-path rust/Cargo.toml --locked --release --lib
+      - name: Measure Dart isolate timer gaps
+        shell: bash
+        env:
+          OTZARIA_CLOSE_BENCHMARK_LIBRARY: ${{ github.workspace }}/rust/target/release/${{ matrix.library }}
+          OTZARIA_CLOSE_BENCHMARK_LINES: "20000"
+          OTZARIA_CLOSE_BENCHMARK_PAIRS: "3"
+        run: flutter test tool/close_writer_benchmark_test.dart --reporter expanded 2>&1 | tee close-writer-benchmark.log
+      - name: Test the actual FFI lifecycle
+        env:
+          OTZARIA_REQUIRE_NATIVE: "1"
+        run: flutter test test/close_index_writer_ffi_test.dart --reporter expanded
+      - name: Preserve measured output and exact native library
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: writer-lifecycle-${{ matrix.os }}
+          path: |
+            close-writer-benchmark.log
+            rust/target/release/${{ matrix.library }}
+          if-no-files-found: ignore
