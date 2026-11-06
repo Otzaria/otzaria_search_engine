@@ -2,6 +2,9 @@
 //! reproduce an unavailable corpus release; both HTML and line_note fixtures are here.
 
 use super::*;
+use crate::api::library_indexing::{
+    IndexingCancellationToken, LibraryBookInput, LibraryBookSource, LibraryBookStatus,
+};
 use tempfile::TempDir;
 
 const BOOK: &str = "/notes-fixture.txt";
@@ -562,10 +565,70 @@ fn line_note_fixture(dir: &TempDir) -> (rusqlite::Connection, String) {
 }
 
 #[test]
-fn note_provenance_library_line_note_matches_stored_html_after_validation() {
+fn note_provenance_library_line_note_native_path_matches_stored_html() {
     let _guard = crate::external_text_tests::guard();
     let db_dir = TempDir::new().unwrap();
     let (_db, raw) = line_note_fixture(&db_dir);
+    let (mut engine, _dir) = engine();
+    engine.open_index_writer().unwrap();
+    let indexed = engine
+        .add_library_books(
+            vec![LibraryBookInput {
+                source: LibraryBookSource::Library,
+                attached_slug: None,
+                book_id: 1,
+                db_title: Some("בדיקה".into()),
+                title: "ספר בדיקה".into(),
+                topics: "/notes".into(),
+                file_path: "id:1".into(),
+                extra_facets: None,
+                source_hash: None,
+                text_storage: TextStorage::LibraryDb,
+            }],
+            &IndexingCancellationToken::new(),
+        )
+        .unwrap();
+    engine.commit().unwrap();
+    assert_eq!(indexed.len(), 1);
+    assert_eq!(indexed[0].book_id, 1);
+    assert_eq!(indexed[0].status, LibraryBookStatus::Indexed);
+    assert_eq!(indexed[0].docs, 1);
+    assert_eq!(indexed[0].text_storage, TextStorage::InIndex);
+    // The native library path restores line_note bodies before indexing and stores
+    // the restored text. Search-time LibraryDb reads do not restore those bodies.
+    let searcher = engine.index_reader.searcher();
+    for (_, address) in searcher
+        .search(&AllQuery, &TopDocs::with_limit(10).order_by_score())
+        .unwrap()
+    {
+        let doc = load_document(&searcher, address).unwrap();
+        assert!(
+            doc.get_first(engine.schema.get_field(TEXT_STORED_FIELD).unwrap())
+                .is_some(),
+            "rehydrated line_note text must actually be stored"
+        );
+    }
+    let hits = exact(&engine, "מפורשת");
+    assert_eq!(hits.len(), 1);
+    assert_note(&hits[0], "מפורשת");
+    assert!(hits[0]
+        .text
+        .contains("<otzaria-note-marker>12</otzaria-note-marker>"));
+    let (mut stored, _stored_dir) = self::engine();
+    add_book(&mut stored, "id:1", &raw, TextStorage::InIndex);
+    assert_eq!(hits[0].text, exact(&stored, "מפורשת")[0].text);
+}
+
+#[test]
+fn note_provenance_stale_library_html_is_not_annotated_as_the_old_layout() {
+    let _guard = crate::external_text_tests::guard();
+    let db_dir = TempDir::new().unwrap();
+    let (db, raw) = line_note_fixture(&db_dir);
+    // LibraryDb reads the row as stored. Inline HTML is a valid source for this
+    // path; the split line_note representation uses InIndex, as tested above.
+    db.execute("DELETE FROM line_note", []).unwrap();
+    db.execute("UPDATE line SET content=?1 WHERE id=1", [&raw])
+        .unwrap();
     let (mut engine, _dir) = engine();
     add_book(&mut engine, "id:1", &raw, TextStorage::LibraryDb);
     let searcher = engine.index_reader.searcher();
@@ -580,30 +643,25 @@ fn note_provenance_library_line_note_matches_stored_html_after_validation() {
             "fixture must actually read LibraryDb"
         );
     }
-    let hits = exact(&engine, "מפורשת");
-    assert_eq!(hits.len(), 1);
-    assert_note(&hits[0], "מפורשת");
-    assert!(hits[0]
+    let fresh = exact(&engine, "מפורשת");
+    assert_eq!(fresh.len(), 1);
+    assert_note(&fresh[0], "מפורשת");
+    assert!(fresh[0]
         .text
         .contains("<otzaria-note-marker>12</otzaria-note-marker>"));
-}
-
-#[test]
-fn note_provenance_stale_library_html_is_not_annotated_as_the_old_layout() {
-    let _guard = crate::external_text_tests::guard();
-    let db_dir = TempDir::new().unwrap();
-    let (db, raw) = line_note_fixture(&db_dir);
-    let (mut engine, _dir) = engine();
-    add_book(&mut engine, "id:1", &raw, TextStorage::LibraryDb);
-    assert_note(&exact(&engine, "מפורשת")[0], "מפורשת");
     // Same searchable words, moved out of their note: lineCheck, not only lineHash,
     // must reject the old provenance before anything gets decorated.
-    db.execute("DELETE FROM line_note", []).unwrap();
-    db.execute(
-        "UPDATE line SET content=?1 WHERE id=1",
-        ["גוף 12 מפורשת ניכרת סוף"],
-    )
-    .unwrap();
+    let changed = "גוף 12 מפורשת ניכרת סוף";
+    assert_eq!(
+        hebrew_query::normalize_text_for_indexing(&raw),
+        hebrew_query::normalize_text_for_indexing(changed)
+    );
+    assert_ne!(
+        crate::line_source::line_check(&raw),
+        crate::line_source::line_check(changed)
+    );
+    db.execute("UPDATE line SET content=?1 WHERE id=1", [changed])
+        .unwrap();
     let hits = exact(&engine, "מפורשת");
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].text_status, TextStatus::Stale);

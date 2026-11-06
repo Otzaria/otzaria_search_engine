@@ -2077,12 +2077,12 @@ fn sup_marker_keeps_neighbouring_words_searchable() {
             .text
     };
     assert!(
-        text("הרי").contains("א <font color=red>הרי</font> זה"),
+        text("הרי").contains("<otzaria-note-marker>א</otzaria-note-marker> <otzaria-note><font color=red>הרי</font> זה</otzaria-note>"),
         "{}",
         text("הרי")
     );
     assert!(
-        text("גוף").contains("<font color=red>גוף</font> א הרי"),
+        text("גוף").contains("<font color=red>גוף</font> <otzaria-note-marker>א</otzaria-note-marker> <otzaria-note>הרי זה</otzaria-note>"),
         "{}",
         text("גוף")
     );

@@ -96,6 +96,10 @@ index built from the original source is needed to restore annotations there.
 For `LibraryDb` text the original row can supply provenance at search time,
 but only after both `lineCheck` and the available `lineHash` validate it.
 A stale or unavailable row is never decorated as the old indexed layout.
+For the split `line_note` representation, the existing native library-indexing
+path restores the note bodies and chooses `InIndex`; search-time `LibraryDb`
+reads do not rehydrate them. Inline note HTML already present in a database row
+is handled by the validated `LibraryDb` path above.
 
 Deploy the compatible engine and app renderer together before distributing a
 schema-11 index. The existing 7.0.1 engine accepts at most schema 10 and reports
