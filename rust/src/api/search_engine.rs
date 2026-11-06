@@ -9194,9 +9194,8 @@ impl SearchEngine {
                 }
             }
             anyhow::ensure!(!stop(), "indexing preparation interrupted");
-            let normalized: Vec<Line> = crate::indexing_buffers::preparation_cpu(
-                self.library_preparation_policy().cpu_threads,
-                || {
+            let normalized: Vec<Line> =
+                crate::indexing_buffers::preparation_cpu(policy.cpu_threads, || {
                     raw_lines
                         .par_iter()
                         .map_init(
@@ -9230,8 +9229,7 @@ impl SearchEngine {
                             },
                         )
                         .collect()
-                },
-            )?;
+                })?;
             drop(raw_lines);
             window.extend(normalized);
             let end = if finished {
@@ -9241,19 +9239,16 @@ impl SearchEngine {
             };
             let keys_started = Instant::now();
             let keys = if self.chunk_key_field.is_some() {
-                crate::indexing_buffers::preparation_cpu(
-                    self.library_preparation_policy().cpu_threads,
-                    || {
-                        let lines: Vec<LineRef<'_>> = window
-                            .iter()
-                            .map(|line| LineRef {
-                                text: &line.plain,
-                                section: u64::from(line.section),
-                            })
-                            .collect();
-                        semantic_keys::column_values(&lines)
-                    },
-                )?
+                crate::indexing_buffers::preparation_cpu(policy.cpu_threads, || {
+                    let lines: Vec<LineRef<'_>> = window
+                        .iter()
+                        .map(|line| LineRef {
+                            text: &line.plain,
+                            section: u64::from(line.section),
+                        })
+                        .collect();
+                    semantic_keys::column_values(&lines)
+                })?
             } else {
                 Vec::new()
             };
