@@ -819,3 +819,90 @@ fn smart_display_uses_the_query_analyzer_for_qere_ketiv_and_long_tokens() {
         }
     }
 }
+
+#[test]
+fn smart_snippets_observe_the_same_raw_alias_gate_as_retrieval_and_display() {
+    // The analyzer normalizes U+FB1D into an ordinary yod, but the raw query
+    // does not request placeholder expansion. Quotes have their own gate even
+    // when a different, genuine placeholder enables expansion outside them.
+    let marks_pattern = regex::Regex::new(r"\p{M}").unwrap();
+    let plain_marked = |snippet: &str| marks_pattern.replace_all(&marked(snippet), "").into_owned();
+    for (query, matching, rejected) in [
+        ("\u{fb1d}קוק", "יִקוק יִהוה", "יִהוה"),
+        (
+            "\"\u{fb1d}קוק טוב\" סוף",
+            "יִקוק טוב יִהוה טוב סוף",
+            "יִהוה טוב סוף",
+        ),
+        (
+            "\"\u{fb1d}קוק טוב\" לידוד",
+            "יִקוק טוב יִהוה טוב לידוד ליהוה",
+            "יִהוה טוב לידוד",
+        ),
+    ] {
+        let (engine, _dir) = index(&[matching.to_string(), rejected.to_string()]);
+        for marks in [(false, false), (true, false), (false, true), (true, true)] {
+            let hits = catalogue(&engine, query, SemanticLexicalMode::Fuzzy, marks, 10, 0);
+            assert_eq!(
+                hits.iter().map(|hit| hit.segment).collect::<Vec<_>>(),
+                [0],
+                "{query} {marks:?}"
+            );
+            let painted = plain_marked(&hits[0].text);
+            assert!(
+                painted.contains("יקוק"),
+                "{query} {marks:?}: {}",
+                hits[0].text
+            );
+            if query.ends_with("לידוד") {
+                // The genuine outside placeholder is still expanded normally.
+                assert!(
+                    painted.contains("לידוד") && painted.contains("ליהוה"),
+                    "{query} {marks:?}: {}",
+                    hits[0].text
+                );
+            }
+            assert!(
+                !painted.split_whitespace().any(|word| word == NAME),
+                "{query} {marks:?}: {}",
+                hits[0].text
+            );
+        }
+        for pattern in [
+            engine
+                .generate_index_smart_highlight_pattern(
+                    query.to_string(),
+                    SemanticLexicalMode::Fuzzy,
+                    0,
+                    None,
+                )
+                .unwrap(),
+            generate_smart_highlight_pattern(query.to_string(), SemanticLexicalMode::Fuzzy),
+        ] {
+            let matcher = pattern.unwrap().matcher.unwrap();
+            assert!(matcher
+                .find_matches(rejected.to_string(), vec![])
+                .is_empty());
+            assert!(!matcher
+                .find_matches(matching.to_string(), vec![])
+                .is_empty());
+        }
+        let response = search(
+            &engine,
+            query,
+            SemanticLexicalMode::Fuzzy,
+            SemanticRetrievalMode::LexicalOnly,
+            (false, false),
+            10,
+            0,
+        );
+        assert_eq!(segments(&response), BTreeSet::from([0]));
+        assert!(
+            !plain_marked(&response.results[0].snippet_html)
+                .split_whitespace()
+                .any(|word| word == NAME),
+            "{query}: {}",
+            response.results[0].snippet_html
+        );
+    }
+}

@@ -15732,6 +15732,14 @@ impl SearchEngine {
         max_distance: u8,
         voc: &VocalizedFlags,
     ) -> Result<HighlightPlan> {
+        let expand_aliases = smart_query::has_alternatives(query);
+        let alternatives = |token: &str, expand: bool| {
+            if expand {
+                smart_query::alternatives(token)
+            } else {
+                vec![token.to_string()]
+            }
+        };
         let phrases = quoted_phrases(query);
         if phrases.is_empty() {
             return if voc.any() {
@@ -15742,7 +15750,7 @@ impl SearchEngine {
                     &self
                         .index_token_texts(query)?
                         .iter()
-                        .flat_map(|token| smart_query::alternatives(token))
+                        .flat_map(|token| alternatives(token, expand_aliases))
                         .collect::<Vec<_>>(),
                     &[],
                     max_distance,
@@ -15759,6 +15767,7 @@ impl SearchEngine {
         let mut variants = Vec::new();
         let mut all_word_sets = Vec::new();
         for phrase in phrases {
+            let expand_phrase_aliases = smart_query::has_alternatives(&phrase);
             let tokens = self.index_token_texts_with(query_analyzer, &phrase)?;
             // Remove occurrences, not distinct words: the same word may also
             // appear outside a quotation and legitimately allow expansion there.
@@ -15770,13 +15779,23 @@ impl SearchEngine {
             let per_word_terms = if voc.any() {
                 let patterns = tokens
                     .iter()
-                    .map(|token| smart_query::vocalized_pattern(token, voc))
+                    .map(|token| {
+                        if expand_phrase_aliases {
+                            smart_query::vocalized_pattern(token, voc)
+                        } else {
+                            hebrew_query::vocalized_token_pattern(token, voc)
+                        }
+                    })
                     .collect::<Vec<_>>();
                 self.phrase_per_word_terms(searcher, &patterns, field)?
             } else {
                 tokens
                     .into_iter()
-                    .map(|token| smart_query::alternatives(&token).into_iter().collect())
+                    .map(|token| {
+                        alternatives(&token, expand_phrase_aliases)
+                            .into_iter()
+                            .collect()
+                    })
                     .collect()
             };
             if per_word_terms.is_empty() {
@@ -15794,7 +15813,7 @@ impl SearchEngine {
         }
         let outside = outside
             .iter()
-            .flat_map(|token| smart_query::alternatives(token))
+            .flat_map(|token| alternatives(token, expand_aliases))
             .collect::<Vec<_>>();
         let outside_sets = if voc.any() {
             let mut patterns = Vec::new();
