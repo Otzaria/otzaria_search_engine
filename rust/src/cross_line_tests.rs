@@ -427,7 +427,11 @@ fn advanced_word_options_apply_across_the_break() {
 
 #[test]
 fn a_negative_phrase_stays_inside_its_line() {
-    let (e, _dir) = book_engine(&["שלום עליכם מלאכי", "השרת שלום"]);
+    let (mut e, _dir) = engine();
+    e.set_economy_indexing(true).unwrap();
+    add_book(&mut e, 0, "/b/0.txt", &["שלום עליכם מלאכי", "השרת שלום"]);
+    e.commit().unwrap();
+    assert_eq!(e.searcher_for_tests().segment_readers().len(), 1);
     // The negative phrase only crosses the break: it does not exclude line 0.
     let results = advanced_with(&e, "שלום", 0, HashMap::new(), "מלאכי השרת");
     assert_eq!(results.len(), 2);

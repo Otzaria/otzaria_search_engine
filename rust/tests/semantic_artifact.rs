@@ -413,6 +413,131 @@ fn an_installed_vector_set_opens_and_reports_itself() {
     assert_eq!(again.vector_count, EMBEDDED);
 }
 
+#[test]
+fn smart_placeholders_embed_canonically_and_keep_unembedded_personal_matches() {
+    use search_engine::api::search_engine::SemanticHighlightTarget;
+    let clause = "תחילת דוגמה \u{05d9}\u{05d4}\u{05d5}\u{05d4} מילה נוספת וביאור מפורט";
+    let canonical = format!("{clause}. משפט אחר לחלוטין שמתאר תוכן נוסף בסוף הדוגמה");
+    let placeholder = canonical.replace("\u{05d9}\u{05d4}\u{05d5}\u{05d4}", "יקוק");
+    let library = build_library_of(
+        &[("original", "/official", GENESIS, 0, canonical.clone())],
+        false,
+    );
+    let mut engine = library.engine();
+    engine
+        .add_text_book(
+            "personal".to_string(),
+            "/personal".to_string(),
+            "/books/personal.txt".to_string(),
+            placeholder.clone(),
+            None,
+            TextStorage::InIndex,
+            None,
+            None,
+        )
+        .unwrap();
+    engine.commit().unwrap();
+    engine.open_semantic_artifact(library.input()).unwrap();
+
+    let semantic = search(
+        &engine,
+        &placeholder,
+        &[],
+        SemanticRetrievalMode::SemanticOnly,
+    );
+    assert!(semantic.semantic_available);
+    assert!(semantic.fallback_kind.is_none());
+    assert_eq!(semantic.lexical_total_count, 2);
+    let hit = semantic
+        .results
+        .iter()
+        .find(|hit| hit.file_path == GENESIS)
+        .unwrap();
+    let canonical_response = search(
+        &engine,
+        &canonical,
+        &[],
+        SemanticRetrievalMode::SemanticOnly,
+    );
+    assert!(canonical_response.semantic_available);
+    assert!(canonical_response.fallback_kind.is_none());
+    // The raw queries retain distinct lexical/session semantics. The mock hashes
+    // different query and passage role prefixes, so compare the query-side scores
+    // directly instead of assuming an identical passage must have cosine 1.
+    assert_eq!(canonical_response.lexical_total_count, 1);
+    let canonical_hit = canonical_response
+        .results
+        .iter()
+        .find(|hit| hit.file_path == GENESIS)
+        .unwrap();
+    assert_eq!(
+        hit.semantic_score.unwrap(),
+        canonical_hit.semantic_score.unwrap()
+    );
+    for lexical in [SemanticLexicalMode::Exact, SemanticLexicalMode::Fuzzy] {
+        for mode in [
+            SemanticRetrievalMode::Hybrid,
+            SemanticRetrievalMode::LexicalOnly,
+        ] {
+            let response = engine
+                .search_semantic(
+                    placeholder.clone(),
+                    vec![],
+                    10,
+                    0,
+                    lexical,
+                    0,
+                    mode,
+                    None,
+                    false,
+                    false,
+                    None,
+                    &SemanticCancellationToken::new(),
+                )
+                .unwrap();
+            assert_eq!(response.lexical_total_count, 2);
+            let personal = response
+                .results
+                .iter()
+                .find(|hit| hit.file_path == "/books/personal.txt")
+                .unwrap();
+            assert!(personal.source == SemanticResultSource::Lexical);
+            assert!(personal.is_highlighted, "{}", personal.snippet_html);
+            assert!(response
+                .results
+                .iter()
+                .any(|hit| hit.file_path == GENESIS && hit.lexical_score.is_some()));
+        }
+    }
+
+    let target = || {
+        vec![SemanticHighlightTarget {
+            file_path: GENESIS.to_string(),
+            id: hit.id,
+            window: hit.matched_window,
+        }]
+    };
+    let token = SemanticCancellationToken::new();
+    let canonical_mark = engine
+        .semantic_passage_highlights(clause.to_string(), target(), &token)
+        .unwrap();
+    let placeholder_mark = engine
+        .semantic_passage_highlights(
+            clause.replace("\u{05d9}\u{05d4}\u{05d5}\u{05d4}", "יקוק"),
+            target(),
+            &token,
+        )
+        .unwrap();
+    assert!(canonical_mark[0].is_highlighted);
+    assert!(canonical_mark[0].span_score.is_some());
+    assert!(placeholder_mark[0].is_highlighted);
+    assert_eq!(
+        placeholder_mark[0].snippet_html,
+        canonical_mark[0].snippet_html
+    );
+    assert_eq!(placeholder_mark[0].span_score, canonical_mark[0].span_score);
+}
+
 /// A model-identity field, and one edit of it alone.
 type IdentityEdit = (&'static str, fn(&mut ModelIdentity));
 
@@ -2333,6 +2458,79 @@ fn a_release_installs_through_the_api_and_reports_itself() {
             ..library.input()
         })
         .unwrap();
+    assert_eq!(
+        semantic_lines(&engine, PROBE_LINE, &[]).first(),
+        Some(&(GENESIS.to_string(), PROBE_LINE.to_string(), 3))
+    );
+}
+
+/// Replacing the model through the public install API collects the incompatible backup,
+/// while an update of the same model keeps its usable rollback generation.
+#[test]
+fn a_new_model_release_discards_the_old_models_backup() {
+    let mut library = build_library();
+    let engine = library.engine();
+    let token = SemanticCancellationToken::new();
+    let (segment, manifest, digest) = release(&library.package);
+    engine
+        .install_semantic_vectors(
+            library.install_input(&library.vectors, &segment, &manifest, Some(digest)),
+            &token,
+        )
+        .unwrap();
+    assert!(
+        library.vectors.join("PREVIOUS").is_file(),
+        "an update of the same model keeps its usable rollback"
+    );
+    let old = engine
+        .semantic_vectors_info(dir_string(&library.vectors))
+        .unwrap();
+    let old_segments: Vec<_> = old
+        .segments
+        .iter()
+        .map(|segment| {
+            library
+                .vectors
+                .join("segments")
+                .join(format!("{}.oxv", segment.id))
+        })
+        .collect();
+    assert!(old_segments.iter().all(|segment| segment.is_file()));
+
+    library.model.family_id = "test-mock@new-model".to_string();
+    std::fs::write(library.work.join("model.json"), library.model_json()).unwrap();
+    let package = library.package.with_file_name("new-model-package");
+    build_package(
+        &library.index,
+        &library.work,
+        &library.model_file,
+        LIBRARY_VERSION,
+        RELEASE_TAG,
+        &package,
+        None,
+    );
+    let (segment, manifest, digest) = release(&package);
+    let installed = engine
+        .install_semantic_vectors(
+            library.install_input(&library.vectors, &segment, &manifest, Some(digest)),
+            &token,
+        )
+        .unwrap();
+    assert!(installed.generation > old.generation);
+    assert!(
+        !library.vectors.join("PREVIOUS").exists(),
+        "a different model cannot use the previous model's rollback"
+    );
+    assert!(
+        old_segments.iter().all(|segment| !segment.exists()),
+        "the incompatible model's vectors no longer occupy disk space"
+    );
+    let info = engine
+        .semantic_vectors_info(dir_string(&library.vectors))
+        .unwrap();
+    assert_eq!(info.model_family_id, library.model.family_id);
+    assert!(!info.recovered_from_previous);
+    engine.open_semantic_artifact(library.input()).unwrap();
     assert_eq!(
         semantic_lines(&engine, PROBE_LINE, &[]).first(),
         Some(&(GENESIS.to_string(), PROBE_LINE.to_string(), 3))

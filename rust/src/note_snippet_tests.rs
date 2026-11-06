@@ -98,6 +98,55 @@ fn note_provenance_stored_book_keeps_marker_body_and_highlight_distinct() {
         !document.text.contains("otzaria-note"),
         "raw document API stays unannotated"
     );
+    // The smart lexical API was merged while this change was under review.
+    // Its exact and fuzzy renderers must retain the same source boundaries.
+    for (query, mode) in [
+        ("מפורשת", SemanticLexicalMode::Exact),
+        ("מפורשת", SemanticLexicalMode::Fuzzy),
+        ("\"מפורשת ניכרת\"", SemanticLexicalMode::Exact),
+        ("\"מפורשת ניכרת\"", SemanticLexicalMode::Fuzzy),
+    ] {
+        let smart_hits = engine
+            .search_smart_lexical(
+                query.into(),
+                vec![],
+                20,
+                0,
+                mode,
+                0,
+                ResultsOrder::Relevance,
+                false,
+                false,
+                None,
+            )
+            .unwrap();
+        assert_eq!(smart_hits.len(), 1, "smart query: {query}");
+        assert_eq!(smart_hits[0].id, hits[0].id);
+        assert_note(&smart_hits[0], "מפורשת");
+        assert!(smart_hits[0]
+            .text
+            .contains("<otzaria-note-marker>12</otzaria-note-marker>"));
+    }
+    for mode in [SemanticLexicalMode::Exact, SemanticLexicalMode::Fuzzy] {
+        let reversed_phrase = engine
+            .search_smart_lexical(
+                "\"ניכרת מפורשת\"".into(),
+                vec![],
+                20,
+                0,
+                mode,
+                0,
+                ResultsOrder::Relevance,
+                false,
+                false,
+                None,
+            )
+            .unwrap();
+        assert!(
+            reversed_phrase.is_empty(),
+            "a quoted phrase keeps its order"
+        );
+    }
 }
 
 #[test]

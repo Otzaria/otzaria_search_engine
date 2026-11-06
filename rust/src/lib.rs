@@ -25,6 +25,7 @@ mod quote_parity_tests;
 // לגזור לו bindings.
 mod gap_phrase;
 mod hebrew_query;
+mod smart_query;
 // DFAs over the term dictionary, cached process-wide — outside `api` so FRB ignores it.
 mod term_automaton;
 #[cfg(test)]
@@ -43,6 +44,7 @@ mod indexing_parity_tests;
 // Only `SearchEngine::set_magic_dictionary_path`/`has_magic_dictionary` are
 // exposed to Dart; everything here is used purely from Rust.
 mod magic;
+mod negative_query;
 mod page_cache;
 // מילוני ההרחבה של החיפוש המתקדם (תרגום ארמי↔עברי, פענוח ראשי-תיבות) —
 // מחוץ ל-crate::api כדי ש-FRB לא ינסה לגזור להם bindings.
