@@ -327,7 +327,7 @@ pub(crate) const COLLECT_CAP: usize = 50_000;
 
 /// Every term `automata` (then each of `extra`) matches in `segments`,
 /// ranked by branch, then length — the affix letters around the typed root
-/// — then document frequency (descending). Scans run in parallel; at most
+/// — then document frequency (descending). Scans parallelize outside Rayon; at most
 /// `cap` distinct terms are gathered. The usual combined scan is fast; if it
 /// reaches the cap before ranking, retry in branch order so newly added broad
 /// branches cannot evict an earlier exact branch. The flag reports truncation.
@@ -349,27 +349,37 @@ where
     let pairs: Vec<(usize, usize)> = (0..sources)
         .flat_map(|a| (0..segments.len()).map(move |s| (a, s)))
         .collect();
-    let scans: Vec<ScanHits> = pairs
-        .par_iter()
-        .map(|&(source, segment)| {
-            let inverted = &segments[segment];
-            if let Some(part) = automata.parts.get(source) {
-                let single = (part.branch_count() == 1).then_some(part.first_branch);
-                scan(inverted, part.as_ref(), cap, &cancellation, |term| {
-                    single.or_else(|| quote_transparent_branch(part, term))
-                })
-            } else {
-                let branch = branches + (source - automata.parts.len());
-                scan(
-                    inverted,
-                    &extra[source - automata.parts.len()],
-                    cap,
-                    &cancellation,
-                    |_| Some(branch),
-                )
-            }
-        })
-        .collect::<tantivy::Result<_>>()?;
+    let scan_pair = |&(source, segment): &(usize, usize)| {
+        let inverted = &segments[segment];
+        if let Some(part) = automata.parts.get(source) {
+            let single = (part.branch_count() == 1).then_some(part.first_branch);
+            scan(inverted, part.as_ref(), cap, &cancellation, |term| {
+                single.or_else(|| quote_transparent_branch(part, term))
+            })
+        } else {
+            let branch = branches + (source - automata.parts.len());
+            scan(
+                inverted,
+                &extra[source - automata.parts.len()],
+                cap,
+                &cancellation,
+                |_| Some(branch),
+            )
+        }
+    };
+    // A Rayon caller may own a term gate: don't yield it to a competing request.
+    // Outer word tasks can still run in parallel; scans stay on this worker.
+    let scans: Vec<ScanHits> = if rayon::current_thread_index().is_some() {
+        pairs
+            .iter()
+            .map(scan_pair)
+            .collect::<tantivy::Result<_>>()?
+    } else {
+        pairs
+            .par_iter()
+            .map(scan_pair)
+            .collect::<tantivy::Result<_>>()?
+    };
 
     let mut capped = false;
     let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
