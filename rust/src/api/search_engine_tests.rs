@@ -31,6 +31,28 @@ fn another_engine_cannot_clean_spools_before_acquiring_the_writer() {
 }
 
 #[test]
+fn closing_the_writer_discards_uncommitted_writes_and_releases_the_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut first = SearchEngine::new(dir.path().to_str().unwrap());
+    first.open_index_writer().unwrap();
+    for id in 1..=200 {
+        add(&mut first, id, "שלום עולם", "id:1");
+    }
+    first.close_index_writer();
+    assert!(!first.holds_writer_for_tests());
+    first.close_index_writer();
+    assert!(first.open_index_writer().is_err());
+    assert!(first.commit().is_err());
+    assert!(!first.holds_writer_for_tests());
+
+    let mut second = SearchEngine::new(dir.path().to_str().unwrap());
+    second.open_index_writer().unwrap();
+    second.commit().unwrap();
+    assert_eq!(second.searcher_for_tests().num_docs(), 0);
+    drop(first);
+}
+
+#[test]
 fn spooled_text_book_is_enqueued_only_once() {
     let dir = tempfile::tempdir().unwrap();
     let mut engine = SearchEngine::new(dir.path().to_str().unwrap());

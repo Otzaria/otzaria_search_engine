@@ -1393,9 +1393,9 @@ dependencies = [
 
 [[package]]
 name = "ort"
-version = "2.0.0-rc.13"
+version = "2.0.0-rc.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4336a1e2b38848325241c72889086886004e589b7c74f335e60a8e8db5138a0b"
+checksum = "37c87aa7a90b7ff3e0fe36cccd475df8d67f15f07f4d6c370c4b38464232813c"
 dependencies = [
  "libloading",
  "ndarray",
@@ -1406,9 +1406,9 @@ dependencies = [
 
 [[package]]
 name = "ort-sys"
-version = "2.0.0-rc.13"
+version = "2.0.0-rc.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf211e3776eea6aec988552fa118dd746d70e1b1e5e244058d1c98015f3e5872"
+checksum = "8d22b0417f1838db5a3ac0b3f98dfe39f6fb73624aa0a27c6bbb5040b9c7db2b"
 
 [[package]]
 name = "oslog"
@@ -1424,7 +1424,7 @@ dependencies = [
 [[package]]
 name = "otzaria-semantic-search"
 version = "0.1.0"
-source = "git+https://github.com/Otzaria/otzaria-semantic-search?rev=6b006b0fe1440f8204385fbb42ee0d831bc8cfff#6b006b0fe1440f8204385fbb42ee0d831bc8cfff"
+source = "git+https://github.com/Otzaria/otzaria-semantic-search?rev=a79901ff1a34bc9d57b994b905de7ec9ad69bb7a#a79901ff1a34bc9d57b994b905de7ec9ad69bb7a"
 dependencies = [
  "crc32fast",
  "libloading",
@@ -1441,7 +1441,7 @@ dependencies = [
 [[package]]
 name = "ownedbytes"
 version = "0.9.0"
-source = "git+https://github.com/Otzaria/tantivy?rev=8b8832069b871e11fe0fd0da1c4c2de8c270596f#8b8832069b871e11fe0fd0da1c4c2de8c270596f"
+source = "git+https://github.com/Otzaria/tantivy?rev=b6dfc7bc93336df1b996a6701b8c86c80206b8d1#b6dfc7bc93336df1b996a6701b8c86c80206b8d1"
 dependencies = [
  "stable_deref_trait",
 ]
@@ -1880,7 +1880,7 @@ dependencies = [
 [[package]]
 name = "tantivy"
 version = "0.26.2"
-source = "git+https://github.com/Otzaria/tantivy?rev=8b8832069b871e11fe0fd0da1c4c2de8c270596f#8b8832069b871e11fe0fd0da1c4c2de8c270596f"
+source = "git+https://github.com/Otzaria/tantivy?rev=b6dfc7bc93336df1b996a6701b8c86c80206b8d1#b6dfc7bc93336df1b996a6701b8c86c80206b8d1"
 dependencies = [
  "aho-corasick",
  "arc-swap",
@@ -1932,7 +1932,7 @@ dependencies = [
 [[package]]
 name = "tantivy-bitpacker"
 version = "0.10.0"
-source = "git+https://github.com/Otzaria/tantivy?rev=8b8832069b871e11fe0fd0da1c4c2de8c270596f#8b8832069b871e11fe0fd0da1c4c2de8c270596f"
+source = "git+https://github.com/Otzaria/tantivy?rev=b6dfc7bc93336df1b996a6701b8c86c80206b8d1#b6dfc7bc93336df1b996a6701b8c86c80206b8d1"
 dependencies = [
  "bitpacking",
 ]
@@ -1940,7 +1940,7 @@ dependencies = [
 [[package]]
 name = "tantivy-columnar"
 version = "0.7.0"
-source = "git+https://github.com/Otzaria/tantivy?rev=8b8832069b871e11fe0fd0da1c4c2de8c270596f#8b8832069b871e11fe0fd0da1c4c2de8c270596f"
+source = "git+https://github.com/Otzaria/tantivy?rev=b6dfc7bc93336df1b996a6701b8c86c80206b8d1#b6dfc7bc93336df1b996a6701b8c86c80206b8d1"
 dependencies = [
  "downcast-rs",
  "fastdivide",
@@ -1955,7 +1955,7 @@ dependencies = [
 [[package]]
 name = "tantivy-common"
 version = "0.11.0"
-source = "git+https://github.com/Otzaria/tantivy?rev=8b8832069b871e11fe0fd0da1c4c2de8c270596f#8b8832069b871e11fe0fd0da1c4c2de8c270596f"
+source = "git+https://github.com/Otzaria/tantivy?rev=b6dfc7bc93336df1b996a6701b8c86c80206b8d1#b6dfc7bc93336df1b996a6701b8c86c80206b8d1"
 dependencies = [
  "async-trait",
  "byteorder",
@@ -1976,7 +1976,7 @@ dependencies = [
 [[package]]
 name = "tantivy-query-grammar"
 version = "0.26.0"
-source = "git+https://github.com/Otzaria/tantivy?rev=8b8832069b871e11fe0fd0da1c4c2de8c270596f#8b8832069b871e11fe0fd0da1c4c2de8c270596f"
+source = "git+https://github.com/Otzaria/tantivy?rev=b6dfc7bc93336df1b996a6701b8c86c80206b8d1#b6dfc7bc93336df1b996a6701b8c86c80206b8d1"
 dependencies = [
  "fnv",
  "nom",
@@ -1988,7 +1988,7 @@ dependencies = [
 [[package]]
 name = "tantivy-sstable"
 version = "0.7.0"
-source = "git+https://github.com/Otzaria/tantivy?rev=8b8832069b871e11fe0fd0da1c4c2de8c270596f#8b8832069b871e11fe0fd0da1c4c2de8c270596f"
+source = "git+https://github.com/Otzaria/tantivy?rev=b6dfc7bc93336df1b996a6701b8c86c80206b8d1#b6dfc7bc93336df1b996a6701b8c86c80206b8d1"
 dependencies = [
  "futures-util",
  "itertools",
@@ -2001,7 +2001,7 @@ dependencies = [
 [[package]]
 name = "tantivy-stacker"
 version = "0.7.0"
-source = "git+https://github.com/Otzaria/tantivy?rev=8b8832069b871e11fe0fd0da1c4c2de8c270596f#8b8832069b871e11fe0fd0da1c4c2de8c270596f"
+source = "git+https://github.com/Otzaria/tantivy?rev=b6dfc7bc93336df1b996a6701b8c86c80206b8d1#b6dfc7bc93336df1b996a6701b8c86c80206b8d1"
 dependencies = [
  "murmurhash32",
  "tantivy-common",
@@ -2010,7 +2010,7 @@ dependencies = [
 [[package]]
 name = "tantivy-tokenizer-api"
 version = "0.7.0"
-source = "git+https://github.com/Otzaria/tantivy?rev=8b8832069b871e11fe0fd0da1c4c2de8c270596f#8b8832069b871e11fe0fd0da1c4c2de8c270596f"
+source = "git+https://github.com/Otzaria/tantivy?rev=b6dfc7bc93336df1b996a6701b8c86c80206b8d1#b6dfc7bc93336df1b996a6701b8c86c80206b8d1"
 dependencies = [
  "serde",
 ]
