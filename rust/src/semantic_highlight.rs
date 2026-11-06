@@ -227,7 +227,18 @@ pub(crate) fn nearest(query: &[f32], vectors: &[Vec<f32>]) -> Option<(usize, f32
 
 /// `text` cut to `budget` bytes around `span` on word boundaries, HTML-escaped, with the span
 /// wrapped in `<mark>` and `…` where the text was cut; `None` if the span alone exceeds it.
+#[cfg(test)]
 pub(crate) fn marked_snippet(text: &str, span: Range<usize>, budget: usize) -> Option<String> {
+    marked_snippet_at(text, span, budget)
+        .map(|(window, html)| with_ellipsis(html, window.start > 0, window.end < text.len()))
+}
+
+/// Only the source window, without synthetic ellipses, and its exact byte range.
+pub(crate) fn marked_snippet_at(
+    text: &str,
+    span: Range<usize>,
+    budget: usize,
+) -> Option<(Range<usize>, String)> {
     let (window, ranges) = crate::api::search_engine::crop_around_first_occurrence(
         text,
         &[(span.start, span.end)],
@@ -237,18 +248,22 @@ pub(crate) fn marked_snippet(text: &str, span: Range<usize>, budget: usize) -> O
     let &(start, end) = ranges.first()?;
     let offset = window.as_ptr() as usize - text.as_ptr() as usize;
     let mut html = String::with_capacity(window.len() + 32);
-    if offset > 0 {
-        html.push('…');
-    }
     html.push_str(&htmlescape::encode_minimal(&window[..start]));
     html.push_str("<mark>");
     html.push_str(&htmlescape::encode_minimal(&window[start..end]));
     html.push_str("</mark>");
     html.push_str(&htmlescape::encode_minimal(&window[end..]));
-    if offset + window.len() < text.len() {
+    Some((offset..offset + window.len(), html))
+}
+
+pub(crate) fn with_ellipsis(mut html: String, leading: bool, trailing: bool) -> String {
+    if leading {
+        html.insert(0, '…');
+    }
+    if trailing {
         html.push('…');
     }
-    Some(html)
+    html
 }
 
 /// What a highlight is computed from: the query as normalized for embedding, the line and its
@@ -260,6 +275,8 @@ pub(crate) struct HighlightKey {
     pub(crate) file_path: String,
     pub(crate) id: u64,
     pub(crate) text_crc: u32,
+    /// The same words can be reclassified as a note without changing text_crc.
+    pub(crate) note_hash: u64,
 }
 
 /// A computed highlight; an empty snippet is a line with nothing to mark.
@@ -507,10 +524,20 @@ mod tests {
             file_path: "/b".into(),
             id: 1,
             text_crc: 7,
+            note_hash: 0,
         };
         assert_eq!(cache.get(&key), None);
         cache.put(key.clone(), Highlight::none());
         assert_eq!(cache.get(&key), Some(Highlight::none()));
+        let other_layout = HighlightKey {
+            note_hash: 1,
+            ..key.clone()
+        };
+        assert_eq!(
+            cache.get(&other_layout),
+            None,
+            "identical words with different note provenance must repaint"
+        );
         let other = HighlightKey { text_crc: 8, ..key };
         assert_eq!(cache.get(&other), None);
     }

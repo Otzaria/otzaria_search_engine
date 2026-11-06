@@ -64,6 +64,66 @@ full-phrase ECMAScript regexes with multiple word gaps can otherwise freeze the
 rendering isolate on a short near miss. Every native generator supplies a
 matcher; the nullable field only preserves manually constructed Dart fixtures.
 
+## Footnotes in result snippets
+
+Snippet HTML preserves explicit footnote bodies and their markers separately:
+
+```html
+גוף <otzaria-note-marker>12</otzaria-note-marker>
+<otzaria-note>הערה <font color=red>מפורשת</font></otzaria-note> סוף
+```
+
+The source must explicitly mark a body with the `footnote` class or a `sup`
+marker with `footnote-marker`. Ordinary italics and superscripts keep their
+existing rendering. Search highlights stay inside the note wrapper, including
+`<mark>` highlights from semantic passage selection. A cropped note gets a
+complete opening and closing wrapper; a synthetic ellipsis stays outside it.
+Complete note/marker tags may span source lines. Their ranges are clipped to
+each existing indexed line without changing line IDs or search text. The
+economy path spools offsets and carries them across preparation windows;
+an unclosed note is left unannotated. Strict quotation fallbacks also wrap
+the cropped source before adding an ellipsis.
+The app needs a snippet renderer that recognizes these two custom elements.
+Older, unannotated snippets remain valid input for that renderer.
+
+The wrappers are display metadata. They do not enter the normalized search
+text, tokens, positions, scores, line hashes, fingerprints, semantic embedding
+input, or chunk keys. `getDocumentById` still returns its normalized plain text.
+Offsets are mapped from the original HTML, so identical words in the main text
+and a note cannot cause the main text to be reclassified. Invalid or mismatched
+annotation metadata falls back to the existing unannotated snippet.
+
+New indexes use schema **11**, which appends the optional, stored-only
+`noteSpans` field. This engine also opens and writes schema **10** with its exact
+existing schema and metadata; opening it does not upgrade, delete, or rebuild
+it. Stored schema-10 text has already lost its HTML provenance: a new schema-11
+index built from the original source is needed to restore annotations there.
+For `LibraryDb` text the original row can supply provenance at search time,
+but only after both `lineCheck` and the available `lineHash` validate it.
+A stale or unavailable row is never decorated as the old indexed layout.
+For the split `line_note` representation, the existing native library-indexing
+path restores the note bodies and chooses `InIndex`; search-time `LibraryDb`
+reads do not rehydrate them. Inline note HTML already present in a database row
+is handled by the validated `LibraryDb` path above.
+
+Deploy the compatible engine and app renderer together before distributing a
+schema-11 index. The existing 7.0.1 engine accepts at most schema 10 and reports
+`engine_too_old` for schema 11. Rolling back the engine therefore also requires
+an existing schema-10 index or rebuilding one with the old engine. This change
+does not perform that migration or publish a package release automatically.
+
+The committed regressions use explicit synthetic HTML and SQLite `line_note`
+fixtures. They cover stored and database text, both indexing preparation paths,
+plain/vocalized/cropped/cross-line snippets, and semantic results and passage
+highlights; they are not a claimed reproduction of a particular corpus release.
+
+For an opt-in performance comparison with four notes and markers on each
+ordinary stored line, set `OTZARIA_BENCH_NOTES=1` when running the ignored
+`measure_search_during_indexing` test in `rust/tests/indexing_throughput.rs`
+in release mode. Without the variable it retains the plain `LibraryDb`
+workload. Compare identical fixtures and build profiles across revisions;
+these synthetic warm-cache measurements are not full-library or UI timings.
+
 ## Semantic search integration
 
 The native library can optionally link

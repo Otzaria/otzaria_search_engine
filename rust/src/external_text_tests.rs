@@ -2351,7 +2351,7 @@ fn the_v5_to_v9_schemas_are_refused() {
         std::fs::write(
             &meta,
             raw.replace(
-                "\"schema_version\": 10",
+                "\"schema_version\": 11",
                 &format!("\"schema_version\": {old}"),
             ),
         )
@@ -2359,7 +2359,7 @@ fn the_v5_to_v9_schemas_are_refused() {
         let compat = check_index_compatibility(dir.path().to_string_lossy().into_owned());
         assert!(!compat.compatible, "{old}");
         assert_eq!(compat.status, "rebuild_required", "{old}");
-        assert_eq!(compat.required_schema_version, 10);
+        assert_eq!(compat.required_schema_version, 11);
     }
 }
 

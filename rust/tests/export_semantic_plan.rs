@@ -99,7 +99,7 @@ fn library(dir: &Path, without_column: bool) -> PathBuf {
             index.join("otzaria_index_meta.json"),
             serde_json::json!({
                 "format": "otzaria-search-index",
-                "schema_version": 10,
+                "schema_version": 11,
                 "engine_version": "0.9.0",
                 "tantivy_version": "0.26.2",
                 "created_at_unix_seconds": 0

@@ -121,12 +121,19 @@ fn split_tags<'a>(html: &'a str, prefix: &str, postfix: &str) -> Option<Vec<Piec
     let mut pieces = Vec::new();
     let mut rest = html;
     while !rest.is_empty() {
-        let (at, len) = [prefix, postfix]
-            .into_iter()
-            .filter(|tag| !tag.is_empty())
-            .filter_map(|tag| rest.find(tag).map(|at| (at, tag.len())))
-            .min()
-            .unwrap_or((rest.len(), 0));
+        let (at, len) = [
+            prefix,
+            postfix,
+            crate::note_spans::NOTE_OPEN,
+            crate::note_spans::NOTE_CLOSE,
+            crate::note_spans::MARKER_OPEN,
+            crate::note_spans::MARKER_CLOSE,
+        ]
+        .into_iter()
+        .filter(|tag| !tag.is_empty())
+        .filter_map(|tag| rest.find(tag).map(|at| (at, tag.len())))
+        .min()
+        .unwrap_or((rest.len(), 0));
         if at > 0 {
             pieces.push(Piece::Text(htmlescape::decode_html(&rest[..at]).ok()?));
         }
@@ -174,6 +181,20 @@ mod tests {
         assert_eq!(
             vocalize_snippet_html(html, "א & ב ג", 0, "אָ & בַּ גִ", PRE, POST).as_deref(),
             Some("אָ &amp; <font color=red>בַּ</font>…")
+        );
+    }
+
+    #[test]
+    fn note_and_marker_tags_survive_vocalization_at_their_original_offsets() {
+        let plain = "גוף 12 ברא סוף";
+        let vocalized = "גוּף 12 בָּרָא סוֹף";
+        let html = "גוף <otzaria-note-marker>12</otzaria-note-marker> <otzaria-note><font color=red>ברא</font></otzaria-note> סוף";
+        assert_eq!(vocalize_snippet_html(html, plain, 0, vocalized, PRE, POST).as_deref(),
+            Some("גוּף <otzaria-note-marker>12</otzaria-note-marker> <otzaria-note><font color=red>בָּרָא</font></otzaria-note> סוֹף"));
+        let cropped = "<otzaria-note><font color=red>ברא</font></otzaria-note>…";
+        assert_eq!(
+            vocalize_snippet_html(cropped, plain, "גוף 12 ".len(), vocalized, PRE, POST).as_deref(),
+            Some("<otzaria-note><font color=red>בָּרָא</font></otzaria-note>…")
         );
     }
 
