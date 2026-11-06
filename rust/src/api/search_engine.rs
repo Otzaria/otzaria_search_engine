@@ -3149,8 +3149,7 @@ fn set_search_executor(index: &mut Index) {
     }
 }
 
-// Economy indexing (see `set_economy_indexing`): the mobile budget — 3
-// threads with small arenas — applied on demand on desktop too.
+// Economy indexing uses one writer thread and the mobile heap budget.
 const ECONOMY_WRITER_HEAP_SIZE: usize = 50_000_000;
 /// Target number of searchable segments after `optimize`. This is deliberately
 /// soft: a tiny new segment must not force a rewrite of an unrelated large one.
@@ -8604,10 +8603,7 @@ impl SearchEngine {
             reference_of_line.push((references.len() - 1) as u32);
         }
 
-        // The expensive pass — normalization is order-independent across
-        // lines, so it fans out over all cores. A line carrying nikud/taamim
-        // also gets its vocalized rendering, for the `textVocalized` field
-        // (the mark check is cheap and almost always short-circuits false).
+        // Normalize on the bounded indexing pool, independently of search workers.
         use rayon::prelude::*;
         type Prepared = (
             String,
@@ -8617,24 +8613,30 @@ impl SearchEngine {
             Option<cross_line::LineEdges>,
         );
         anyhow::ensure!(!stop(), "indexing preparation interrupted");
-        let normalized: Vec<Prepared> = lines
-            .par_iter()
-            .enumerate()
-            .map_init(
-                || edge_analyzer.clone(),
-                |analyzer, (segment, raw_line)| {
-                    let (plain, vocalized) = hebrew_query::normalize_line_for_indexing(raw_line);
-                    let line_hash = line_dedup_hash(&plain);
-                    let line_check =
-                        (!stores_text(segment)).then(|| crate::line_source::line_check(raw_line));
-                    // A heading interrupts the text: no phrase continues into or out of it.
-                    let edges = (!raw_line.starts_with("<h"))
-                        .then(|| cross_line::line_edges(analyzer, &plain))
-                        .flatten();
-                    (plain, vocalized, line_hash, line_check, edges)
-                },
-            )
-            .collect();
+        let normalized: Vec<Prepared> = crate::indexing_buffers::preparation_cpu(
+            self.library_preparation_policy().cpu_threads,
+            || {
+                lines
+                    .par_iter()
+                    .enumerate()
+                    .map_init(
+                        || edge_analyzer.clone(),
+                        |analyzer, (segment, raw_line)| {
+                            let (plain, vocalized) =
+                                hebrew_query::normalize_line_for_indexing(raw_line);
+                            let line_hash = line_dedup_hash(&plain);
+                            let line_check = (!stores_text(segment))
+                                .then(|| crate::line_source::line_check(raw_line));
+                            // A heading interrupts the text: no phrase continues into or out of it.
+                            let edges = (!raw_line.starts_with("<h"))
+                                .then(|| cross_line::line_edges(analyzer, &plain))
+                                .flatten();
+                            (plain, vocalized, line_hash, line_check, edges)
+                        },
+                    )
+                    .collect()
+            },
+        )?;
         let prepare_time = prepare_started.elapsed();
 
         // The key each line's vector is stored under: the production recipe over the text
@@ -8643,20 +8645,23 @@ impl SearchEngine {
         // absent.
         anyhow::ensure!(!stop(), "indexing preparation interrupted");
         let keys_started = Instant::now();
-        let chunk_keys: Vec<u64> = match chunk_key_f {
-            Some(_) => {
-                let lines: Vec<LineRef<'_>> = normalized
-                    .iter()
-                    .zip(&reference_of_line)
-                    .map(|((plain, _, _, _, _), section)| LineRef {
-                        text: plain,
-                        section: u64::from(*section),
-                    })
-                    .collect();
-                semantic_keys::column_values(&lines)
-            }
-            None => Vec::new(),
-        };
+        let chunk_keys: Vec<u64> = crate::indexing_buffers::preparation_cpu(
+            self.library_preparation_policy().cpu_threads,
+            || match chunk_key_f {
+                Some(_) => {
+                    let lines: Vec<LineRef<'_>> = normalized
+                        .iter()
+                        .zip(&reference_of_line)
+                        .map(|((plain, _, _, _, _), section)| LineRef {
+                            text: plain,
+                            section: u64::from(*section),
+                        })
+                        .collect();
+                    semantic_keys::column_values(&lines)
+                }
+                None => Vec::new(),
+            },
+        )?;
         let keys_time = keys_started.elapsed();
         anyhow::ensure!(!stop(), "indexing preparation interrupted");
 
@@ -8865,7 +8870,7 @@ impl SearchEngine {
             }
             anyhow::ensure!(!stop(), "indexing preparation interrupted");
             let normalized: Vec<Line> =
-                crate::indexing_buffers::preparation_cpu(self.economy_indexing, || {
+                crate::indexing_buffers::preparation_cpu(policy.cpu_threads, || {
                     raw_lines
                         .par_iter()
                         .map_init(
@@ -8902,7 +8907,7 @@ impl SearchEngine {
             };
             let keys_started = Instant::now();
             let keys = if self.chunk_key_field.is_some() {
-                crate::indexing_buffers::preparation_cpu(self.economy_indexing, || {
+                crate::indexing_buffers::preparation_cpu(policy.cpu_threads, || {
                     let lines: Vec<LineRef<'_>> = window
                         .iter()
                         .map(|line| LineRef {
@@ -9127,11 +9132,10 @@ impl SearchEngine {
         let stored_fields = self.stored_text_fields()?;
         let edge_fields = cross_line::EdgeFields::from_schema(&self.schema)?;
         let edge_analyzer = self.text_index_analyzer()?;
-        let economy_indexing = self.economy_indexing;
+        let preparation_threads = self.library_preparation_policy().cpu_threads;
         let writer = self.writer_mut()?;
 
-        // Normalization + garbage heuristic are per-line pure functions —
-        // fan the whole book out over all cores, then enqueue sequentially.
+        // Normalize on the bounded indexing pool, then enqueue sequentially.
         use rayon::prelude::*;
         let prepare_started = Instant::now();
         let lines: Vec<(usize, &str)> = pages
@@ -9141,7 +9145,7 @@ impl SearchEngine {
             .collect();
         type Prepared = (usize, String, bool, Option<cross_line::LineEdges>);
         let prepared: Vec<Prepared> =
-            crate::indexing_buffers::preparation_cpu(economy_indexing, || {
+            crate::indexing_buffers::preparation_cpu(preparation_threads, || {
                 lines
                     .par_iter()
                     .map_init(
@@ -9387,14 +9391,12 @@ impl SearchEngine {
         )
     }
 
-    /// Explicit economy mode: one preparation worker and CPU thread, small spilling
-    /// buffers, and a 50MB writer. `false` restores normal preparation and the platform's
-    /// writer budget. A mobile writer's 50MB default does not imply economy mode.
-    /// Normal preparation uses the original parallel whole-book pass for sources up to
-    /// 32 MiB and 65,536 lines; larger books stream. Four normal preparation workers
-    /// reserve at most 384 MiB of source/document buffers together, excluding normalized
-    /// text, SQLite and the writer: this is not a process RSS limit. Bulk merge policy
-    /// is independent. Live writer changes commit pending documents before replacement.
+    /// Economy mode uses one preparation and one writer thread, small spilling buffers
+    /// and a 50MB writer. Normal mode limits CPU concurrency for foreground work and
+    /// adapts preparation workers to available CPUs and platform. At most four workers
+    /// reserve 384 MiB of source/document buffers, excluding normalized text, SQLite
+    /// and the writer; this is not a process RSS limit. Bulk merge policy is independent.
+    /// Live writer changes commit pending documents before replacement.
     pub fn set_economy_indexing(&mut self, enabled: bool) -> Result<()> {
         self.set_economy_indexing_with_reload(enabled, |reader| Ok(reader.reload()?))
     }
@@ -9417,13 +9419,17 @@ impl SearchEngine {
                 }
                 writer.wait_merging_threads()?;
                 let previous = self.writer_heap_size;
+                let previous_economy = self.economy_indexing;
                 self.writer_heap_size = target;
+                self.economy_indexing = enabled;
                 if let Err(error) = self.restore_writer() {
                     self.writer_heap_size = previous;
+                    self.economy_indexing = previous_economy;
                     return Err(error);
                 }
                 if let Err(error) = reload(&self.index_reader) {
                     self.writer_heap_size = previous;
+                    self.economy_indexing = previous_economy;
                     let closing = self
                         .index_writer
                         .take()
@@ -12043,7 +12049,14 @@ impl SearchEngine {
 
     fn open_writer(&self) -> Result<IndexWriter> {
         anyhow::ensure!(!self.writer_closed, "index writer is permanently closed");
-        let writer = self.index.writer(self.writer_heap_size)?;
+        let threads = crate::indexing_buffers::writer_threads(
+            self.economy_indexing,
+            std::thread::available_parallelism().map_or(1, |n| n.get()),
+            cfg!(any(target_os = "android", target_os = "ios")),
+        );
+        let writer = self
+            .index
+            .writer_with_num_threads(threads, self.writer_heap_size)?;
         crate::indexing_buffers::cleanup_abandoned(&self.index_path);
         if self.bulk_indexing {
             writer.set_merge_policy(Box::new(NoMergePolicy));
@@ -12182,7 +12195,10 @@ impl SearchEngine {
         Ok((
             Box::new(BooleanQuery::new(vec![
                 (Occur::Must, positive_query),
-                (Occur::MustNot, negative),
+                (
+                    Occur::MustNot,
+                    Box::new(crate::negative_query::NegativeQuery::new(negative)),
+                ),
             ])),
             positive_truncated || negative_truncated,
         ))

@@ -253,6 +253,7 @@ impl Budget {
             if index == next && in_flight.saturating_add(bytes) <= self.limit {
                 state.0 += bytes;
                 state.1 += 1;
+                crate::indexing_diagnostics::reserve(bytes);
                 self.changed.notify_all();
                 return true;
             }
@@ -267,7 +268,14 @@ impl Budget {
     fn release(&self, bytes: usize) {
         let mut state = self.state.lock().unwrap();
         state.0 -= bytes;
+        crate::indexing_diagnostics::release(bytes);
         self.changed.notify_all();
+    }
+}
+
+impl Drop for Budget {
+    fn drop(&mut self) {
+        crate::indexing_diagnostics::release(self.state.get_mut().unwrap().0);
     }
 }
 
@@ -296,7 +304,7 @@ pub(crate) fn add_library_books(
         limit: reservation * policy.book_workers,
     };
     let mut results: Vec<Option<LibraryBookResult>> = vec![None; books.len()];
-    let (tx, rx) = mpsc::channel::<(usize, Outcome, usize)>();
+    let (tx, rx) = mpsc::sync_channel::<(usize, Outcome, usize)>(policy.book_workers);
     let mut docs_total = 0u64;
     let mut enqueue_time = Duration::ZERO;
 
@@ -309,21 +317,18 @@ pub(crate) fn add_library_books(
                 let Some(book) = books.get(index) else {
                     break;
                 };
-                let admitted = budget.admit(index, reservation, stop);
-                let outcome = if !admitted {
-                    Outcome::Done(result(book, LibraryBookStatus::Cancelled))
-                } else {
-                    // A panic would leave its book unsent and every later one waiting
-                    // in the budget for it: it fails that book instead.
+                if !budget.admit(index, reservation, stop) {
+                    break;
+                }
+                // A panic must still send its outcome so later admitted books can drain.
+                let outcome = {
+                    let _active = crate::indexing_diagnostics::ActivePreparation::start();
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         prepare_checked(engine, book, policy, stop)
                     }))
                     .unwrap_or_else(|_| Outcome::Done(failed(book, "preparing the book panicked")))
                 };
-                if tx
-                    .send((index, outcome, if admitted { reservation } else { 0 }))
-                    .is_err()
-                {
+                if tx.send((index, outcome, reservation)).is_err() {
                     break;
                 }
             });
@@ -380,7 +385,7 @@ pub(crate) fn add_library_books(
             }
             Ok(())
         };
-        for (index, outcome, reservation) in rx.iter() {
+        while let Ok((index, outcome, reservation)) = rx.recv() {
             waiting.insert(index, (outcome, reservation));
             if let Err(error) = enqueue_in_order(
                 &mut waiting,
@@ -391,6 +396,8 @@ pub(crate) fn add_library_books(
             ) {
                 abort.store(true, Ordering::Relaxed);
                 budget.changed.notify_all();
+                // Release bounded senders before the scope joins them.
+                drop(rx);
                 return Err(error);
             }
         }

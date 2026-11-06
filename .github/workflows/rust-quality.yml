@@ -7,6 +7,7 @@ on:
     paths:
       - ".github/workflows/rust-quality.yml"
       - "rust/**"
+      - "tool/measure_indexing_responsiveness.py"
       - "lib/**"
       - "test/**"
       - "flutter_rust_bridge.yaml"
@@ -15,6 +16,7 @@ on:
     paths:
       - ".github/workflows/rust-quality.yml"
       - "rust/**"
+      - "tool/measure_indexing_responsiveness.py"
       - "lib/**"
       - "test/**"
       - "flutter_rust_bridge.yaml"
@@ -106,6 +108,51 @@ jobs:
       - name: Test semantic ONNX integration
         if: matrix.features == 'semantic-onnx'
         run: cargo test --manifest-path rust/Cargo.toml --locked --all-targets --features semantic-onnx
+
+  indexing-responsiveness:
+    name: Indexing/search measurements (no timing gate)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: head
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+      - name: Select indexing-related changes
+        id: changed
+        run: |
+          python3 - <<'PYCODE'
+          import os
+          from pathlib import Path
+          paths = [
+              "rust/src/indexing_buffers.rs", "rust/src/indexing_diagnostics.rs",
+              "rust/src/library_indexing.rs", "rust/src/api/search_engine.rs",
+              "rust/tests/indexing_throughput.rs", "tool/measure_indexing_responsiveness.py",
+          ]
+          changed = any(not Path("base", p).exists() or Path("head", p).read_bytes() != Path("base", p).read_bytes() for p in paths)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"run={str(changed).lower()}\n")
+          PYCODE
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.changed.outputs.run == 'true'
+      - name: Compare identical fixtures with two-core and available-core affinity
+        if: steps.changed.outputs.run == 'true'
+        run: >
+          python3 head/tool/measure_indexing_responsiveness.py
+          --base base --head head --out "${{ runner.temp }}/indexing-measurements"
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.changed.outputs.run == 'true'
+        with:
+          name: indexing-responsiveness
+          path: |
+            ${{ runner.temp }}/indexing-measurements/environment.json
+            ${{ runner.temp }}/indexing-measurements/samples.jsonl
+            ${{ runner.temp }}/indexing-measurements/medians.json
 
   real-backend-build:
     name: Real semantic backend (${{ matrix.os }})

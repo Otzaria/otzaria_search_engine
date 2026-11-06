@@ -32,21 +32,26 @@ final class TargetToolchain {
   /// `MACOSX_DEPLOYMENT_TARGET` / `IPHONEOS_DEPLOYMENT_TARGET`.
   final String? appleVersion;
 
-  factory TargetToolchain.fromCodeConfig(CodeConfig code) =>
-      switch (code.targetOS) {
-        OS.android => TargetToolchain(
-          ndkClangDir: switch (code.cCompiler) {
-            final compiler? => p.dirname(p.fromUri(compiler.compiler)),
-            null => throw StateError('Android builds need the NDK compiler'),
-          },
-          androidApi: code.android.targetNdkApi,
-        ),
-        OS.iOS => TargetToolchain(appleVersion: '${code.iOS.targetVersion}.0'),
-        OS.macOS => TargetToolchain(
-          appleVersion: '${code.macOS.targetVersion}.0',
-        ),
-        _ => const TargetToolchain(),
-      };
+  factory TargetToolchain.fromCodeConfig(
+    CodeConfig code,
+  ) => switch (code.targetOS) {
+    OS.android => TargetToolchain(
+      ndkClangDir: switch (code.cCompiler) {
+        final compiler? => p.dirname(p.fromUri(compiler.compiler)),
+        null => throw StateError('Android builds need the NDK compiler'),
+      },
+      androidApi: code.android.targetNdkApi,
+    ),
+    // code_assets 1.x/2.1 expose only targetVersion; deploymentVersion
+    // was added in 2.2. Keep the legacy getter for those supported versions.
+    // ignore: deprecated_member_use
+    OS.iOS => TargetToolchain(appleVersion: '${code.iOS.targetVersion}.0'),
+    OS.macOS => TargetToolchain(
+      // ignore: deprecated_member_use
+      appleVersion: '${code.macOS.targetVersion}.0',
+    ),
+    _ => const TargetToolchain(),
+  };
 }
 
 /// Environment cargo needs to compile and link for [target].

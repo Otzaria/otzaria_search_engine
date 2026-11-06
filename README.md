@@ -681,3 +681,32 @@ After cloning, run once to enable automatic formatting + LF normalization on eve
 This sets `core.hooksPath` to the repo's `.githooks/` directory. The pre-commit hook
 runs `dart format` / `rustfmt` on staged files and converts CRLF→LF, preventing the
 Windows line-ending issues that break the published pub.dev package on macOS/Linux/Android.
+
+### Indexing resource budgets
+
+Preparation retains Rayon, using lazily shared pools of 1, 2, 4 or 8 threads
+independently of search work. Normal mode uses at most half the available CPUs
+for this pool, 1–4 book-preparation workers, and at most a quarter of the CPUs
+for Tantivy writer threads. These are concurrency caps, not an OS scheduling
+priority or a guarantee that a CPU remains idle. Economy and mobile writer
+pools use one thread. The writer remains lazy and keeps the existing platform
+heap budget (50 MB in economy mode).
+
+A book reserves its source/document capacity before reading. Normal desktop
+reservations range from 96 MiB (one worker) to 384 MiB (four workers); mobile
+normal mode reserves 24 MiB and economy 3 MiB. Buffers still spill to disk,
+results remain in input order, and cancellation does not enqueue an outcome
+for every unstarted book. `indexing_diagnostics::snapshot()` exposes active
+preparations, actual buffered capacity, admission reservations and spilled
+bytes separately. Neither buffers nor reservations are a process RSS limit.
+
+`python3 tool/measure_indexing_responsiveness.py --base <checkout> --head <checkout> --out <empty-output-directory>` runs the same synthetic fixture on two
+revisions, with two-core/full-affinity and economy/normal cases. It builds
+release binaries in separate target directories and alternates their order over
+two repetitions, with 12,000 lines per book. The binary hashes are recorded and
+missing head diagnostics reject a stale-build comparison. The
+JSON artifacts report warm-cache search p95/p99 during indexing, throughput,
+peak RSS and buffer/worker diagnostics; absent baseline diagnostics are null.
+It checks document fingerprints and committed search visibility, without
+performance thresholds. It measures no Flutter frames or slow/network disks.
+The indexing-related PR job in `rust-quality.yml` publishes these artifacts.

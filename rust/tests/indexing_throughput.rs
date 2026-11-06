@@ -96,3 +96,134 @@ fn measure_indexing_throughput() {
         );
     }
 }
+
+fn percentile(samples: &mut [f64], percentile: f64) -> Option<f64> {
+    if samples.is_empty() {
+        return None;
+    }
+    samples.sort_by(f64::total_cmp);
+    Some(samples[((samples.len() - 1) as f64 * percentile).ceil() as usize])
+}
+
+fn process_memory_kib(field: &str) -> Option<u64> {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()?
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix(field)?
+                .split_whitespace()
+                .next()?
+                .parse()
+                .ok()
+        })
+}
+
+#[test]
+#[ignore = "concurrent search/indexing comparison; run alone in release on each revision"]
+fn measure_search_during_indexing() {
+    use search_engine::api::search_engine::ResultsOrder;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    let lines = std::env::var("OTZARIA_BENCH_LINES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(3_000);
+    let economy = std::env::var_os("OTZARIA_BENCH_ECONOMY").is_some();
+    let root = tempfile::tempdir().unwrap();
+    let database = root.path().join("source.db");
+    let mut inputs = fixture(&database, 9, lines);
+    let index = root.path().join("index");
+    std::fs::create_dir(&index).unwrap();
+    configure_line_source(database.to_str().unwrap().into()).unwrap();
+    let mut engine = SearchEngine::new(index.to_str().unwrap());
+    engine.set_economy_indexing(economy).unwrap();
+    engine.set_bulk_indexing(true).unwrap();
+    engine.open_index_writer().unwrap();
+    let seed = inputs.remove(0);
+    engine
+        .add_library_books(vec![seed], &IndexingCancellationToken::new())
+        .unwrap();
+    engine.commit().unwrap();
+    let search = || {
+        engine
+            .search_exact(
+                "טקסט".into(),
+                vec![],
+                10,
+                0,
+                ResultsOrder::Catalogue,
+                false,
+                false,
+                None,
+                None,
+            )
+            .unwrap()
+            .into_iter()
+            .map(|hit| hit.id)
+            .collect::<Vec<_>>()
+    };
+    let expected = search();
+    assert_eq!(expected.len(), 10);
+    let mut idle_samples = Vec::new();
+    for _ in 0..30 {
+        let started = Instant::now();
+        assert_eq!(search(), expected);
+        idle_samples.push(started.elapsed().as_secs_f64() * 1000.0);
+    }
+    search_engine::indexing_diagnostics::reset();
+    let rss_before_kib = process_memory_kib("VmRSS:");
+    let done = AtomicBool::new(false);
+    let mut search_samples = Vec::new();
+    let started = Instant::now();
+    let results = std::thread::scope(|scope| {
+        let worker = scope.spawn(|| {
+            let result = engine.add_library_books(inputs, &IndexingCancellationToken::new());
+            done.store(true, Ordering::Release);
+            result.unwrap()
+        });
+        while !done.load(Ordering::Acquire) {
+            let started = Instant::now();
+            assert_eq!(
+                search(),
+                expected,
+                "committed search snapshot changed during indexing"
+            );
+            search_samples.push(started.elapsed().as_secs_f64() * 1000.0);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        worker.join().unwrap()
+    });
+    let add_ms = started.elapsed().as_secs_f64() * 1000.0;
+    assert!(
+        !search_samples.is_empty(),
+        "no search overlapped the fixture; increase OTZARIA_BENCH_LINES"
+    );
+    assert!(results
+        .iter()
+        .all(|result| result.status == LibraryBookStatus::Indexed));
+    engine.commit().unwrap();
+    let total_ms = started.elapsed().as_secs_f64() * 1000.0;
+    assert_eq!(engine.get_document_count(), (9 * lines) as u64);
+    let metrics = search_engine::indexing_diagnostics::snapshot();
+    let stamps: Vec<_> = results
+        .iter()
+        .map(|r| (r.docs, r.content_hash, r.text_hash, r.metadata_hash))
+        .collect();
+    println!(
+        "OTZARIA_RESPONSIVENESS {}",
+        serde_json::json!({
+            "query_workload": "repeated exact query with warm search caches",
+            "economy": economy, "cpus": std::thread::available_parallelism().map(|n|n.get()).ok(),
+            "indexed_docs":8*lines, "search_samples":search_samples.len(),
+            "search_idle_p95_ms":percentile(&mut idle_samples, 0.95),
+            "search_during_p50_ms":percentile(&mut search_samples, 0.50),
+            "search_during_p95_ms":percentile(&mut search_samples, 0.95),
+            "search_during_p99_ms":percentile(&mut search_samples, 0.99),
+            "add_ms":add_ms, "total_ms":total_ms, "docs_per_sec":(8*lines) as f64 / (total_ms/1000.0),
+            "rss_before_kib":rss_before_kib, "peak_rss_kib":process_memory_kib("VmHWM:"),
+            "peak_buffered_bytes":metrics.peak_buffered_bytes,"spilled_bytes":metrics.spilled_bytes,
+            "diagnostics":format!("{metrics:?}"), "stamps": stamps,
+        })
+    );
+}

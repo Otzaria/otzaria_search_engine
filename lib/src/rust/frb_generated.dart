@@ -18577,14 +18577,12 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         enabled: enabled,
       );
 
-  /// Explicit economy mode: one preparation worker and CPU thread, small spilling
-  /// buffers, and a 50MB writer. `false` restores normal preparation and the platform's
-  /// writer budget. A mobile writer's 50MB default does not imply economy mode.
-  /// Normal preparation uses the original parallel whole-book pass for sources up to
-  /// 32 MiB and 65,536 lines; larger books stream. Four normal preparation workers
-  /// reserve at most 384 MiB of source/document buffers together, excluding normalized
-  /// text, SQLite and the writer: this is not a process RSS limit. Bulk merge policy
-  /// is independent. Live writer changes commit pending documents before replacement.
+  /// Economy mode uses one preparation and one writer thread, small spilling buffers
+  /// and a 50MB writer. Normal mode limits CPU concurrency for foreground work and
+  /// adapts preparation workers to available CPUs and platform. At most four workers
+  /// reserve 384 MiB of source/document buffers, excluding normalized text, SQLite
+  /// and the writer; this is not a process RSS limit. Bulk merge policy is independent.
+  /// Live writer changes commit pending documents before replacement.
   Future<void> setEconomyIndexing({required bool enabled}) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineSetEconomyIndexing(
         that: this,
