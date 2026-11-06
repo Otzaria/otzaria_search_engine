@@ -4787,6 +4787,7 @@ pub struct SearchEngine {
     index_path: PathBuf,
     index: Index,
     index_writer: Option<IndexWriter>,
+    writer_closed: bool,
     writer_heap_size: usize,
     economy_indexing: bool,
     index_reader: IndexReader,
@@ -5008,6 +5009,7 @@ impl SearchEngine {
             index_path: PathBuf::from(path),
             index,
             index_writer,
+            writer_closed: false,
             writer_heap_size: DEFAULT_WRITER_HEAP_SIZE,
             economy_indexing: false,
             index_reader,
@@ -5077,6 +5079,7 @@ impl SearchEngine {
             index_path: path.to_path_buf(),
             index,
             index_writer: None,
+            writer_closed: false,
             writer_heap_size: DEFAULT_WRITER_HEAP_SIZE,
             economy_indexing: false,
             index_reader,
@@ -9024,10 +9027,17 @@ impl SearchEngine {
         crate::library_indexing::add_library_books(self, writer, books, Some(cancel))
     }
 
-    /// Opens the index writer if it is closed (it reopens lazily after some maintenance
-    /// calls); [`Self::add_library_books`] does not open it itself.
+    /// Opens the writer on demand, but fails after [`Self::close_index_writer`].
+    /// [`Self::add_library_books`] does not open it itself.
     pub fn open_index_writer(&mut self) -> Result<()> {
         self.ensure_writer()
+    }
+
+    /// Permanently closes this engine's writer without committing, before disposal.
+    /// Runs off the UI; queued writes cannot reopen the writer after it closes.
+    pub fn close_index_writer(&mut self) {
+        self.writer_closed = true;
+        drop(self.index_writer.take());
     }
 
     /// Indexes a whole PDF book in ONE FFI call. Does not commit.
@@ -12028,6 +12038,7 @@ impl SearchEngine {
     }
 
     fn open_writer(&self) -> Result<IndexWriter> {
+        anyhow::ensure!(!self.writer_closed, "index writer is permanently closed");
         let writer = self.index.writer(self.writer_heap_size)?;
         crate::indexing_buffers::cleanup_abandoned(&self.index_path);
         if self.bulk_indexing {
@@ -18105,6 +18116,28 @@ mod tests {
         drop(first);
         second.open_index_writer().unwrap();
         assert!(!owned.exists());
+    }
+
+    #[test]
+    fn closing_the_writer_discards_uncommitted_writes_and_releases_the_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut first = SearchEngine::new(dir.path().to_str().unwrap());
+        first.open_index_writer().unwrap();
+        for id in 1..=200 {
+            add(&mut first, id, "שלום עולם", "id:1");
+        }
+        first.close_index_writer();
+        assert!(!first.holds_writer_for_tests());
+        first.close_index_writer();
+        assert!(first.open_index_writer().is_err());
+        assert!(first.commit().is_err());
+        assert!(!first.holds_writer_for_tests());
+
+        let mut second = SearchEngine::new(dir.path().to_str().unwrap());
+        second.open_index_writer().unwrap();
+        second.commit().unwrap();
+        assert_eq!(second.searcher_for_tests().num_docs(), 0);
+        drop(first);
     }
 
     #[test]
