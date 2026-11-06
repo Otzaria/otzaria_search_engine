@@ -42,6 +42,7 @@ mod indexing_parity_tests;
 // Only `SearchEngine::set_magic_dictionary_path`/`has_magic_dictionary` are
 // exposed to Dart; everything here is used purely from Rust.
 mod magic;
+mod negative_query;
 mod page_cache;
 // מילוני ההרחבה של החיפוש המתקדם (תרגום ארמי↔עברי, פענוח ראשי-תיבות) —
 // מחוץ ל-crate::api כדי ש-FRB לא ינסה לגזור להם bindings.
