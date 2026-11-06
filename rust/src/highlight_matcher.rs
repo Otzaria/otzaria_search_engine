@@ -19,6 +19,8 @@ pub(crate) struct PreparedHighlightMatcher {
     independent_words: Vec<[Arc<Regex>; 3]>,
     proximity: Proximity,
     boundary_eligible: Vec<bool>,
+    groups: Vec<Self>,
+    cross_line: bool,
 }
 
 /// How an outer word may sit in its token.
@@ -109,10 +111,81 @@ impl PreparedHighlightMatcher {
             independent_words,
             proximity,
             boundary_eligible,
+            groups: Vec::new(),
+            cross_line: true,
         })
     }
 
+    /// Each group remains a complete phrase, even when the caller asks for word matches.
+    pub(crate) fn from_groups(groups: Vec<Self>, cross_line: bool) -> Self {
+        Self {
+            words: Vec::new(),
+            independent_words: Vec::new(),
+            proximity: Proximity::Ordered(Vec::new()),
+            boundary_eligible: groups
+                .iter()
+                .flat_map(|group| group.boundary_eligible.iter().copied())
+                .collect(),
+            groups,
+            cross_line,
+        }
+    }
+
+    pub(crate) fn allows_cross_line(&self) -> bool {
+        self.cross_line
+    }
+
+    fn find_group_matches(
+        &self,
+        data: &str,
+        require_boundaries: &[bool],
+        require_all: bool,
+    ) -> Vec<Match> {
+        let mut offset = 0;
+        let mut matches = Vec::new();
+        for group in &self.groups {
+            let end = offset + group.boundary_eligible.len();
+            let found =
+                group.find_matches(data, require_boundaries.get(offset..end).unwrap_or(&[]));
+            if require_all && found.is_empty() {
+                return Vec::new();
+            }
+            matches.extend(found);
+            offset = end;
+        }
+        matches.sort_unstable_by_key(|matched| (matched.start, matched.end));
+        let mut merged: Vec<Match> = Vec::new();
+        for matched in matches {
+            if let Some(last) = merged.last_mut().filter(|last| matched.start <= last.end) {
+                let shift = matched.start - last.start;
+                last.end = last.end.max(matched.end);
+                last.word_ranges
+                    .extend(matched.word_ranges.into_iter().map(|range| Range {
+                        start: shift + range.start,
+                        end: shift + range.end,
+                    }));
+                last.word_ranges
+                    .sort_unstable_by_key(|range| (range.start, range.end));
+                let mut ranges: Vec<Range> = Vec::new();
+                for range in last.word_ranges.drain(..) {
+                    if let Some(previous) = ranges.last_mut().filter(|old| range.start <= old.end) {
+                        previous.end = previous.end.max(range.end);
+                    } else {
+                        ranges.push(range);
+                    }
+                }
+                last.word_ranges = ranges;
+            } else {
+                merged.push(matched);
+            }
+        }
+        merged
+    }
+
     pub(crate) fn find_matches(&self, data: &str, require_boundaries: &[bool]) -> Vec<Match> {
+        if !self.groups.is_empty() {
+            return self.find_group_matches(data, require_boundaries, true);
+        }
         if self.words.is_empty() || data.is_empty() {
             return Vec::new();
         }
@@ -174,6 +247,9 @@ impl PreparedHighlightMatcher {
     }
 
     pub(crate) fn find_word_matches(&self, data: &str, require_boundaries: &[bool]) -> Vec<Match> {
+        if !self.groups.is_empty() {
+            return self.find_group_matches(data, require_boundaries, false);
+        }
         let text = MappedText::strip_markup(data);
         let mut tokenizer = HebrewTokenizer {
             emit_quote_free: true,

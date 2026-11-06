@@ -257,15 +257,31 @@ pub(crate) fn term_query(
     option: IndexRecordOption,
 ) -> tantivy::Result<Box<dyn Query>> {
     let spellings = spellings(searcher, field, word)?;
-    let mut terms: Vec<Term> = spellings
+    let terms: Vec<Term> = spellings
         .iter()
         .map(|spelling| Term::from_field_text(field, spelling))
         .collect();
-    Ok(if terms.len() == 1 {
+    Ok(term_query_from_spellings(terms, option))
+}
+
+pub(crate) fn alternatives_term_query(
+    searcher: &Searcher,
+    field: Field,
+    words: &[String],
+    option: IndexRecordOption,
+) -> tantivy::Result<Box<dyn Query>> {
+    Ok(term_query_from_spellings(
+        spelling_terms(searcher, field, words)?,
+        option,
+    ))
+}
+
+fn term_query_from_spellings(mut terms: Vec<Term>, option: IndexRecordOption) -> Box<dyn Query> {
+    if terms.len() == 1 {
         Box::new(TermQuery::new(terms.pop().expect("one term"), option))
     } else {
         Box::new(SpellingsTermQuery { terms, option })
-    })
+    }
 }
 
 /// The spellings of one word as the one term schema 5's quote-free twin was: matched by
@@ -493,6 +509,36 @@ pub(crate) fn phrase_query(
         .iter()
         .map(|word| spellings(searcher, field, word))
         .collect::<tantivy::Result<Vec<_>>>()?;
+    phrase_query_from_spellings(field, &spellings, slop, |at| vec![words[at].as_str()])
+}
+
+/// Each position can use any of its words, with the same scoring as quote spellings.
+pub(crate) fn alternatives_phrase_query(
+    searcher: &Searcher,
+    field: Field,
+    words: &[Vec<String>],
+    slop: u32,
+) -> tantivy::Result<Box<dyn Query>> {
+    let spellings = words
+        .iter()
+        .map(|words| {
+            Ok(spelling_terms(searcher, field, words)?
+                .into_iter()
+                .filter_map(|term| term.value().as_str().map(str::to_string))
+                .collect::<Vec<_>>())
+        })
+        .collect::<tantivy::Result<Vec<_>>>()?;
+    phrase_query_from_spellings(field, &spellings, slop, |at| {
+        words[at].iter().map(String::as_str).collect()
+    })
+}
+
+fn phrase_query_from_spellings<'a>(
+    field: Field,
+    spellings: &[Vec<String>],
+    slop: u32,
+    alternatives: impl Fn(usize) -> Vec<&'a str>,
+) -> tantivy::Result<Box<dyn Query>> {
     let combinations = spellings
         .iter()
         .try_fold(1usize, |n, s| n.checked_mul(s.len()))
@@ -520,21 +566,22 @@ pub(crate) fn phrase_query(
                 .map(|pick| (Occur::Should, phrase(pick)))
                 .collect(),
         ));
-        return Ok(SpellingScored::wrap(union, field, &spellings));
+        return Ok(SpellingScored::wrap(union, field, spellings));
     }
-    let automata = words
+    let automata = spellings
         .iter()
         .enumerate()
-        .map(|(offset, word)| {
+        .map(|(offset, _)| {
+            let words = alternatives(offset);
             (
                 offset,
-                word.clone(),
-                Arc::new(QuoteTransparent::new(Literal::new([word.as_str()]))),
+                words.join("|"),
+                Arc::new(QuoteTransparent::new(Literal::new(words))),
             )
         })
         .collect();
     let phrase = Box::new(RegexPhraseQuery::from_automata(field, automata, slop));
-    Ok(SpellingScored::wrap(phrase, field, &spellings))
+    Ok(SpellingScored::wrap(phrase, field, spellings))
 }
 
 /// Scores every spelling of a word as the word itself, as schema 5's quote-free twin

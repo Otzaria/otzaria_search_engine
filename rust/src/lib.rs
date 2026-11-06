@@ -23,6 +23,7 @@ mod quote_parity_tests;
 // לגזור לו bindings.
 mod gap_phrase;
 mod hebrew_query;
+mod smart_query;
 // DFAs over the term dictionary, cached process-wide — outside `api` so FRB ignores it.
 mod term_automaton;
 #[cfg(test)]
