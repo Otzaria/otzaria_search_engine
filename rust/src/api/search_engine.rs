@@ -102,6 +102,10 @@ use otzaria_semantic_search::semantic::types::{
 use otzaria_semantic_search::semantic::versioning::{ModelIdentity, ModelPackage, TextIdentity};
 use std::sync::{PoisonError, RwLock};
 
+#[cfg(test)]
+#[path = "search_concurrency_tests.rs"]
+mod search_concurrency_tests;
+
 // ── Public data types ──────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -12778,6 +12782,8 @@ impl SearchEngine {
         if let Some(entry) = self.term_cache.lock().unwrap().get(&cache_key) {
             return Ok(entry.clone());
         }
+        #[cfg(test)]
+        search_concurrency_tests::after_materialize_gate(&cache_key);
         crate::lexical_cancellation::check_current()?;
         let automata = term_automaton::compile_branches(branches).map_err(|e| {
             // Surface the failure loudly: the historical failure mode here

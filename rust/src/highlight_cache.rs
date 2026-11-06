@@ -3,7 +3,7 @@
 //! book opened from its results for the same display pattern.
 //!
 //! Keyed by the searcher generation, so a commit is never served an older snapshot.
-//! Concurrent requests share one computation per key; unrelated keys remain independent.
+//! Requests outside Rayon share one computation per key; pool workers never wait for it.
 
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -237,7 +237,7 @@ impl<K: Eq + Hash> WorkGate<K> {
         self.0.lock().unwrap().len()
     }
 
-    pub(crate) fn enter(&self, key: K) -> Result<Working> {
+    pub(crate) fn enter(&self, key: K) -> Result<Option<Working>> {
         let work = {
             let mut active = self.0.lock().unwrap();
             active.retain(|_, work| Arc::strong_count(work) > 1);
@@ -246,6 +246,11 @@ impl<K: Eq + Hash> WorkGate<K> {
         let mut busy = work.busy.lock().unwrap();
         while *busy {
             crate::lexical_cancellation::check_current()?;
+            // The owner may be waiting for this worker's ancestor Rayon job.
+            // Compute independently instead of blocking that job's completion.
+            if rayon::current_thread_index().is_some() {
+                return Ok(None);
+            }
             busy = work
                 .changed
                 .wait_timeout(busy, Duration::from_millis(10))
@@ -255,7 +260,7 @@ impl<K: Eq + Hash> WorkGate<K> {
         crate::lexical_cancellation::check_current()?;
         *busy = true;
         drop(busy);
-        Ok(Working(work))
+        Ok(Some(Working(work)))
     }
 }
 
@@ -303,13 +308,13 @@ mod tests {
     #[test]
     fn clearing_work_keeps_active_and_waiting_requests_on_the_same_gate() {
         let gate = WorkGate::default();
-        let first = gate.enter("active").unwrap();
+        let first = gate.enter("active").unwrap().unwrap();
         let original = Arc::downgrade(&first.0);
         gate.clear_idle();
         let (sender, receiver) = std::sync::mpsc::channel();
         std::thread::scope(|scope| {
             scope.spawn(|| {
-                let next = gate.enter("active").unwrap();
+                let next = gate.enter("active").unwrap().unwrap();
                 sender
                     .send(Arc::ptr_eq(&next.0, &original.upgrade().unwrap()))
                     .unwrap();
