@@ -78,6 +78,11 @@ marker with `footnote-marker`. Ordinary italics and superscripts keep their
 existing rendering. Search highlights stay inside the note wrapper, including
 `<mark>` highlights from semantic passage selection. A cropped note gets a
 complete opening and closing wrapper; a synthetic ellipsis stays outside it.
+Complete note/marker tags may span source lines. Their ranges are clipped to
+each existing indexed line without changing line IDs or search text. The
+economy path spools offsets and carries them across preparation windows;
+an unclosed note is left unannotated. Strict quotation fallbacks also wrap
+the cropped source before adding an ellipsis.
 The app needs a snippet renderer that recognizes these two custom elements.
 Older, unannotated snippets remain valid input for that renderer.
 
@@ -111,6 +116,13 @@ The committed regressions use explicit synthetic HTML and SQLite `line_note`
 fixtures. They cover stored and database text, both indexing preparation paths,
 plain/vocalized/cropped/cross-line snippets, and semantic results and passage
 highlights; they are not a claimed reproduction of a particular corpus release.
+
+For an opt-in performance comparison with four notes and markers on each
+ordinary stored line, set `OTZARIA_BENCH_NOTES=1` when running the ignored
+`measure_search_during_indexing` test in `rust/tests/indexing_throughput.rs`
+in release mode. Without the variable it retains the plain `LibraryDb`
+workload. Compare identical fixtures and build profiles across revisions;
+these synthetic warm-cache measurements are not full-library or UI timings.
 
 ## Semantic search integration
 

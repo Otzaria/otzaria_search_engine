@@ -3,14 +3,26 @@
 use search_engine::api::library_indexing::{
     IndexingCancellationToken, LibraryBookInput, LibraryBookSource, LibraryBookStatus,
 };
-use search_engine::api::search_engine::{configure_line_source, SearchEngine, TextStorage};
+use search_engine::api::search_engine::{
+    check_index_compatibility, configure_line_source, SearchEngine, TextStorage,
+};
 use std::time::Instant;
+
+fn with_notes() -> bool {
+    std::env::var_os("OTZARIA_BENCH_NOTES").is_some()
+}
 
 fn fixture(path: &std::path::Path, books: usize, lines: usize) -> Vec<LibraryBookInput> {
     let mut connection = rusqlite::Connection::open(path).unwrap();
     connection.execute_batch("CREATE TABLE line(id INTEGER PRIMARY KEY,bookId INTEGER,lineIndex INTEGER,content TEXT); CREATE INDEX idx_line_book_index ON line(bookId,lineIndex);").unwrap();
     let transaction = connection.transaction().unwrap();
-    let text = "שורה עם טקסט מקורי ארוך מספיק לבדיקת הכנת מסמכים וגבולות התקציב ".repeat(8);
+    let phrase = "שורה עם טקסט מקורי ארוך מספיק לבדיקת הכנת מסמכים וגבולות התקציב ";
+    let text = if with_notes() {
+        format!("{phrase}<sup class=\"footnote-marker\">א</sup><i class=\"footnote\">{phrase}</i>")
+            .repeat(4)
+    } else {
+        phrase.repeat(8)
+    };
     {
         let mut insert = transaction
             .prepare("INSERT INTO line VALUES(?1,?2,?3,?4)")
@@ -44,7 +56,13 @@ fn fixture(path: &std::path::Path, books: usize, lines: usize) -> Vec<LibraryBoo
             topics: format!("/ספרייה/{}", book + 1),
             file_path: format!("id:{}", book + 1),
             extra_facets: Some(vec!["/author/x".into()]),
-            text_storage: TextStorage::LibraryDb,
+            // Exercise stored provenance and snippet painting, as well as the
+            // existing plain LibraryDb workload. Copy this fixture to each ref.
+            text_storage: if with_notes() {
+                TextStorage::InIndex
+            } else {
+                TextStorage::LibraryDb
+            },
             source_hash: Some(71),
         })
         .collect()
@@ -214,6 +232,8 @@ fn measure_search_during_indexing() {
         "OTZARIA_RESPONSIVENESS {}",
         serde_json::json!({
             "query_workload": "repeated exact query with warm search caches",
+            "notes": with_notes(),
+            "schema_version": check_index_compatibility(index.to_string_lossy().into_owned()).found_schema_version,
             "economy": economy, "cpus": std::thread::available_parallelism().map(|n|n.get()).ok(),
             "indexed_docs":8*lines, "search_samples":search_samples.len(),
             "search_idle_p95_ms":percentile(&mut idle_samples, 0.95),

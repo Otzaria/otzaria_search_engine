@@ -510,7 +510,7 @@ fn note_provenance_schema_10_opens_and_accepts_writes_without_being_upgraded() {
 fn note_provenance_changes_display_only_across_schema_versions() {
     let mut engines = Vec::new();
     let mut dirs = Vec::new();
-    let raw = format!("{RAW}\nגוף מפורשת סוף\nמְ<sup>נַ</sup>שֶּׁה <i class='footnote'>בָּרָא</i>");
+    let raw = format!("{RAW}\nגוף מפורשת סוף\nמְ<sup>נַ</sup>שֶּׁה <i class='footnote'>בָּרָא</i>\n<i class=footnote>ראשונה\nשנייה</i>");
     for version in [10, 11] {
         let dir = TempDir::new().unwrap();
         Index::create_in_dir(dir.path(), schema_of_version(version).unwrap()).unwrap();
@@ -555,7 +555,15 @@ fn note_provenance_changes_display_only_across_schema_versions() {
         rows
     };
     assert_eq!(snapshot(&engines[0]), snapshot(&engines[1]));
-    for query in ["מפורשת", "גוף מפורשת", "מנשה", "ברא"] {
+    for query in [
+        "מפורשת",
+        "גוף מפורשת",
+        "מנשה",
+        "ברא",
+        "ראשונה",
+        "שנייה",
+        "ראשונה שנייה",
+    ] {
         let hits = |engine: &SearchEngine| {
             exact(engine, query)
                 .into_iter()
@@ -666,6 +674,89 @@ fn note_provenance_library_line_note_native_path_matches_stored_html() {
     let (mut stored, _stored_dir) = self::engine();
     add_book(&mut stored, "id:1", &raw, TextStorage::InIndex);
     assert_eq!(hits[0].text, exact(&stored, "מפורשת")[0].text);
+}
+
+#[test]
+fn note_provenance_library_multiline_note_survives_spilled_economy_source() {
+    let _guard = crate::external_text_tests::guard();
+    let db_dir = TempDir::new().unwrap();
+    let (db, _) = line_note_fixture(&db_dir);
+    let body = format!(
+        "הערהראשונה\n{}הערהשנייה",
+        format!("{}\n", "מלל ".repeat(600)).repeat(300)
+    );
+    assert!(body.len() > 1 << 20, "exceed the economy text buffer");
+    db.execute("UPDATE line_note SET body=?1", [&body]).unwrap();
+    let (mut engine, _dir) = engine();
+    engine.set_economy_indexing(true).unwrap();
+    engine.open_index_writer().unwrap();
+    let indexed = engine
+        .add_library_books(
+            vec![LibraryBookInput {
+                source: LibraryBookSource::Library,
+                attached_slug: None,
+                book_id: 1,
+                db_title: Some("בדיקה".into()),
+                title: "ספר בדיקה".into(),
+                topics: "/notes".into(),
+                file_path: "id:1".into(),
+                extra_facets: None,
+                source_hash: None,
+                text_storage: TextStorage::LibraryDb,
+            }],
+            &IndexingCancellationToken::new(),
+        )
+        .unwrap();
+    engine.commit().unwrap();
+    assert_eq!(indexed[0].status, LibraryBookStatus::Indexed);
+    assert_eq!(indexed[0].text_storage, TextStorage::InIndex);
+    assert_eq!(indexed[0].docs, 302);
+    for query in ["הערהראשונה", "הערהשנייה"] {
+        let hits = exact(&engine, query);
+        assert_eq!(hits.len(), 1);
+        assert_note(&hits[0], query);
+    }
+}
+
+#[test]
+fn note_provenance_strict_phrase_fallback_keeps_vocalized_notes() {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            set_vocalized_snippets(false);
+        }
+    }
+    let _reset = Reset;
+    let (mut engine, _dir) = engine();
+    let phrase = "ברא ".repeat(120).trim().to_string();
+    let raw = format!("<i class=footnote>{} סוף</i>", "בָּרָא ".repeat(120));
+    add_book(&mut engine, BOOK, &raw, TextStorage::InIndex);
+    set_vocalized_snippets(true);
+    let hits = engine
+        .search_smart_lexical(
+            format!("\"{phrase}\" \"{phrase}\""),
+            vec![],
+            10,
+            0,
+            SemanticLexicalMode::Fuzzy,
+            0,
+            ResultsOrder::Relevance,
+            false,
+            false,
+            None,
+        )
+        .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert!(
+        hits[0].text.starts_with("<otzaria-note>בָּרָא"),
+        "{}",
+        hits[0].text
+    );
+    assert!(hits[0].text.ends_with("</otzaria-note>…"));
+    assert!(
+        !hits[0].text.contains("<font"),
+        "no partial quotation is highlighted"
+    );
 }
 
 #[test]

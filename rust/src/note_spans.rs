@@ -96,7 +96,7 @@ impl NoteSpans {
     }
 
     pub(crate) fn from_html(raw: &str, plain: &str, vocalized: Option<&str>) -> Self {
-        Self::from_renderings(raw, raw, plain, vocalized)
+        LineNotes(raw_note_ranges(raw)).normalize(raw, plain, vocalized)
     }
 
     pub(crate) fn from_renderings(
@@ -105,6 +105,9 @@ impl NoteSpans {
         plain: &str,
         vocalized: Option<&str>,
     ) -> Self {
+        if std::ptr::eq(raw_plain, raw_vocalized) {
+            return Self::from_html(raw_plain, plain, vocalized);
+        }
         let plain_ranges = raw_note_ranges(raw_plain);
         let vocalized_ranges = raw_note_ranges(raw_vocalized);
         if plain_ranges.is_empty() && vocalized_ranges.is_empty() {
@@ -154,6 +157,120 @@ impl NoteSpans {
             spans: spans.checked(&text),
             text,
         }
+    }
+}
+
+/// Raw offsets for one line, clipped from complete tags in the whole source.
+/// A line's searchable text is still normalized independently, exactly as before.
+#[derive(Default)]
+pub(crate) struct LineNotes(Vec<(Range<usize>, Kind)>);
+
+impl LineNotes {
+    pub(crate) fn normalize(&self, raw: &str, plain: &str, vocalized: Option<&str>) -> NoteSpans {
+        if self.0.is_empty() {
+            return NoteSpans::default();
+        }
+        NoteSpans {
+            plain: mapped(raw, &self.0, plain, true),
+            vocalized: vocalized.map(|text| mapped(raw, &self.0, text, false)),
+        }
+    }
+}
+
+/// A first pass proves that each note is closed before any of its lines are
+/// decorated. Only offsets are retained; a small spool keeps economy preparation
+/// bounded even when a note crosses its normalization windows or the text spills.
+pub(crate) struct BookNotes {
+    parser: NoteParser,
+    ranges: crate::indexing_buffers::TextBuffer,
+}
+
+impl BookNotes {
+    pub(crate) fn new(directory: &std::path::Path) -> Self {
+        Self {
+            parser: NoteParser::default(),
+            ranges: crate::indexing_buffers::TextBuffer::in_directory(64 << 10, Some(directory)),
+        }
+    }
+
+    pub(crate) fn push(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
+        self.parser.feed(bytes, |span| {
+            self.ranges.push_str(&format!(
+                "{} {} {}\n",
+                span.start,
+                span.end,
+                u8::from(span.kind == Kind::Marker)
+            ))
+        })
+    }
+
+    pub(crate) fn push_text(&mut self, text: &str) -> anyhow::Result<()> {
+        if has_footnote_hint(text) {
+            self.push(text.as_bytes())?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn reader(&mut self) -> anyhow::Result<BookNoteReader<'_>> {
+        // An unfinished tag/note is deliberately never emitted.
+        self.parser = NoteParser::default();
+        let mut reader = BookNoteReader {
+            reader: self.ranges.reader()?,
+            next: None,
+            buffer: String::new(),
+        };
+        reader.advance()?;
+        Ok(reader)
+    }
+}
+
+pub(crate) struct BookNoteReader<'a> {
+    reader: Box<dyn std::io::BufRead + 'a>,
+    next: Option<Span>,
+    buffer: String,
+}
+
+impl BookNoteReader<'_> {
+    fn advance(&mut self) -> anyhow::Result<()> {
+        self.buffer.clear();
+        self.next = if self.reader.read_line(&mut self.buffer)? == 0 {
+            None
+        } else {
+            let mut parts = self.buffer.split_ascii_whitespace();
+            Some(Span {
+                start: parts.next().unwrap_or_default().parse()?,
+                end: parts.next().unwrap_or_default().parse()?,
+                kind: match parts.next() {
+                    Some("0") => Kind::Note,
+                    Some("1") => Kind::Marker,
+                    _ => anyhow::bail!("invalid note range spool"),
+                },
+            })
+        };
+        Ok(())
+    }
+
+    /// Lines must be requested in source order. A range crossing a line ending
+    /// remains pending for the next line, including lines not stored in the index.
+    pub(crate) fn line(&mut self, start: usize, len: usize) -> anyhow::Result<LineNotes> {
+        let end = start + len;
+        let mut ranges = Vec::new();
+        while let Some(span) = &self.next {
+            if span.start >= end {
+                break;
+            }
+            if span.end > start {
+                ranges.push((
+                    span.start.max(start) - start..span.end.min(end) - start,
+                    span.kind,
+                ));
+            }
+            if span.end > end {
+                break;
+            }
+            self.advance()?;
+        }
+        Ok(LineNotes(ranges))
     }
 }
 
@@ -383,54 +500,176 @@ fn raw_note_ranges(raw: &str) -> Vec<(Range<usize>, Kind)> {
     if !has_footnote_hint(raw) {
         return Vec::new();
     }
-    struct Open<'a> {
-        name: &'a str,
-        start: usize,
-        kind: Option<Kind>,
-    }
-    let mut stack: Vec<Open<'_>> = Vec::new();
     let mut ranges = Vec::new();
-    let mut at = 0;
-    while let Some(start) = raw[at..].find('<').map(|start| start + at) {
-        let Some(end) = raw[start..].find('>').map(|end| start + end) else {
-            break;
-        };
-        at = end + 1;
-        let body = &raw[start + 1..end];
+    NoteParser::default()
+        .feed(raw.as_bytes(), |span| {
+            ranges.push((span.start..span.end, span.kind));
+            Ok(())
+        })
+        .expect("collecting offsets cannot fail");
+    ranges
+}
+
+struct OpenNoteTag {
+    name: String,
+    start: usize,
+    kind: Option<Kind>,
+}
+
+#[derive(Default)]
+struct NoteParser {
+    stack: Vec<OpenNoteTag>,
+    offset: usize,
+    pending: Vec<u8>,
+    pending_start: usize,
+    skipping_tag: bool,
+    disabled: bool,
+}
+
+impl NoteParser {
+    // Display metadata must not make malformed HTML consume unbounded memory.
+    const MAX_DEPTH: usize = 256;
+    const MAX_TAG_BYTES: usize = 64 << 10;
+    const MAX_NAME_BYTES: usize = 128;
+
+    fn feed(
+        &mut self,
+        bytes: &[u8],
+        mut emit: impl FnMut(Span) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        if self.disabled {
+            return Ok(());
+        }
+        let mut at = 0;
+        while at < bytes.len() {
+            if self.skipping_tag {
+                let Some(end) = bytes[at..].iter().position(|&byte| byte == b'>') else {
+                    break;
+                };
+                at += end + 1;
+                self.skipping_tag = false;
+                continue;
+            }
+            let start = if self.pending.is_empty() {
+                let Some(next) = bytes[at..].iter().position(|&byte| byte == b'<') else {
+                    break;
+                };
+                at + next
+            } else {
+                at
+            };
+            let Some(end) = bytes[start..].iter().position(|&byte| byte == b'>') else {
+                if self.pending.is_empty() {
+                    self.pending_start = self.offset + start;
+                }
+                if self.pending.len() + bytes.len() - start > Self::MAX_TAG_BYTES {
+                    if oversized_void_tag(&self.pending, &bytes[start..]) {
+                        self.pending.clear();
+                        self.skipping_tag = true;
+                        break;
+                    }
+                    self.disable();
+                    return Ok(());
+                }
+                self.pending.extend_from_slice(&bytes[start..]);
+                break;
+            };
+            let end = start + end;
+            let span = if self.pending.is_empty() {
+                if end - start > Self::MAX_TAG_BYTES {
+                    if oversized_void_tag(&[], &bytes[start..end]) {
+                        at = end + 1;
+                        continue;
+                    }
+                    self.disable();
+                    return Ok(());
+                }
+                self.tag(
+                    &bytes[start + 1..end],
+                    self.offset + start,
+                    self.offset + end + 1,
+                )
+            } else {
+                if self.pending.len() + end - start > Self::MAX_TAG_BYTES {
+                    if oversized_void_tag(&self.pending, &bytes[start..end]) {
+                        self.pending.clear();
+                        at = end + 1;
+                        continue;
+                    }
+                    self.disable();
+                    return Ok(());
+                }
+                let mut pending = std::mem::take(&mut self.pending);
+                pending.extend_from_slice(&bytes[start..end]);
+                self.tag(&pending[1..], self.pending_start, self.offset + end + 1)
+            };
+            if let Some(span) = span {
+                emit(span)?;
+            }
+            if self.disabled {
+                return Ok(());
+            }
+            at = end + 1;
+        }
+        self.offset += bytes.len();
+        Ok(())
+    }
+
+    fn disable(&mut self) {
+        self.disabled = true;
+        self.stack.clear();
+        self.pending.clear();
+        self.skipping_tag = false;
+    }
+
+    fn tag(&mut self, bytes: &[u8], start: usize, end: usize) -> Option<Span> {
+        let body = std::str::from_utf8(bytes).ok()?;
         let closing = body.starts_with('/');
         let body = body.strip_prefix('/').unwrap_or(body);
         let name_len = body.bytes().take_while(u8::is_ascii_alphanumeric).count();
         if name_len == 0 {
-            continue;
+            return None;
+        }
+        if name_len > Self::MAX_NAME_BYTES {
+            self.disable();
+            return None;
         }
         let name = &body[..name_len];
         if closing {
-            if let Some(index) = stack
+            let mut span = None;
+            if let Some(index) = self
+                .stack
                 .iter()
                 .rposition(|open| open.name.eq_ignore_ascii_case(name))
             {
-                let open = &stack[index];
+                let open = &self.stack[index];
                 if let Some(kind) = open.kind {
                     if open.start < start {
-                        ranges.push((open.start..start, kind));
+                        span = Some(Span {
+                            start: open.start,
+                            end: start,
+                            kind,
+                        });
                     }
                 }
-                stack.truncate(index);
+                self.stack.truncate(index);
+            } else {
+                // A closing ancestor without an opening inside the tracked
+                // note invalidates that note rather than guessing its layout.
+                self.stack.clear();
             }
-            continue;
+            return span;
         }
-        if body.trim_end().ends_with('/')
-            || [
-                "br", "hr", "img", "input", "meta", "link", "wbr", "area", "base", "embed",
-                "param", "source", "track", "col",
-            ]
-            .iter()
-            .any(|void| name.eq_ignore_ascii_case(void))
-        {
-            continue;
+        if body.trim_end().ends_with('/') || is_void_tag(name) {
+            return None;
         }
-        let inside = stack.iter().any(|open| open.kind.is_some());
-        let in_sup = stack
+        if self.stack.len() == Self::MAX_DEPTH {
+            self.disable();
+            return None;
+        }
+        let inside = self.stack.iter().any(|open| open.kind.is_some());
+        let in_sup = self
+            .stack
             .iter()
             .any(|open| open.name.eq_ignore_ascii_case("sup"));
         let kind = if inside {
@@ -447,14 +686,43 @@ fn raw_note_ranges(raw: &str) -> Vec<(Range<usize>, Kind)> {
         } else {
             None
         };
-        stack.push(Open {
-            name,
-            start: at,
+        // Ancestors outside a note/sup cannot affect classification of valid
+        // HTML. Do not retain unclosed heading tags from every book line.
+        if kind.is_none() && self.stack.is_empty() && !name.eq_ignore_ascii_case("sup") {
+            return None;
+        }
+        self.stack.push(OpenNoteTag {
+            name: name.to_string(),
+            start: end,
             kind,
         });
+        None
     }
-    ranges.sort_by_key(|(range, _)| range.start);
-    ranges
+}
+
+fn is_void_tag(name: &str) -> bool {
+    [
+        "br", "hr", "img", "input", "meta", "link", "wbr", "area", "base", "embed", "param",
+        "source", "track", "col",
+    ]
+    .iter()
+    .any(|void| name.eq_ignore_ascii_case(void))
+}
+
+fn oversized_void_tag(pending: &[u8], incoming: &[u8]) -> bool {
+    // Inline data: images routinely exceed the tag buffer. Their attributes
+    // cannot introduce a note, so skip them without dropping later provenance.
+    let mut head = [0; NoteParser::MAX_NAME_BYTES + 1];
+    let mut len = 0;
+    for &byte in pending.iter().chain(incoming).skip(1).take(head.len()) {
+        head[len] = byte;
+        len += 1;
+    }
+    let name_len = head[..len]
+        .iter()
+        .take_while(|byte| byte.is_ascii_alphanumeric())
+        .count();
+    name_len < len && std::str::from_utf8(&head[..name_len]).is_ok_and(is_void_tag)
 }
 
 fn has_class(mut attributes: &str, class: &str) -> bool {
@@ -664,6 +932,111 @@ mod tests {
             text.annotate("<mark>מילה</mark>".into(), 0, "<mark>", "</mark>"),
             "<mark>מילה</mark>"
         );
+    }
+
+    #[test]
+    fn book_note_offsets_survive_every_byte_chunk_boundary_and_line_cut() {
+        let raw = "<h1>כותרת\nגוף<sup class='footnote-marker'>א\nב</sup><i class=footnote>אָב &amp; 😀\n\n<b>שני</b> שלישי</i> סוף\n<i class=footnote>לא נסגר";
+        for chunk in 1..=raw.len() {
+            let dir = tempfile::tempdir().unwrap();
+            let mut notes = BookNotes::new(dir.path());
+            for piece in raw.as_bytes().chunks(chunk) {
+                notes.push(piece).unwrap();
+            }
+            let mut notes = notes.reader().unwrap();
+            let mut at = 0;
+            let shown: Vec<_> = raw
+                .split('\n')
+                .map(|line| {
+                    let (plain, vocalized) = normalize_line_for_indexing(line);
+                    let layout = notes.line(at, line.len()).unwrap();
+                    at += line.len() + 1;
+                    let display = layout
+                        .normalize(line, &plain, vocalized.as_deref())
+                        .display(plain, false);
+                    display.annotate(htmlescape::encode_minimal(&display), 0, "", "")
+                })
+                .collect();
+            assert_eq!(shown, [
+                "כותרת",
+                "גוף <otzaria-note-marker>א</otzaria-note-marker>",
+                "<otzaria-note-marker>ב</otzaria-note-marker> <otzaria-note>אב 😀</otzaria-note>",
+                "",
+                "<otzaria-note>שני שלישי</otzaria-note> סוף",
+                "לא נסגר",
+            ], "chunk size {chunk}");
+        }
+    }
+
+    #[test]
+    fn book_notes_spill_offsets_without_losing_complete_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut notes = BookNotes::new(dir.path());
+        let line = "<i class=footnote>הערה</i>\n";
+        for _ in 0..10_000 {
+            notes.push(line.as_bytes()).unwrap();
+        }
+        assert!(notes.ranges.spilled_bytes() > 0);
+        assert!(notes.ranges.buffered_bytes() <= 64 << 10);
+        let mut reader = notes.reader().unwrap();
+        for at in 0..10_000 {
+            let layout = reader.line(at * line.len(), line.len() - 1).unwrap();
+            let text = layout
+                .normalize(line.trim_end(), "הערה", None)
+                .display("הערה".into(), false);
+            assert_eq!(
+                text.annotate("הערה".into(), 0, "", ""),
+                "<otzaria-note>הערה</otzaria-note>"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_source_cannot_grow_the_note_parser_without_bound() {
+        for raw in [
+            format!(
+                "<i class=footnote>{}הערה</i>",
+                "<b>".repeat(NoteParser::MAX_DEPTH)
+            ),
+            format!(
+                "<i class=footnote data-x='{}'>הערה</i>",
+                "x".repeat(NoteParser::MAX_TAG_BYTES)
+            ),
+        ] {
+            let mut parser = NoteParser::default();
+            for piece in raw.as_bytes().chunks(7) {
+                parser
+                    .feed(piece, |_| panic!("invalid note must not be emitted"))
+                    .unwrap();
+            }
+            assert!(parser.disabled);
+            assert!(parser.stack.is_empty());
+            assert!(parser.pending.is_empty());
+        }
+        let raw = format!("{}<i class=footnote>הערה</i>", "<h1>כותרת\n".repeat(1_000));
+        assert!(shown(&raw).contains("<otzaria-note>הערה</otzaria-note>"));
+    }
+
+    #[test]
+    fn large_inline_images_do_not_discard_the_current_or_following_note() {
+        let raw = format!("<i class=footnote>לפני<img src='data:image/png;base64,{}'>אחרי</i> <i class=footnote>נוספת</i>", "x".repeat(NoteParser::MAX_TAG_BYTES * 2));
+        let dir = tempfile::tempdir().unwrap();
+        for chunk in [1, 7, NoteParser::MAX_TAG_BYTES - 1, raw.len()] {
+            let mut notes = BookNotes::new(dir.path());
+            for piece in raw.as_bytes().chunks(chunk) {
+                notes.push(piece).unwrap();
+            }
+            assert!(!notes.parser.disabled, "chunk size {chunk}");
+            let layout = notes.reader().unwrap().line(0, raw.len()).unwrap();
+            let (plain, vocalized) = normalize_line_for_indexing(&raw);
+            let text = layout
+                .normalize(&raw, &plain, vocalized.as_deref())
+                .display(plain, false);
+            assert_eq!(
+                text.annotate(htmlescape::encode_minimal(&text), 0, "", ""),
+                "<otzaria-note>לפניאחרי</otzaria-note> <otzaria-note>נוספת</otzaria-note>"
+            );
+        }
     }
 
     #[test]

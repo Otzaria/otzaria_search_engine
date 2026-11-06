@@ -8557,9 +8557,16 @@ impl SearchEngine {
             sorted.to_mut().sort_unstable();
         }
         let mut stored = sorted.iter().copied().map(Ok);
+        let mut notes = note_spans::BookNotes::new(&self.index_path);
+        if self.schema.get_field(note_spans::FIELD).is_ok()
+            && (text_storage == TextStorage::InIndex || !stored_lines.is_empty())
+        {
+            notes.push_text(text)?;
+        }
         self.prepare_text_book_reader(
             book,
             &mut std::io::Cursor::new(text),
+            &mut notes,
             book_fingerprint(text, &book.title, &book.topics, book.extra_facets.clone()),
             content_fingerprint(text),
             text_storage,
@@ -8595,6 +8602,10 @@ impl SearchEngine {
         let mut content = Fnv::new();
         content.feed(&text.len().to_le_bytes());
         let mut text_hash = Fnv::new();
+        let mut notes = note_spans::BookNotes::new(&self.index_path);
+        let collect_notes = self.schema.get_field(note_spans::FIELD).is_ok()
+            && (text_storage == TextStorage::InIndex
+                || stored_lines.iter()?.next().transpose()?.is_some());
         let mut reader = text.reader()?;
         let mut buffer = [0u8; 64 << 10];
         loop {
@@ -8605,6 +8616,9 @@ impl SearchEngine {
             }
             content.feed(&buffer[..count]);
             text_hash.feed(&buffer[..count]);
+            if collect_notes {
+                notes.push(&buffer[..count])?;
+            }
         }
         drop(reader);
         feed_metadata(
@@ -8617,6 +8631,7 @@ impl SearchEngine {
         self.prepare_text_book_reader(
             book,
             &mut text.reader()?,
+            &mut notes,
             content.finish(),
             text_hash.finish(),
             text_storage,
@@ -8745,6 +8760,20 @@ impl SearchEngine {
             Option<String>,
         );
         anyhow::ensure!(!stop(), "indexing preparation interrupted");
+        let mut source_notes = note_spans::BookNotes::new(&self.index_path);
+        if note_field.is_some() && (!library || !stored_lines.is_empty()) {
+            source_notes.push_text(text)?;
+        }
+        let mut note_reader = source_notes.reader()?;
+        let mut source_offset = 0;
+        let line_notes = lines
+            .iter()
+            .map(|line| {
+                let notes = note_reader.line(source_offset, line.len());
+                source_offset += line.len() + 1;
+                notes
+            })
+            .collect::<Result<Vec<_>>>()?;
         let normalized: Vec<Prepared> = crate::indexing_buffers::preparation_cpu(
             self.library_preparation_policy().cpu_threads,
             || {
@@ -8765,7 +8794,8 @@ impl SearchEngine {
                                 .flatten();
                             let notes = (note_field.is_some() && stores_text(segment))
                                 .then(|| {
-                                    NoteSpans::from_html(raw_line, &plain, vocalized.as_deref())
+                                    line_notes[segment]
+                                        .normalize(raw_line, &plain, vocalized.as_deref())
                                         .encode()
                                 })
                                 .flatten();
@@ -8899,6 +8929,7 @@ impl SearchEngine {
         &self,
         book: &TextBookMeta,
         reader: &mut dyn std::io::BufRead,
+        source_notes: &mut note_spans::BookNotes,
         content_hash: u64,
         text_hash: u64,
         text_storage: TextStorage,
@@ -8950,6 +8981,8 @@ impl SearchEngine {
         let id_base = u64::from(book_number) << 32;
         let stored_fields = self.stored_text_fields()?;
         let note_field = self.schema.get_field(note_spans::FIELD).ok();
+        let mut note_reader = source_notes.reader()?;
+        let mut source_offset = 0;
         let line_check_f = self.schema.get_field(LINE_CHECK_FIELD)?;
         let edge_fields = cross_line::EdgeFields::from_schema(&self.schema)?;
         let edge_analyzer = self.text_index_analyzer()?;
@@ -9004,8 +9037,10 @@ impl SearchEngine {
                 }
                 let stores_text =
                     text_storage != TextStorage::LibraryDb || next_stored == Some(ordinal as u32);
+                let notes = note_reader.line(source_offset, raw.len())?;
+                source_offset += read;
                 raw_bytes += raw.len();
-                raw_lines.push((raw, reference.clone(), section, ordinal, stores_text));
+                raw_lines.push((raw, reference.clone(), section, ordinal, stores_text, notes));
                 ordinal += 1;
                 if read == 0 {
                     finished = true;
@@ -9019,7 +9054,7 @@ impl SearchEngine {
                         .par_iter()
                         .map_init(
                             || edge_analyzer.clone(),
-                            |analyzer, (raw, reference, section, ordinal, stores_text)| {
+                            |analyzer, (raw, reference, section, ordinal, stores_text, source_notes)| {
                                 let (plain, vocalized) =
                                     hebrew_query::normalize_line_for_indexing(raw);
                                 let hash = line_dedup_hash(&plain);
@@ -9030,7 +9065,7 @@ impl SearchEngine {
                                     .flatten();
                                 let notes = (note_field.is_some() && *stores_text)
                                     .then(|| {
-                                        NoteSpans::from_html(raw, &plain, vocalized.as_deref())
+                                        source_notes.normalize(raw, &plain, vocalized.as_deref())
                                             .encode()
                                     })
                                     .flatten();
@@ -16392,7 +16427,7 @@ impl SearchEngine {
     /// `window`: `fragment` is the whole line, cut to that many bytes around its
     /// first occurrence — tantivy picks the fragment by term density, which can
     /// cut the phrase off when its fuzzy variants cluster elsewhere.
-    #[cfg(any(test, feature = "semantic-integration"))]
+    #[cfg(test)]
     fn phrase_filtered_snippet_html(
         searcher: &Searcher,
         fragment: &str,
@@ -16980,13 +17015,9 @@ impl SearchEngine {
                         Some(hl.max_chars as usize),
                     )
                 })
-                .unwrap_or_else(|| {
-                    if pf.allow_term_fallback {
-                        term_html()
-                    } else {
-                        (0, bounded_plain_snippet(text, hl.max_chars))
-                    }
-                }),
+                // The caller's display fallback wraps the source before adding
+                // its synthetic ellipsis, and can use the vocalized rendering.
+                .or_else(|| pf.allow_term_fallback.then(term_html))?,
             None => term_html(),
         };
         (!snippet_html.is_empty()).then_some((offset, snippet_html))
