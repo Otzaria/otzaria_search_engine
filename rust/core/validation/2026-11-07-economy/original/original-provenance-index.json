@@ -1,0 +1,138 @@
+{
+  "artifacts": [
+    {
+      "artifact_id": 13590907581,
+      "attempt": 1,
+      "economy_execution_order": [
+        "before",
+        "after",
+        "after",
+        "before"
+      ],
+      "economy_processes": 4,
+      "environment": {
+        "affinity": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "base": "8ef29fd592793fbc9d5af0299fdd7a8607789bac",
+        "binary_sha256": {
+          "after": "974a92cc60324467d26ebad61c7d21ca0e7512087201eaa037ff357d42151337",
+          "before": "a58b7ec047d3b39d0f4417571d652920d14ea7f8370030aa6bddd349dc506e5a"
+        },
+        "fixture_lines_per_book": 12000,
+        "head": "4761356749815d283ede41ef956c64b3dbffe048",
+        "notes": [
+          "Synthetic, local SQLite fixture; not a full library or slow-storage experiment.",
+          "Repeated exact search with warm caches, not cold-query latency.",
+          "CPU affinity is a constrained-core scenario, not a different CPU or RAM device.",
+          "No Flutter UI frames are measured; no performance thresholds fail this job.",
+          "Baseline and head run an identical fixture. Additional diagnostic counters only exist on the head."
+        ],
+        "platform": "Linux-7.0.0-1017-azure-x86_64-with-glibc2.39",
+        "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+      },
+      "file_sha256": {
+        "environment.json": "ba88efdba7515bb5058a39266dc224639035e4ab05211d271f4ba61b65eb7f47",
+        "medians.json": "e078b9b7d3b01a3cd6f201b0c55a116146f5eafd7fd59502f1ebf512ede2cee5",
+        "samples.jsonl": "93fe740c98ffc5789f1119852705ac57b94a821dab5e1b344ffc3fe32fdd48e8"
+      },
+      "job_id": 128526250277,
+      "job_url": "https://github.com/Otzaria/otzaria_search_engine/actions/runs/42413434336/job/128526250277",
+      "total_processes": 12,
+      "zip_sha256": "0bab553847a4b5cdf579b2bc26339e933fd56b3b24bcfd061ccc5dee17a0f9b1"
+    },
+    {
+      "artifact_id": 13591982411,
+      "attempt": 2,
+      "economy_execution_order": [
+        "before",
+        "after",
+        "after",
+        "before"
+      ],
+      "economy_processes": 4,
+      "environment": {
+        "affinity": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "base": "8ef29fd592793fbc9d5af0299fdd7a8607789bac",
+        "binary_sha256": {
+          "after": "974a92cc60324467d26ebad61c7d21ca0e7512087201eaa037ff357d42151337",
+          "before": "a58b7ec047d3b39d0f4417571d652920d14ea7f8370030aa6bddd349dc506e5a"
+        },
+        "fixture_lines_per_book": 12000,
+        "head": "4761356749815d283ede41ef956c64b3dbffe048",
+        "notes": [
+          "Synthetic, local SQLite fixture; not a full library or slow-storage experiment.",
+          "Repeated exact search with warm caches, not cold-query latency.",
+          "CPU affinity is a constrained-core scenario, not a different CPU or RAM device.",
+          "No Flutter UI frames are measured; no performance thresholds fail this job.",
+          "Baseline and head run an identical fixture. Additional diagnostic counters only exist on the head."
+        ],
+        "platform": "Linux-7.0.0-1017-azure-x86_64-with-glibc2.39",
+        "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+      },
+      "file_sha256": {
+        "environment.json": "ba88efdba7515bb5058a39266dc224639035e4ab05211d271f4ba61b65eb7f47",
+        "medians.json": "8afbf210c5dd1d797023a9638380a181cda50a463ad32466501b21e65ec33d42",
+        "samples.jsonl": "14497948c8ebf37471f7d3a567279bb8f0d2fb9f79f30fcc288657532857f1bd"
+      },
+      "job_id": 128534442998,
+      "job_url": "https://github.com/Otzaria/otzaria_search_engine/actions/runs/42413434336/job/128534442998",
+      "total_processes": 12,
+      "zip_sha256": "a976714ca826f3b065abe269246d275fbf11f5aaf3c8bc298cd34ba26ff118b6"
+    }
+  ],
+  "base": "8ef29fd592793fbc9d5af0299fdd7a8607789bac",
+  "head": "4761356749815d283ede41ef956c64b3dbffe048",
+  "limitations": [
+    "Original artifacts contain only three JSON result/provenance files, not executable bytes.",
+    "Physical-core/sibling topology and per-process pressure/Dirty/Writeback were not recorded in the original jobs.",
+    "The original economy block followed eight normal-mode processes; the controlled diagnostic is economy-only.",
+    "The original script metadata note that diagnostics exist only on head is stale for this 8ef/476 comparison; both actual revisions emit them.",
+    "Matching immutable source revisions does not guarantee matching executable hashes when helper targets or build roots differ."
+  ],
+  "original_build_command": [
+    "cargo",
+    "test",
+    "--manifest-path",
+    "<checkout>/rust/Cargo.toml",
+    "--locked",
+    "--release",
+    "--test",
+    "indexing_throughput",
+    "--no-run",
+    "--message-format=json"
+  ],
+  "original_build_environment": {
+    "CARGO_BUILD_JOBS": "1",
+    "CARGO_PROFILE_DEV_DEBUG": "line-tables-only (workflow global; not a release-profile override)",
+    "CARGO_TARGET_DIR": "<out>/target/<before-or-after>"
+  },
+  "original_economy_command": [
+    "taskset",
+    "-c",
+    "0,1",
+    "<copied-binary>",
+    "measure_search_during_indexing",
+    "--ignored",
+    "--exact",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "original_economy_environment": {
+    "OTZARIA_BENCH_ECONOMY": "1",
+    "OTZARIA_BENCH_LINES": "12000"
+  },
+  "original_script_sha256": "1fcd45d1a055a0cf60763a1f31fdbd3e77826f62f453d9138ddfcbc420b48b7b",
+  "release_profile": {
+    "lto": "thin"
+  },
+  "run_id": 42413434336
+}

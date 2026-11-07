@@ -1,0 +1,22 @@
+{
+  "base": "8ef29fd592793fbc9d5af0299fdd7a8607789bac",
+  "head_local": "25d10734a9b834b7ffd17925c1c1d802fda66fe9",
+  "head_remote": "4761356749815d283ede41ef956c64b3dbffe048",
+  "command_flags": "-p search_engine --edges normal --target x86_64-unknown-linux-gnu --locked --offline; default features",
+  "base_packages": 167,
+  "head_packages": 167,
+  "feature_differences": {
+    "search_engine v7.0.1": {
+      "base": [
+        "default",
+        "sqlite-bundled"
+      ],
+      "head": [
+        "default",
+        "flutter-bridge",
+        "sqlite-bundled"
+      ]
+    }
+  },
+  "normalization": "Package name/version keys; path locations ignored. Tantivy, sidecar and all registry revisions unchanged in Cargo.lock; vendored FST source has no8ef\u2192head diff."
+}

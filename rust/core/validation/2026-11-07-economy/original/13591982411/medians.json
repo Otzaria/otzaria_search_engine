@@ -1,0 +1,74 @@
+[
+  {
+    "case": "two-core-normal",
+    "revision": "before",
+    "search_during_p95_ms": 3.4974985,
+    "search_during_p99_ms": 6.1475405,
+    "docs_per_sec": 26325.656811398723,
+    "peak_rss_kib": 151518.0,
+    "peak_buffered_bytes": 44072960.0,
+    "spilled_bytes": 0.0,
+    "peak_active_preparations": 1.0,
+    "peak_reserved_bytes": 100663296.0
+  },
+  {
+    "case": "two-core-normal",
+    "revision": "after",
+    "search_during_p95_ms": 3.4918875,
+    "search_during_p99_ms": 5.541667,
+    "docs_per_sec": 26973.9374228484,
+    "peak_rss_kib": 151276.0,
+    "peak_buffered_bytes": 44072960.0,
+    "spilled_bytes": 0.0,
+    "peak_active_preparations": 1.0,
+    "peak_reserved_bytes": 100663296.0
+  },
+  {
+    "case": "available-cores-normal",
+    "revision": "before",
+    "search_during_p95_ms": 2.216097,
+    "search_during_p99_ms": 4.6305205,
+    "docs_per_sec": 33430.468939426835,
+    "peak_rss_kib": 153470.0,
+    "peak_buffered_bytes": 44072960.0,
+    "spilled_bytes": 0.0,
+    "peak_active_preparations": 1.0,
+    "peak_reserved_bytes": 100663296.0
+  },
+  {
+    "case": "available-cores-normal",
+    "revision": "after",
+    "search_during_p95_ms": 1.1772304999999998,
+    "search_during_p99_ms": 3.4342789999999996,
+    "docs_per_sec": 35862.564481891575,
+    "peak_rss_kib": 153500.0,
+    "peak_buffered_bytes": 44072960.0,
+    "spilled_bytes": 0.0,
+    "peak_active_preparations": 1.0,
+    "peak_reserved_bytes": 100663296.0
+  },
+  {
+    "case": "two-core-economy",
+    "revision": "before",
+    "search_during_p95_ms": 3.1334850000000003,
+    "search_during_p99_ms": 5.735968,
+    "docs_per_sec": 25606.85841940242,
+    "peak_rss_kib": 92476.0,
+    "peak_buffered_bytes": 2162688.0,
+    "spilled_bytes": 205871288.0,
+    "peak_active_preparations": 1.0,
+    "peak_reserved_bytes": 3145728.0
+  },
+  {
+    "case": "two-core-economy",
+    "revision": "after",
+    "search_during_p95_ms": 4.3560325,
+    "search_during_p99_ms": 8.196030499999999,
+    "docs_per_sec": 26269.584997369406,
+    "peak_rss_kib": 88656.0,
+    "peak_buffered_bytes": 2162688.0,
+    "spilled_bytes": 205871288.0,
+    "peak_active_preparations": 1.0,
+    "peak_reserved_bytes": 3145728.0
+  }
+]

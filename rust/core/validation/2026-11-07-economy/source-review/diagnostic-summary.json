@@ -1,0 +1,35 @@
+{
+  "base": "8ef29fd592793fbc9d5af0299fdd7a8607789bac",
+  "head": "4761356749815d283ede41ef956c64b3dbffe048",
+  "source_tree": "34341d9cffd3348587f509e587593c1f67cf4eec",
+  "feature_result": "167 normal packages on both sides; all dependency feature sets equal. Root adds only flutter-bridge, enabled by default to preserve the previous unconditional bridge.",
+  "macro_result": {
+    "runtime_reexport": "flutter_rust_bridge2.13.0/src/lib.rs:pub use flutter_rust_bridge_macros::frb;",
+    "runtime_lib_sha256": "1a74a7e138614a01aed28c4b2e949d869a631aa279a385735a3425ad69b178e0",
+    "proc_macro_lib_sha256": "91e04631cf551f734ae64707162fbc169e54861011cf279f515baa0ec0b139fc",
+    "behavior": "The frb macro adds encoded annotations and converts attribute syntax. The opaque/ignore annotations here do not create runtime wrapper calls; importing the exact macro through its re-export or direct dependency is equivalent."
+  },
+  "object_delta": "SearchEngine gains one private read_only:bool. No atomic, mutex or buffer field was added to that object. Rust layout/codegen impact is not measured by this metadata-only audit.",
+  "unchanged_paths": [
+    "rust/src/highlight_cache.rs",
+    "rust/src/term_automaton.rs",
+    "rust/src/indexing_buffers.rs",
+    "rust/tests/indexing_throughput.rs"
+  ],
+  "guard_frequency_in_harness": "One ensure_write_access at add_library_books entry for the eight-book batch, not per document or per synchronous query. Other guards in set_economy_indexing/open/commit run outside the sampled concurrent search loop.",
+  "new_refresh_path": "refresh_line_source/line_source::refresh is added but the unchanged harness only invokes the unchanged configure_line_source path before timing.",
+  "hypotheses_not_findings": [
+    "Object/codegen layout: record size_of and align_of SearchEngine in both identical default builds. Same size/align would not prove identical private-field offsets or generated code.",
+    "Sampling phase: current loop sleeps10ms and collects until indexing completes. Compare search_samples and indexing duration already emitted; in a separate instrumented harness retain individual query start times/latencies relative to worker start/finish before attributing tail changes.",
+    "Compilation/inlining differences are still possible despite identical dependency features; inspect exact build profile/rustc flags and function code sizes only if controlled timing still separates. No guard removal is proposed."
+  ],
+  "no_production_or_mcp_edits": true,
+  "no_compilation_or_test_runs": true,
+  "artifacts": {
+    "feature-diff.json": "d2416e2ac318718a261ed55b880c91c66f18f043d0ec7689aa2449345739b7c5",
+    "head-features.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "head-features.txt": "600269b0a950dcf085ce06ca4eb1dcde336e0c87f8a001dcc2362095afdb7fd4",
+    "base-features.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "base-features.txt": "8aafed1ba1a782a2970c9861bd150cf6a39eb6798afdf03cc4635043d57ad460"
+  }
+}

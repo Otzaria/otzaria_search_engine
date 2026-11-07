@@ -1,0 +1,24 @@
+{
+  "platform": "Linux-7.0.0-1017-azure-x86_64-with-glibc2.39",
+  "affinity": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "base": "8ef29fd592793fbc9d5af0299fdd7a8607789bac",
+  "head": "4761356749815d283ede41ef956c64b3dbffe048",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "fixture_lines_per_book": 12000,
+  "binary_sha256": {
+    "before": "a58b7ec047d3b39d0f4417571d652920d14ea7f8370030aa6bddd349dc506e5a",
+    "after": "974a92cc60324467d26ebad61c7d21ca0e7512087201eaa037ff357d42151337"
+  },
+  "notes": [
+    "Synthetic, local SQLite fixture; not a full library or slow-storage experiment.",
+    "Repeated exact search with warm caches, not cold-query latency.",
+    "CPU affinity is a constrained-core scenario, not a different CPU or RAM device.",
+    "No Flutter UI frames are measured; no performance thresholds fail this job.",
+    "Baseline and head run an identical fixture. Additional diagnostic counters only exist on the head."
+  ]
+}

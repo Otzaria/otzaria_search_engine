@@ -1,0 +1,317 @@
+search_engine v7.0.1 (/workspace/scratch/823dd8bcb941/engine-rebased/rust)|default,flutter-bridge,sqlite-bundled
+anyhow v1.0.104|default,std
+crc32fast v1.5.0|default,std
+cfg-if v1.0.4|
+env_logger v0.11.11|auto-color,color,default,humantime,regex
+anstream v1.0.0|auto,wincon
+anstyle v1.0.14|default,std
+anstyle-parse v1.0.0|default,utf8
+utf8parse v0.2.2|default
+anstyle-query v1.1.5|
+colorchoice v1.0.5|
+is_terminal_polyfill v1.70.2|default
+utf8parse v0.2.2|default
+anstyle v1.0.14|default,std
+env_filter v2.0.0|regex,std
+log v0.4.33|std
+regex v1.13.1|default,perf,perf-backtrack,perf-cache,perf-dfa,perf-inline,perf-literal,perf-onepass,std,unicode,unicode-age,unicode-bool,unicode-case,unicode-gencat,unicode-perl,unicode-script,unicode-segment
+aho-corasick v1.1.4|default,perf-literal,std
+memchr v2.8.3|alloc,default,std
+memchr v2.8.3|alloc,default,std
+regex-automata v0.4.16|alloc,dfa-build,dfa-onepass,dfa-search,hybrid,meta,nfa-backtrack,nfa-pikevm,nfa-thompson,perf-inline,perf-literal,perf-literal-multisubstring,perf-literal-substring,std,syntax,unicode,unicode-age,unicode-bool,unicode-case,unicode-gencat,unicode-perl,unicode-script,unicode-segment,unicode-word-boundary
+aho-corasick v1.1.4|default,perf-literal,std (*)
+memchr v2.8.3|alloc,default,std
+regex-syntax v0.8.11|default,std,unicode,unicode-age,unicode-bool,unicode-case,unicode-gencat,unicode-perl,unicode-script,unicode-segment
+regex-syntax v0.8.11|default,std,unicode,unicode-age,unicode-bool,unicode-case,unicode-gencat,unicode-perl,unicode-script,unicode-segment
+jiff v0.2.35|alloc,std
+jiff-core v0.1.0|alloc,std
+log v0.4.33|std
+flutter_rust_bridge v2.13.0|anyhow,console_error_panic_hook,dart-opaque,default,log,portable-atomic,rust-async,thread-pool,user-utils,wasm-start
+allo-isolate v0.1.27|anyhow,backtrace,default,zero-copy
+anyhow v1.0.104|default,std
+atomic v0.5.3|default,fallback
+backtrace v0.3.76|default,std
+addr2line v0.25.1|
+gimli v0.32.3|read,read-core
+cfg-if v1.0.4|
+libc v0.2.189|default,std
+miniz_oxide v0.8.9|
+adler2 v2.0.1|
+object v0.37.3|archive,coff,elf,macho,pe,read_core,unaligned,xcoff
+memchr v2.8.3|alloc,default,std
+rustc-demangle v0.1.28|
+anyhow v1.0.104|default,std
+byteorder v1.5.0|default,std
+dart-sys v4.1.5|
+delegate-attr v0.3.0 (proc-macro)|
+proc-macro2 v1.0.107|default,proc-macro
+unicode-ident v1.0.24|
+quote v1.0.47|default,proc-macro
+proc-macro2 v1.0.107|default,proc-macro (*)
+syn v2.0.119|clone-impls,default,derive,extra-traits,full,parsing,printing,proc-macro,visit,visit-mut
+proc-macro2 v1.0.107|default,proc-macro (*)
+quote v1.0.47|default,proc-macro (*)
+unicode-ident v1.0.24|
+flutter_rust_bridge_macros v2.13.0 (proc-macro)|
+hex v0.4.3|alloc,default,std
+md-5 v0.10.6|default,std
+cfg-if v1.0.4|
+digest v0.10.7|alloc,block-buffer,core-api,default,std
+block-buffer v0.10.4|
+generic-array v0.14.7|more_lengths
+typenum v1.20.1|
+crypto-common v0.1.7|std
+generic-array v0.14.7|more_lengths (*)
+typenum v1.20.1|
+proc-macro2 v1.0.107|default,proc-macro (*)
+quote v1.0.47|default,proc-macro (*)
+syn v2.0.119|clone-impls,default,derive,extra-traits,full,parsing,printing,proc-macro,visit,visit-mut (*)
+futures v0.3.33|alloc,async-await,default,executor,futures-executor,std
+futures-channel v0.3.33|alloc,futures-sink,sink,std
+futures-core v0.3.33|alloc,std
+futures-sink v0.3.33|alloc,std
+futures-core v0.3.33|alloc,std
+futures-executor v0.3.33|std
+futures-core v0.3.33|alloc,std
+futures-task v0.3.33|alloc,std
+futures-util v0.3.33|alloc,async-await,async-await-macro,channel,default,futures-channel,futures-io,futures-macro,futures-sink,io,memchr,sink,slab,std
+futures-channel v0.3.33|alloc,futures-sink,sink,std (*)
+futures-core v0.3.33|alloc,std
+futures-io v0.3.33|std
+futures-macro v0.3.33 (proc-macro)|
+proc-macro2 v1.0.107|default,proc-macro (*)
+quote v1.0.47|default,proc-macro (*)
+syn v2.0.119|clone-impls,default,derive,extra-traits,full,parsing,printing,proc-macro,visit,visit-mut (*)
+futures-sink v0.3.33|alloc,std
+futures-task v0.3.33|alloc,std
+memchr v2.8.3|alloc,default,std
+pin-project-lite v0.2.17|
+slab v0.4.12|std
+futures-io v0.3.33|std
+futures-sink v0.3.33|alloc,std
+futures-task v0.3.33|alloc,std
+futures-util v0.3.33|alloc,async-await,async-await-macro,channel,default,futures-channel,futures-io,futures-macro,futures-sink,io,memchr,sink,slab,std (*)
+lazy_static v1.5.0|
+log v0.4.33|std
+portable-atomic v1.14.0|default,fallback
+threadpool v1.8.1|
+num_cpus v1.17.0|
+libc v0.2.189|default,std
+tokio v1.53.1|default,rt,rt-multi-thread,sync
+pin-project-lite v0.2.17|
+flutter_rust_bridge_macros v2.13.0 (proc-macro)| (*)
+htmlescape v0.3.1|
+log v0.4.33|std
+lru v0.12.5|default,hashbrown
+hashbrown v0.15.5|allocator-api2,default,default-hasher,equivalent,inline-more,raw-entry
+allocator-api2 v0.2.21|alloc
+equivalent v1.0.2|
+foldhash v0.1.5|
+once_cell v1.21.4|alloc,default,race,std
+otzaria-semantic-search v0.1.0 (https://github.com/Otzaria/otzaria-semantic-search?rev=a79901ff1a34bc9d57b994b905de7ec9ad69bb7a#a79901ff)|
+crc32fast v1.5.0|default,std (*)
+log v0.4.33|std
+memmap2 v0.9.11|
+libc v0.2.189|default,std
+serde v1.0.229|alloc,default,derive,serde_derive,std
+serde_core v1.0.229|alloc,result,std
+serde_derive v1.0.229 (proc-macro)|default
+proc-macro2 v1.0.107|default,proc-macro (*)
+quote v1.0.47|default,proc-macro (*)
+syn v3.0.3|clone-impls,default,derive,full,parsing,printing,proc-macro,visit-mut
+proc-macro2 v1.0.107|default,proc-macro (*)
+quote v1.0.47|default,proc-macro (*)
+unicode-ident v1.0.24|
+serde_json v1.0.151|default,std
+itoa v1.0.18|
+memchr v2.8.3|alloc,default,std
+serde_core v1.0.229|alloc,result,std
+zmij v1.0.23|
+sha2 v0.10.9|default,std
+cfg-if v1.0.4|
+cpufeatures v0.2.17|
+digest v0.10.7|alloc,block-buffer,core-api,default,std
+block-buffer v0.10.4|
+generic-array v0.14.7|more_lengths
+typenum v1.20.1|
+crypto-common v0.1.7|std
+generic-array v0.14.7|more_lengths (*)
+typenum v1.20.1|
+thiserror v2.0.19|default,std
+thiserror-impl v2.0.19 (proc-macro)|
+proc-macro2 v1.0.107|default,proc-macro (*)
+quote v1.0.47|default,proc-macro (*)
+syn v3.0.3|clone-impls,default,derive,full,parsing,printing,proc-macro,visit-mut (*)
+rayon v1.12.0|
+either v1.17.0|std,use_std
+rayon-core v1.13.0|
+crossbeam-deque v0.8.7|default,std
+crossbeam-epoch v0.9.20|alloc,std
+crossbeam-utils v0.8.22|default,std
+crossbeam-utils v0.8.22|default,std
+crossbeam-utils v0.8.22|default,std
+regex v1.13.1|default,perf,perf-backtrack,perf-cache,perf-dfa,perf-inline,perf-literal,perf-onepass,std,unicode,unicode-age,unicode-bool,unicode-case,unicode-gencat,unicode-perl,unicode-script,unicode-segment (*)
+regex-automata v0.4.16|alloc,dfa-build,dfa-onepass,dfa-search,hybrid,meta,nfa-backtrack,nfa-pikevm,nfa-thompson,perf-inline,perf-literal,perf-literal-multisubstring,perf-literal-substring,std,syntax,unicode,unicode-age,unicode-bool,unicode-case,unicode-gencat,unicode-perl,unicode-script,unicode-segment,unicode-word-boundary (*)
+regex-syntax v0.8.11|default,std,unicode,unicode-age,unicode-bool,unicode-case,unicode-gencat,unicode-perl,unicode-script,unicode-segment
+rusqlite v0.32.1|bundled,modern_sqlite
+bitflags v2.13.1|std
+fallible-iterator v0.3.0|alloc,default
+fallible-streaming-iterator v0.1.9|
+hashlink v0.9.1|
+hashbrown v0.14.5|ahash,inline-more
+ahash v0.8.12|
+cfg-if v1.0.4|
+once_cell v1.21.4|alloc,default,race,std
+zerocopy v0.8.55|simd
+libsqlite3-sys v0.30.1|bundled,bundled_bindings,cc,default,min_sqlite_version_3_14_0,pkg-config,vcpkg
+smallvec v1.15.2|
+serde v1.0.229|alloc,default,derive,serde_derive,std (*)
+serde_json v1.0.151|default,std (*)
+sha2 v0.10.9|default,std (*)
+tantivy v0.26.2 (https://github.com/Otzaria/tantivy?rev=130b2682807d2a609d09ba432ba4d0ccc8faf7ed#130b2682)|columnar-zstd-compression,fs4,lz4-compression,lz4_flex,memmap2,mmap,tempfile,zstd,zstd-compression
+aho-corasick v1.1.4|default,perf-literal,std (*)
+arc-swap v1.9.2|
+rustversion v1.0.23 (proc-macro)|
+base64 v0.22.1|alloc,default,std
+bitpacking v0.9.3|bitpacker1x,bitpacker4x
+crunchy v0.2.4|default,limit_128
+bon v3.9.3|alloc,default,std
+bon-macros v3.9.3 (proc-macro)|alloc,default,std
+darling v0.23.0|default,suggestions
+darling_core v0.23.0|strsim,suggestions
+ident_case v1.0.1|
+proc-macro2 v1.0.107|default,proc-macro (*)
+quote v1.0.47|default,proc-macro (*)
+strsim v0.11.1|
+syn v2.0.119|clone-impls,default,derive,extra-traits,full,parsing,printing,proc-macro,visit,visit-mut (*)
+darling_macro v0.23.0 (proc-macro)|
+darling_core v0.23.0|strsim,suggestions (*)
+quote v1.0.47|default,proc-macro (*)
+syn v2.0.119|clone-impls,default,derive,extra-traits,full,parsing,printing,proc-macro,visit,visit-mut (*)
+ident_case v1.0.1|
+prettyplease v0.2.37|
+proc-macro2 v1.0.107|default,proc-macro (*)
+syn v2.0.119|clone-impls,default,derive,extra-traits,full,parsing,printing,proc-macro,visit,visit-mut (*)
+proc-macro2 v1.0.107|default,proc-macro (*)
+quote v1.0.47|default,proc-macro (*)
+rustversion v1.0.23 (proc-macro)|
+syn v2.0.119|clone-impls,default,derive,extra-traits,full,parsing,printing,proc-macro,visit,visit-mut (*)
+rustversion v1.0.23 (proc-macro)|
+byteorder v1.5.0|default,std
+census v0.4.2|
+crc32fast v1.5.0|default,std (*)
+crossbeam-channel v0.5.16|default,std
+crossbeam-utils v0.8.22|default,std
+datasketches v0.2.0|
+downcast-rs v2.0.2|default,std,sync
+fastdivide v0.4.2|
+fnv v1.0.7|default,std
+fs4 v0.13.1|default,sync
+rustix v1.1.4|alloc,default,fs,std
+bitflags v2.13.1|std
+linux-raw-sys v0.12.1|auxvec,elf,errno,general,ioctl,no_std
+htmlescape v0.3.1|
+itertools v0.14.0|default,use_alloc,use_std
+either v1.17.0|std,use_std
+levenshtein_automata v0.2.1|
+log v0.4.33|std
+lru v0.16.4|default,hashbrown
+hashbrown v0.16.1|allocator-api2,default,default-hasher,equivalent,inline-more,raw-entry
+allocator-api2 v0.2.21|alloc
+equivalent v1.0.2|
+foldhash v0.2.0|
+lz4_flex v0.13.1|
+measure_time v0.9.0|
+log v0.4.33|std
+memmap2 v0.9.11| (*)
+once_cell v1.21.4|alloc,default,race,std
+oneshot v0.1.13|async,default,std
+rayon v1.12.0| (*)
+regex v1.13.1|default,perf,perf-backtrack,perf-cache,perf-dfa,perf-inline,perf-literal,perf-onepass,std,unicode,unicode-age,unicode-bool,unicode-case,unicode-gencat,unicode-perl,unicode-script,unicode-segment (*)
+rustc-hash v2.1.3|default,std
+serde v1.0.229|alloc,default,derive,serde_derive,std (*)
+serde_json v1.0.151|default,std (*)
+sketches-ddsketch v0.4.0|serde,use_serde
+serde v1.0.229|alloc,default,derive,serde_derive,std (*)
+smallvec v1.15.2|
+tantivy-bitpacker v0.10.0 (https://github.com/Otzaria/tantivy?rev=130b2682807d2a609d09ba432ba4d0ccc8faf7ed#130b2682)|
+bitpacking v0.9.3|bitpacker1x,bitpacker4x (*)
+tantivy-columnar v0.7.0 (https://github.com/Otzaria/tantivy?rev=130b2682807d2a609d09ba432ba4d0ccc8faf7ed#130b2682)|zstd-compression
+downcast-rs v2.0.2|default,std,sync
+fastdivide v0.4.2|
+itertools v0.14.0|default,use_alloc,use_std (*)
+serde v1.0.229|alloc,default,derive,serde_derive,std (*)
+tantivy-bitpacker v0.10.0 (https://github.com/Otzaria/tantivy?rev=130b2682807d2a609d09ba432ba4d0ccc8faf7ed#130b2682)| (*)
+tantivy-common v0.11.0 (https://github.com/Otzaria/tantivy?rev=130b2682807d2a609d09ba432ba4d0ccc8faf7ed#130b2682)|
+async-trait v0.1.91 (proc-macro)|
+proc-macro2 v1.0.107|default,proc-macro (*)
+quote v1.0.47|default,proc-macro (*)
+syn v3.0.3|clone-impls,default,derive,full,parsing,printing,proc-macro,visit-mut (*)
+byteorder v1.5.0|default,std
+ownedbytes v0.9.0 (https://github.com/Otzaria/tantivy?rev=130b2682807d2a609d09ba432ba4d0ccc8faf7ed#130b2682)|
+stable_deref_trait v1.2.1|alloc,default,std
+serde v1.0.229|alloc,default,derive,serde_derive,std (*)
+time v0.3.54|alloc,default,formatting,parsing,serde,serde-well-known,std
+deranged v0.5.8|default,serde
+serde_core v1.0.229|alloc,result,std
+num-conv v0.2.2|
+powerfmt v0.2.0|
+serde_core v1.0.229|alloc,result,std
+time-core v0.1.9|
+tantivy-sstable v0.7.0 (https://github.com/Otzaria/tantivy?rev=130b2682807d2a609d09ba432ba4d0ccc8faf7ed#130b2682)|zstd,zstd-compression
+futures-util v0.3.33|alloc,async-await,async-await-macro,channel,default,futures-channel,futures-io,futures-macro,futures-sink,io,memchr,sink,slab,std (*)
+itertools v0.14.0|default,use_alloc,use_std (*)
+tantivy-bitpacker v0.10.0 (https://github.com/Otzaria/tantivy?rev=130b2682807d2a609d09ba432ba4d0ccc8faf7ed#130b2682)| (*)
+tantivy-common v0.11.0 (https://github.com/Otzaria/tantivy?rev=130b2682807d2a609d09ba432ba4d0ccc8faf7ed#130b2682)| (*)
+tantivy-fst v0.5.0 (/workspace/scratch/823dd8bcb941/engine-rebased/rust/vendor/tantivy-fst)|default,regex,regex-syntax
+byteorder v1.5.0|default,std
+regex-syntax v0.8.11|default,std,unicode,unicode-age,unicode-bool,unicode-case,unicode-gencat,unicode-perl,unicode-script,unicode-segment
+utf8-ranges v1.0.5|
+zstd v0.13.3|arrays,default,experimental,legacy,zdict_builder
+zstd-safe v7.2.4|arrays,experimental,legacy,std,zdict_builder
+zstd-sys v2.0.16+zstd.1.5.7|experimental,legacy,std,zdict_builder
+tantivy-stacker v0.7.0 (https://github.com/Otzaria/tantivy?rev=130b2682807d2a609d09ba432ba4d0ccc8faf7ed#130b2682)|
+murmurhash32 v0.3.1|
+tantivy-common v0.11.0 (https://github.com/Otzaria/tantivy?rev=130b2682807d2a609d09ba432ba4d0ccc8faf7ed#130b2682)| (*)
+tantivy-common v0.11.0 (https://github.com/Otzaria/tantivy?rev=130b2682807d2a609d09ba432ba4d0ccc8faf7ed#130b2682)| (*)
+tantivy-fst v0.5.0 (/workspace/scratch/823dd8bcb941/engine-rebased/rust/vendor/tantivy-fst)|default,regex,regex-syntax (*)
+tantivy-query-grammar v0.26.0 (https://github.com/Otzaria/tantivy?rev=130b2682807d2a609d09ba432ba4d0ccc8faf7ed#130b2682)|
+fnv v1.0.7|default,std
+nom v7.1.3|alloc,default,std
+memchr v2.8.3|alloc,default,std
+minimal-lexical v0.2.1|std
+ordered-float v5.3.0|default,std
+num-traits v0.2.19|std
+serde v1.0.229|alloc,default,derive,serde_derive,std (*)
+serde_json v1.0.151|default,std (*)
+tantivy-stacker v0.7.0 (https://github.com/Otzaria/tantivy?rev=130b2682807d2a609d09ba432ba4d0ccc8faf7ed#130b2682)| (*)
+tantivy-tokenizer-api v0.7.0 (https://github.com/Otzaria/tantivy?rev=130b2682807d2a609d09ba432ba4d0ccc8faf7ed#130b2682)|
+serde v1.0.229|alloc,default,derive,serde_derive,std (*)
+tempfile v3.27.0|default,getrandom
+fastrand v2.5.0|alloc,default,std
+getrandom v0.4.3|
+cfg-if v1.0.4|
+libc v0.2.189|default,std
+once_cell v1.21.4|alloc,default,race,std
+rustix v1.1.4|alloc,default,fs,std (*)
+thiserror v2.0.19|default,std (*)
+time v0.3.54|alloc,default,formatting,parsing,serde,serde-well-known,std (*)
+typetag v0.2.23|
+erased-serde v0.4.10|alloc
+serde_core v1.0.229|alloc,result,std
+typeid v1.0.3|
+inventory v0.3.24|
+once_cell v1.21.4|alloc,default,race,std
+serde v1.0.229|alloc,default,derive,serde_derive,std (*)
+typetag-impl v0.2.23 (proc-macro)|
+proc-macro2 v1.0.107|default,proc-macro (*)
+quote v1.0.47|default,proc-macro (*)
+syn v3.0.3|clone-impls,default,derive,full,parsing,printing,proc-macro,visit-mut (*)
+uuid v1.24.0|default,rng,serde,std,v4
+getrandom v0.4.3| (*)
+serde_core v1.0.229|alloc,result,std
+zstd v0.13.3|arrays,default,experimental,legacy,zdict_builder (*)
+tantivy-fst v0.5.0 (/workspace/scratch/823dd8bcb941/engine-rebased/rust/vendor/tantivy-fst)|default,regex,regex-syntax (*)
+tempfile v3.27.0|default,getrandom (*)
+unicode-segmentation v1.13.3|
+zstd v0.13.3|arrays,default,experimental,legacy,zdict_builder (*)
