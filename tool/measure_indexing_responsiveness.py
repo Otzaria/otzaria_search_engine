@@ -51,8 +51,19 @@ def main():
     if args.repeats < 2:
         parser.error("at least two repetitions are required")
     args.base, args.head, args.out = (p.resolve() for p in (args.base, args.head, args.out))
+    if not hasattr(os, "sched_getaffinity") or shutil.which("taskset") is None:
+        parser.error("requires Linux with sched_getaffinity and taskset")
     args.out.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(args.head / "rust/tests/indexing_throughput.rs", args.base / "rust/tests/indexing_throughput.rs")
+    base_test = args.base / "rust/tests/indexing_throughput.rs"
+    original_test = base_test.read_bytes()
+    shutil.copy2(args.head / "rust/tests/indexing_throughput.rs", base_test)
+    try:
+        measure(args)
+    finally:
+        base_test.write_bytes(original_test)
+
+
+def measure(args):
     cpus = sorted(os.sched_getaffinity(0))
     environment = os.environ | {
         "CARGO_BUILD_JOBS": "1", "OTZARIA_BENCH_LINES": "12000",
