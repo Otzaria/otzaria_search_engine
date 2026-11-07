@@ -71,7 +71,7 @@ pub(crate) fn writer_threads(economy: bool, cores: usize, mobile: bool) -> usize
     if economy || mobile {
         1
     } else {
-        (cores / 4).clamp(1, 8)
+        (cores / 2).clamp(1, 8)
     }
 }
 
@@ -470,7 +470,7 @@ mod tests {
             assert_eq!(economy.reservation(), 3 << 20);
             assert_eq!((economy.book_workers, economy.cpu_threads), (1, 1));
             assert_eq!(writer_threads(true, cores, false), 1);
-            assert_eq!(writer_threads(false, cores, false), (cores / 4).clamp(1, 8));
+            assert_eq!(writer_threads(false, cores, false), (cores / 2).clamp(1, 8));
             let mobile = PreparationPolicy::for_platform(false, cores, true);
             assert_eq!((mobile.book_workers, mobile.cpu_threads), (1, 1));
             assert_eq!(mobile.reservation(), 24 << 20);
