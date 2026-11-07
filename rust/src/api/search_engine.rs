@@ -1,6 +1,7 @@
+#[cfg(feature = "flutter-bridge")]
 use crate::frb_generated::StreamSink;
 use anyhow::{Context, Result};
-use flutter_rust_bridge::frb;
+use flutter_rust_bridge_macros::frb;
 use log::{debug, error, info, warn};
 use lru::LruCache;
 use serde::{Deserialize, Serialize};
@@ -3424,6 +3425,18 @@ pub fn configure_line_source(db_path: String) -> Result<()> {
     crate::line_source::configure(&db_path)
 }
 
+/// Closes the library connection and invalidates row caches and ongoing scans even
+/// when the path is unchanged. After the active windows/scans finish, the next read
+/// opens the current file. Hosts call this after replacing a database at the same
+/// path; cache generations never identify text from the replaced connection.
+///
+/// As with `configure_line_source`, this configuration is process-wide: a host must
+/// serialize switching to an unrelated library with any old snapshot's requests.
+#[frb(ignore)]
+pub fn refresh_line_source(db_path: String) -> Result<()> {
+    crate::line_source::refresh(&db_path)
+}
+
 /// Whether results of a search on the mark-free text show the line with its nikud and
 /// cantillation (highlights unchanged), for lines that have them. Off by default; applies
 /// to every engine of the process. Vocalized searches always show them.
@@ -4787,6 +4800,9 @@ pub struct SearchEngine {
     index_path: PathBuf,
     index: Index,
     index_writer: Option<IndexWriter>,
+    // This handle may read an app-owned index but can never create a writer or
+    // mutate index/order/vector files, even if a caller invokes a write API.
+    read_only: bool,
     writer_heap_size: usize,
     economy_indexing: bool,
     index_reader: IndexReader,
@@ -5008,6 +5024,7 @@ impl SearchEngine {
             index_path: PathBuf::from(path),
             index,
             index_writer,
+            read_only: false,
             writer_heap_size: DEFAULT_WRITER_HEAP_SIZE,
             economy_indexing: false,
             index_reader,
@@ -5059,9 +5076,55 @@ impl SearchEngine {
         self.index_reader.reload().unwrap();
     }
 
+    /// Opens an existing compatible index without a writer or index metadata changes.
+    /// Missing, legacy and newer schemas are errors; this never creates or upgrades them.
+    /// Tantivy still takes its metadata coordination lock (which may create the lock
+    /// file), so this is a read-only *index handle*, not support for a filesystem that
+    /// forbids lock bookkeeping. Mutating APIs return an error for the handle's lifetime.
+    /// The reader is a stable snapshot. Use [`Self::refresh_reader`] for commits in the
+    /// same index directory; close/reopen the handle after replacing the directory.
+    /// Semantic artifact opening is refused because the sidecar currently performs
+    /// on-disk recovery while opening its otherwise read-only session.
+    #[frb(ignore)]
+    pub fn open_read_only(path: &str) -> Result<Self> {
+        let path = Path::new(path);
+        let compatibility = check_index_compatibility_path(path);
+        anyhow::ensure!(
+            compatibility.compatible,
+            "cannot open index read-only at {}: {} ({:?})",
+            path.display(),
+            compatibility.status,
+            compatibility.reason,
+        );
+        let directory = IndexDirectory::open(path)
+            .with_context(|| format!("cannot open index directory {}", path.display()))?;
+        let index = Index::open(directory)
+            .with_context(|| format!("cannot open index at {}", path.display()))?;
+        Self::from_read_only_index(index, path)
+    }
+
+    /// Publishes committed changes from the same open index. The exclusive receiver
+    /// keeps host-level searches from overlapping a refresh; Tantivy keeps any older
+    /// searcher alive until its users finish. It never commits or acquires a writer.
+    /// A directory replacement requires reopening, because mapped segments and the
+    /// directory object still belong to the previous index.
+    #[frb(ignore)]
+    pub fn refresh_reader(&mut self) -> Result<()> {
+        let compatibility = check_index_compatibility_path(&self.index_path);
+        anyhow::ensure!(
+            compatibility.compatible,
+            "cannot refresh index: {} ({:?})",
+            compatibility.status,
+            compatibility.reason,
+        );
+        self.index_reader.reload()?;
+        self.release_memory();
+        self.numbers_stale.store(true, Ordering::Release);
+        Ok(())
+    }
+
     /// An engine over an index opened by the caller, with no writer and no metadata written:
-    /// benchmarks on an index another process owns.
-    #[cfg(test)]
+    /// read-only hosts and benchmarks on an index another process owns.
     pub(crate) fn from_read_only_index(mut index: Index, path: &Path) -> Result<Self> {
         let schema = index.schema();
         register_hebrew_tokenizers_with(&index, false);
@@ -5077,6 +5140,7 @@ impl SearchEngine {
             index_path: path.to_path_buf(),
             index,
             index_writer: None,
+            read_only: true,
             writer_heap_size: DEFAULT_WRITER_HEAP_SIZE,
             economy_indexing: false,
             index_reader,
@@ -5630,6 +5694,12 @@ impl SearchEngine {
         &mut self,
         config: SemanticConfigInput,
     ) -> Result<SemanticStatus, SemanticError> {
+        if self.read_only {
+            return Err(SemanticError::new(
+                SemanticErrorKind::ReadOnlySession,
+                "index was opened read-only",
+            ));
+        }
         #[cfg(feature = "semantic-integration")]
         {
             // Whatever this changed, no page a search computed before it is served after it.
@@ -5795,6 +5865,14 @@ impl SearchEngine {
         &self,
         config: SemanticArtifactInput,
     ) -> Result<SemanticStatus, SemanticError> {
+        // The sidecar's current open performs recovery and garbage collection.
+        // A read-only vector session does not make that initial open write-free.
+        if self.read_only {
+            return Err(SemanticError::new(
+                SemanticErrorKind::ReadOnlySession,
+                "opening semantic artifacts can recover files on a read-only index",
+            ));
+        }
         #[cfg(feature = "semantic-integration")]
         {
             // Whatever this changed, no page a search computed before it is served after it.
@@ -6104,6 +6182,12 @@ impl SearchEngine {
         input: SemanticVectorsInstallInput,
         cancellation: &SemanticCancellationToken,
     ) -> Result<SemanticVectorsInstallReport, SemanticError> {
+        if self.read_only {
+            return Err(SemanticError::new(
+                SemanticErrorKind::ReadOnlySession,
+                "index was opened read-only",
+            ));
+        }
         #[cfg(feature = "semantic-integration")]
         {
             // Whatever this changed, no page a search computed before it is served after it.
@@ -6224,6 +6308,12 @@ impl SearchEngine {
         policy: Option<SemanticCompactionPolicy>,
         cancellation: &SemanticCancellationToken,
     ) -> Result<SemanticCompactionReport, SemanticError> {
+        if self.read_only {
+            return Err(SemanticError::new(
+                SemanticErrorKind::ReadOnlySession,
+                "index was opened read-only",
+            ));
+        }
         #[cfg(feature = "semantic-integration")]
         {
             // Whatever this changed, no page a search computed before it is served after it.
@@ -6343,6 +6433,14 @@ impl SearchEngine {
         vectors_dir: String,
         cancellation: &SemanticCancellationToken,
     ) -> Result<SemanticVectorsVerification, SemanticError> {
+        // Scrubbing can persist a damaged-segment marker. It is a sidecar write
+        // even though successful verification only reads vector data.
+        if self.read_only {
+            return Err(SemanticError::new(
+                SemanticErrorKind::ReadOnlySession,
+                "index was opened read-only",
+            ));
+        }
         #[cfg(feature = "semantic-integration")]
         {
             let vectors_dir = PathBuf::from(&vectors_dir);
@@ -6581,6 +6679,12 @@ impl SearchEngine {
         &self,
         books: Vec<SemanticBookInput>,
     ) -> Result<SemanticIndexingSummary, SemanticError> {
+        if self.read_only {
+            return Err(SemanticError::new(
+                SemanticErrorKind::ReadOnlySession,
+                "index was opened read-only",
+            ));
+        }
         #[cfg(feature = "semantic-integration")]
         {
             // Whatever this changed, no page a search computed before it is served after it.
@@ -6717,6 +6821,12 @@ impl SearchEngine {
         &self,
         source_book_keys: Vec<String>,
     ) -> Result<SemanticRemoveResult, SemanticError> {
+        if self.read_only {
+            return Err(SemanticError::new(
+                SemanticErrorKind::ReadOnlySession,
+                "index was opened read-only",
+            ));
+        }
         #[cfg(feature = "semantic-integration")]
         {
             // Whatever this changed, no page a search computed before it is served after it.
@@ -6762,6 +6872,12 @@ impl SearchEngine {
     ///
     /// `&self` for the same reason as [`Self::semantic_index_books`].
     pub fn reset_semantic_index(&self) -> Result<SemanticResetResult, SemanticError> {
+        if self.read_only {
+            return Err(SemanticError::new(
+                SemanticErrorKind::ReadOnlySession,
+                "index was opened read-only",
+            ));
+        }
         #[cfg(feature = "semantic-integration")]
         {
             // Whatever this changed, no page a search computed before it is served after it.
@@ -8066,6 +8182,7 @@ impl SearchEngine {
         section_ordinal: Option<u32>,
         extra_facets: Option<Vec<String>>,
     ) -> Result<()> {
+        self.ensure_write_access()?;
         let document = Self::single_input(
             ordinal,
             title,
@@ -8126,6 +8243,7 @@ impl SearchEngine {
     /// is enforced rather than documented. Already-normalized input passes
     /// through the fast paths at negligible cost.
     pub fn add_documents_batch(&mut self, docs: Vec<DocumentInput>) -> Result<()> {
+        self.ensure_write_access()?;
         self.write_inputs(docs, false)
     }
 
@@ -8308,6 +8426,7 @@ impl SearchEngine {
         stored_lines: Option<Vec<u32>>,
         source_hash: Option<u64>,
     ) -> Result<u32> {
+        self.ensure_write_access()?;
         self.add_text_book_impl(
             TextBookMeta {
                 title,
@@ -8339,6 +8458,7 @@ impl SearchEngine {
         stored_lines: Option<Vec<u32>>,
         source_hash: Option<u64>,
     ) -> Result<u32> {
+        self.ensure_write_access()?;
         let text = match String::from_utf8_lossy(&text) {
             std::borrow::Cow::Borrowed(_) => {
                 // Valid UTF-8 — take ownership without re-copying.
@@ -9018,6 +9138,7 @@ impl SearchEngine {
         books: Vec<LibraryBookInput>,
         cancel: &IndexingCancellationToken,
     ) -> Result<Vec<LibraryBookResult>> {
+        self.ensure_write_access()?;
         let writer = self.index_writer.as_ref().context(
             "add_library_books needs an open index writer: call open_index_writer first",
         )?;
@@ -9027,6 +9148,7 @@ impl SearchEngine {
     /// Opens the index writer if it is closed (it reopens lazily after some maintenance
     /// calls); [`Self::add_library_books`] does not open it itself.
     pub fn open_index_writer(&mut self) -> Result<()> {
+        self.ensure_write_access()?;
         self.ensure_writer()
     }
 
@@ -9056,6 +9178,7 @@ impl SearchEngine {
         pages: Vec<PdfPageInput>,
         extra_facets: Option<Vec<String>>,
     ) -> Result<u32> {
+        self.ensure_write_access()?;
         let pages = pages
             .into_iter()
             .map(|page| PdfPageText {
@@ -9231,6 +9354,7 @@ impl SearchEngine {
         page_indexes: Vec<u32>,
         extra_facets: Option<Vec<String>>,
     ) -> Result<u32> {
+        self.ensure_write_access()?;
         let pages = pdf_pages_from_bytes(&bytes, &ends, &page_indexes)?;
         self.add_pdf_pages(title, topics, file_path, pages, extra_facets)
     }
@@ -9251,6 +9375,7 @@ impl SearchEngine {
         section_ordinal: Option<u32>,
         extra_facets: Option<Vec<String>>,
     ) -> Result<()> {
+        self.ensure_write_access()?;
         let document = Self::single_input(
             ordinal,
             title,
@@ -9270,6 +9395,7 @@ impl SearchEngine {
     /// Normalizes `text`/`text_vocalized` exactly like
     /// [`Self::add_documents_batch`].
     pub fn upsert_documents_batch(&mut self, docs: Vec<DocumentInput>) -> Result<()> {
+        self.ensure_write_access()?;
         self.write_inputs(docs, true)
     }
 
@@ -9297,6 +9423,7 @@ impl SearchEngine {
 
     /// Delete a document by its numeric id. Does not commit.
     pub fn delete_document_by_id(&mut self, id: u64) -> Result<()> {
+        self.ensure_write_access()?;
         self.writer_mut()?
             .delete_query(Box::new(IdSetQuery::new([id])))?;
         Ok(())
@@ -9309,6 +9436,7 @@ impl SearchEngine {
     /// [`Self::remove_documents_by_title`], which matches any book sharing the
     /// title). Does not commit.
     pub fn delete_documents_by_file_path(&mut self, file_path: &str) -> Result<()> {
+        self.ensure_write_access()?;
         let file_path_f = self.schema.get_field("filePath")?;
         self.writer_mut()?
             .delete_term(Term::from_field_text(file_path_f, file_path));
@@ -9319,6 +9447,7 @@ impl SearchEngine {
     /// for e.g. removing a whole custom folder of personal books. Does not
     /// commit.
     pub fn delete_documents_by_file_paths(&mut self, file_paths: Vec<String>) -> Result<()> {
+        self.ensure_write_access()?;
         let file_path_f = self.schema.get_field("filePath")?;
         let writer = self.writer_mut()?;
         for path in file_paths {
@@ -9330,6 +9459,7 @@ impl SearchEngine {
     /// Delete all documents matching a title. Does not commit.
     /// Kept for backward compatibility – prefer delete_document_by_id.
     pub fn remove_documents_by_title(&mut self, title: &str) -> Result<()> {
+        self.ensure_write_access()?;
         let title_field = self.schema.get_field("title")?;
         self.writer_mut()?
             .delete_term(Term::from_field_text(title_field, title));
@@ -9338,6 +9468,7 @@ impl SearchEngine {
 
     /// Delete all documents. Does not commit.
     pub fn clear(&mut self) -> Result<()> {
+        self.ensure_write_access()?;
         self.writer_mut()?.delete_all_documents()?;
         Ok(())
     }
@@ -9350,6 +9481,7 @@ impl SearchEngine {
     /// while it is set every (re)opened writer keeps `NoMergePolicy`. Off by
     /// default; incremental indexing keeps normal merging.
     pub fn set_bulk_indexing(&mut self, enabled: bool) -> Result<()> {
+        self.ensure_write_access()?;
         self.bulk_indexing = enabled;
         let index_path = self.index_path.clone();
         let writer = self.writer_mut()?;
@@ -9382,6 +9514,7 @@ impl SearchEngine {
     /// text, SQLite and the writer: this is not a process RSS limit. Bulk merge policy
     /// is independent. Live writer changes commit pending documents before replacement.
     pub fn set_economy_indexing(&mut self, enabled: bool) -> Result<()> {
+        self.ensure_write_access()?;
         self.set_economy_indexing_with_reload(enabled, |reader| Ok(reader.reload()?))
     }
 
@@ -9439,6 +9572,7 @@ impl SearchEngine {
 
     /// Flush pending writes to disk and refresh the reader.
     pub fn commit(&mut self) -> Result<()> {
+        self.ensure_write_access()?;
         let started = Instant::now();
         self.writer_mut()?.commit()?;
         let commit_elapsed = started.elapsed();
@@ -9455,6 +9589,7 @@ impl SearchEngine {
 
     /// Discard all pending writes since the last commit.
     pub fn rollback(&mut self) -> Result<()> {
+        self.ensure_write_access()?;
         self.writer_mut()?.rollback()?;
         // Tantivy recreates its writer and resets the merge policy on rollback.
         self.set_bulk_indexing(self.bulk_indexing)?;
@@ -9471,6 +9606,7 @@ impl SearchEngine {
     /// Returns the mapping's revision, which grows on every change; the same mapping again
     /// changes nothing. A `file_path` given twice is an error, and the mapping is kept.
     pub fn set_book_order(&self, entries: Vec<BookOrderEntry>) -> Result<u64> {
+        self.ensure_write_access()?;
         let mut places = HashMap::with_capacity(entries.len());
         for entry in entries {
             let place = BookPlace {
@@ -9861,6 +9997,7 @@ impl SearchEngine {
     /// when its only alternative is rewriting a much larger healthy segment.
     /// Segments with a high deleted-doc share are compacted independently.
     pub fn optimize(&mut self) -> Result<()> {
+        self.ensure_write_access()?;
         let started = Instant::now();
         let before_count = self.index.searchable_segment_ids()?.len();
         debug!("optimize: before={before_count}");
@@ -10263,6 +10400,7 @@ impl SearchEngine {
     /// Drops the single-word truncation flag — see [`Self::search`]; use
     /// [`Self::search_and_count`] ([`SearchPageResult::truncated`]) when
     /// partiality must surface.
+    #[cfg(feature = "flutter-bridge")]
     pub fn search_stream(
         &self,
         regex_terms: Vec<String>,
@@ -10603,6 +10741,7 @@ impl SearchEngine {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[cfg(feature = "flutter-bridge")]
     pub fn search_exact_stream(
         &self,
         query: String,
@@ -10644,6 +10783,7 @@ impl SearchEngine {
     /// replacing the separate `count_exact` + `count_by_book_exact` calls a
     /// search screen would otherwise issue for the same query.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(feature = "flutter-bridge")]
     pub fn search_exact_stream_with_counts(
         &self,
         query: String,
@@ -11009,6 +11149,7 @@ impl SearchEngine {
     /// see [`Self::search`]; use [`Self::search_advanced_stream_with_counts`]
     /// (its first [`SearchStreamUpdate`] carries `truncated`) when the UI
     /// must flag partial results.
+    #[cfg(feature = "flutter-bridge")]
     pub fn search_advanced_stream(
         &self,
         query: String,
@@ -11102,6 +11243,7 @@ impl SearchEngine {
     /// replacing the separate `count_advanced` + `count_by_book_advanced`
     /// calls a search screen would otherwise issue for the same query.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(feature = "flutter-bridge")]
     pub fn search_advanced_stream_with_counts(
         &self,
         query: String,
@@ -11621,6 +11763,7 @@ impl SearchEngine {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[cfg(feature = "flutter-bridge")]
     pub fn search_fuzzy_stream(
         &self,
         query: String,
@@ -11684,6 +11827,7 @@ impl SearchEngine {
     /// replacing the separate `count_fuzzy` + `count_by_book_fuzzy` calls a
     /// search screen would otherwise issue for the same query.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(feature = "flutter-bridge")]
     pub fn search_fuzzy_stream_with_counts(
         &self,
         query: String,
@@ -12004,6 +12148,11 @@ impl SearchEngine {
         ))
     }
 
+    fn ensure_write_access(&self) -> Result<()> {
+        anyhow::ensure!(!self.read_only, "index was opened read-only");
+        Ok(())
+    }
+
     fn ensure_writer(&mut self) -> Result<()> {
         if self.index_writer.is_none() {
             debug!("writer: reopening lazily");
@@ -12028,6 +12177,7 @@ impl SearchEngine {
     }
 
     fn open_writer(&self) -> Result<IndexWriter> {
+        self.ensure_write_access()?;
         let writer = self.index.writer(self.writer_heap_size)?;
         crate::indexing_buffers::cleanup_abandoned(&self.index_path);
         if self.bulk_indexing {
@@ -14316,6 +14466,7 @@ impl SearchEngine {
     /// sees 0 results and no failure. This was the silent-failure half of the
     /// state-limit bug, and relaxing budgets makes `max_expansions` overflow
     /// (which must stay an error) more reachable, so it has to be visible.
+    #[cfg(feature = "flutter-bridge")]
     fn surface_stream_error<T: crate::frb_generated::SseEncode>(
         sink: &StreamSink<T>,
         result: Result<()>,
@@ -14332,6 +14483,7 @@ impl SearchEngine {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[cfg(feature = "flutter-bridge")]
     fn run_search_stream<F>(
         &self,
         query: Box<dyn Query>,
@@ -16823,6 +16975,7 @@ impl SearchEngine {
     /// [`UserRegexStreamUpdate`] events. Grouping is not offered. An invalid pattern is an
     /// error event; check [`parse_user_regex`] first.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(feature = "flutter-bridge")]
     pub fn search_user_regex_stream(
         &self,
         raw: String,
@@ -32291,7 +32444,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "flutter-bridge"))]
 #[path = "search_responsiveness_tests.rs"]
 mod search_responsiveness_tests;
 

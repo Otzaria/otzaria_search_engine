@@ -1,3 +1,9 @@
+[workspace]
+members = ["core"]
+exclude = ["vendor/tantivy-fst"]
+default-members = ["."]
+resolver = "2"
+
 [package]
 name = "search_engine"
 version = "7.0.1"
@@ -10,9 +16,12 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 # SQLite comes from exactly one of the two features below; enabling both or
 # neither is a compile error (see `src/sqlite_host.rs`). libsqlite3-sys lets
 # `loadable_extension` silently win over `bundled`, so app builds must use
-# `--no-default-features --features sqlite-host` rather than adding to the
+# `--no-default-features --features sqlite-host,flutter-bridge` rather than adding to the
 # default.
-default = ["sqlite-bundled"]
+default = ["sqlite-bundled", "flutter-bridge"]
+# The Dart adapter is optional. Rust consumers use otzaria-search-core, which
+# forwards SQLite/semantic features without pulling in FRB or a Dart runtime.
+flutter-bridge = ["dep:flutter_rust_bridge"]
 # CLI binaries, tests and build tools: SQLite compiled into this crate.
 sqlite-bundled = ["rusqlite/bundled"]
 # The app: no SQLite inside the library. Every call goes through the API table
@@ -80,7 +89,11 @@ path = "src/bin/pack_semantic_artifact.rs"
 
 [dependencies]
 env_logger = "0.11.10"
-flutter_rust_bridge = "=2.13.0"
+flutter_rust_bridge = { version = "=2.13.0", optional = true }
+# Build-time annotations only, with no Dart runtime. Keeping the same macros in
+# both hosts preserves the data types and FRB codegen; cfg_attr around field
+# defaults would not be stripped by the outer FRB struct macro.
+flutter_rust_bridge_macros = "=2.13.0"
 tempfile = "3.27.0"
 tantivy = { version = "=0.26.2", default-features = false, features = ["mmap", "lz4-compression", "columnar-zstd-compression", "zstd-compression"] }
 tantivy-fst = "=0.5.0"

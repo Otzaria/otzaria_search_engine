@@ -1,0 +1,905 @@
+{
+  "book_counts": {
+    "id:101": 2,
+    "id:202": 2,
+    "id:303": 1
+  },
+  "document_count": 9,
+  "pages": [
+    {
+      "case": "exact-catalogue",
+      "group_count": null,
+      "results": [
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:202",
+          "id": 8589934593,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 0,
+          "text": "<font color=red>מחשב</font> מהיר",
+          "text_status": "Ok",
+          "title": "Device B"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:202",
+          "id": 8589934594,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> נוח",
+          "text_status": "Ok",
+          "title": "Device B"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:303",
+          "id": 12884901890,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> קטן",
+          "text_status": "Ok",
+          "title": "Accessory"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:101",
+          "id": 4294967298,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "חומרה",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> מהיר",
+          "text_status": "Ok",
+          "title": "Device A"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:101",
+          "id": 4294967300,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "חומרה",
+          "segment": 3,
+          "text": "<font color=red>מחשב</font> קטן",
+          "text_status": "Ok",
+          "title": "Device A"
+        }
+      ],
+      "total_count": 5,
+      "truncated": false
+    },
+    {
+      "case": "phrase-catalogue",
+      "group_count": null,
+      "results": [
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:202",
+          "id": 8589934593,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 0,
+          "text": "<font color=red>מחשב</font> <font color=red>מהיר</font>",
+          "text_status": "Ok",
+          "title": "Device B"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:101",
+          "id": 4294967298,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "חומרה",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> <font color=red>מהיר</font>",
+          "text_status": "Ok",
+          "title": "Device A"
+        }
+      ],
+      "total_count": 2,
+      "truncated": false
+    },
+    {
+      "case": "fuzzy-catalogue",
+      "group_count": null,
+      "results": [
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:202",
+          "id": 8589934593,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 0,
+          "text": "<font color=red>מחשב</font> מהיר",
+          "text_status": "Ok",
+          "title": "Device B"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:202",
+          "id": 8589934594,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> נוח",
+          "text_status": "Ok",
+          "title": "Device B"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:303",
+          "id": 12884901890,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> קטן",
+          "text_status": "Ok",
+          "title": "Accessory"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:101",
+          "id": 4294967298,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "חומרה",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> מהיר",
+          "text_status": "Ok",
+          "title": "Device A"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:101",
+          "id": 4294967300,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "חומרה",
+          "segment": 3,
+          "text": "<font color=red>מחשב</font> קטן",
+          "text_status": "Ok",
+          "title": "Device A"
+        }
+      ],
+      "total_count": 5,
+      "truncated": false
+    },
+    {
+      "case": "grouped-catalogue",
+      "group_count": 5,
+      "results": [
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:202",
+          "id": 8589934593,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 0,
+          "text": "<font color=red>מחשב</font> מהיר",
+          "text_status": "Ok",
+          "title": "Device B"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:202",
+          "id": 8589934594,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> נוח",
+          "text_status": "Ok",
+          "title": "Device B"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:303",
+          "id": 12884901890,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> קטן",
+          "text_status": "Ok",
+          "title": "Accessory"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:101",
+          "id": 4294967298,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "חומרה",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> מהיר",
+          "text_status": "Ok",
+          "title": "Device A"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:101",
+          "id": 4294967300,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "חומרה",
+          "segment": 3,
+          "text": "<font color=red>מחשב</font> קטן",
+          "text_status": "Ok",
+          "title": "Device A"
+        }
+      ],
+      "total_count": 5,
+      "truncated": false
+    },
+    {
+      "case": "exact-generation",
+      "group_count": null,
+      "results": [
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:303",
+          "id": 12884901890,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> קטן",
+          "text_status": "Ok",
+          "title": "Accessory"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:101",
+          "id": 4294967298,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "חומרה",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> מהיר",
+          "text_status": "Ok",
+          "title": "Device A"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:101",
+          "id": 4294967300,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "חומרה",
+          "segment": 3,
+          "text": "<font color=red>מחשב</font> קטן",
+          "text_status": "Ok",
+          "title": "Device A"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:202",
+          "id": 8589934593,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 0,
+          "text": "<font color=red>מחשב</font> מהיר",
+          "text_status": "Ok",
+          "title": "Device B"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:202",
+          "id": 8589934594,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> נוח",
+          "text_status": "Ok",
+          "title": "Device B"
+        }
+      ],
+      "total_count": 5,
+      "truncated": false
+    },
+    {
+      "case": "phrase-generation",
+      "group_count": null,
+      "results": [
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:101",
+          "id": 4294967298,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "חומרה",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> <font color=red>מהיר</font>",
+          "text_status": "Ok",
+          "title": "Device A"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:202",
+          "id": 8589934593,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 0,
+          "text": "<font color=red>מחשב</font> <font color=red>מהיר</font>",
+          "text_status": "Ok",
+          "title": "Device B"
+        }
+      ],
+      "total_count": 2,
+      "truncated": false
+    },
+    {
+      "case": "fuzzy-generation",
+      "group_count": null,
+      "results": [
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:303",
+          "id": 12884901890,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> קטן",
+          "text_status": "Ok",
+          "title": "Accessory"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:101",
+          "id": 4294967298,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "חומרה",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> מהיר",
+          "text_status": "Ok",
+          "title": "Device A"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:101",
+          "id": 4294967300,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "חומרה",
+          "segment": 3,
+          "text": "<font color=red>מחשב</font> קטן",
+          "text_status": "Ok",
+          "title": "Device A"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:202",
+          "id": 8589934593,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 0,
+          "text": "<font color=red>מחשב</font> מהיר",
+          "text_status": "Ok",
+          "title": "Device B"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:202",
+          "id": 8589934594,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> נוח",
+          "text_status": "Ok",
+          "title": "Device B"
+        }
+      ],
+      "total_count": 5,
+      "truncated": false
+    },
+    {
+      "case": "grouped-generation",
+      "group_count": 5,
+      "results": [
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:303",
+          "id": 12884901890,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> קטן",
+          "text_status": "Ok",
+          "title": "Accessory"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:101",
+          "id": 4294967298,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "חומרה",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> מהיר",
+          "text_status": "Ok",
+          "title": "Device A"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:101",
+          "id": 4294967300,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "חומרה",
+          "segment": 3,
+          "text": "<font color=red>מחשב</font> קטן",
+          "text_status": "Ok",
+          "title": "Device A"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:202",
+          "id": 8589934593,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 0,
+          "text": "<font color=red>מחשב</font> מהיר",
+          "text_status": "Ok",
+          "title": "Device B"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:202",
+          "id": 8589934594,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> נוח",
+          "text_status": "Ok",
+          "title": "Device B"
+        }
+      ],
+      "total_count": 5,
+      "truncated": false
+    },
+    {
+      "case": "exact-relevance",
+      "group_count": null,
+      "results": [
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:101",
+          "id": 4294967300,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "חומרה",
+          "segment": 3,
+          "text": "<font color=red>מחשב</font> קטן",
+          "text_status": "Ok",
+          "title": "Device A"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:202",
+          "id": 8589934593,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 0,
+          "text": "<font color=red>מחשב</font> מהיר",
+          "text_status": "Ok",
+          "title": "Device B"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:202",
+          "id": 8589934594,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> נוח",
+          "text_status": "Ok",
+          "title": "Device B"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:303",
+          "id": 12884901890,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> קטן",
+          "text_status": "Ok",
+          "title": "Accessory"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:101",
+          "id": 4294967298,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "חומרה",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> מהיר",
+          "text_status": "Ok",
+          "title": "Device A"
+        }
+      ],
+      "total_count": 5,
+      "truncated": false
+    },
+    {
+      "case": "phrase-relevance",
+      "group_count": null,
+      "results": [
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:202",
+          "id": 8589934593,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 0,
+          "text": "<font color=red>מחשב</font> <font color=red>מהיר</font>",
+          "text_status": "Ok",
+          "title": "Device B"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:101",
+          "id": 4294967298,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "חומרה",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> <font color=red>מהיר</font>",
+          "text_status": "Ok",
+          "title": "Device A"
+        }
+      ],
+      "total_count": 2,
+      "truncated": false
+    },
+    {
+      "case": "fuzzy-relevance",
+      "group_count": null,
+      "results": [
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:101",
+          "id": 4294967300,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "חומרה",
+          "segment": 3,
+          "text": "<font color=red>מחשב</font> קטן",
+          "text_status": "Ok",
+          "title": "Device A"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:202",
+          "id": 8589934593,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 0,
+          "text": "<font color=red>מחשב</font> מהיר",
+          "text_status": "Ok",
+          "title": "Device B"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:202",
+          "id": 8589934594,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> נוח",
+          "text_status": "Ok",
+          "title": "Device B"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:303",
+          "id": 12884901890,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> קטן",
+          "text_status": "Ok",
+          "title": "Accessory"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:101",
+          "id": 4294967298,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "חומרה",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> מהיר",
+          "text_status": "Ok",
+          "title": "Device A"
+        }
+      ],
+      "total_count": 5,
+      "truncated": false
+    },
+    {
+      "case": "grouped-relevance",
+      "group_count": 5,
+      "results": [
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:202",
+          "id": 8589934593,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 0,
+          "text": "<font color=red>מחשב</font> מהיר",
+          "text_status": "Ok",
+          "title": "Device B"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:202",
+          "id": 8589934594,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> נוח",
+          "text_status": "Ok",
+          "title": "Device B"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:303",
+          "id": 12884901890,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> קטן",
+          "text_status": "Ok",
+          "title": "Accessory"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:101",
+          "id": 4294967298,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "חומרה",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> מהיר",
+          "text_status": "Ok",
+          "title": "Device A"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:101",
+          "id": 4294967300,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "חומרה",
+          "segment": 3,
+          "text": "<font color=red>מחשב</font> קטן",
+          "text_status": "Ok",
+          "title": "Device A"
+        }
+      ],
+      "total_count": 5,
+      "truncated": false
+    },
+    {
+      "case": "pagination",
+      "group_count": null,
+      "results": [
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:202",
+          "id": 8589934594,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> נוח",
+          "text_status": "Ok",
+          "title": "Device B"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:303",
+          "id": 12884901890,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> קטן",
+          "text_status": "Ok",
+          "title": "Accessory"
+        }
+      ],
+      "total_count": 5,
+      "truncated": false
+    },
+    {
+      "case": "facet",
+      "group_count": null,
+      "results": [
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:202",
+          "id": 8589934593,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 0,
+          "text": "<font color=red>מחשב</font> מהיר",
+          "text_status": "Ok",
+          "title": "Device B"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:202",
+          "id": 8589934594,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> נוח",
+          "text_status": "Ok",
+          "title": "Device B"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:101",
+          "id": 4294967298,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "חומרה",
+          "segment": 1,
+          "text": "<font color=red>מחשב</font> מהיר",
+          "text_status": "Ok",
+          "title": "Device A"
+        },
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:101",
+          "id": 4294967300,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "חומרה",
+          "segment": 3,
+          "text": "<font color=red>מחשב</font> קטן",
+          "text_status": "Ok",
+          "title": "Device A"
+        }
+      ],
+      "total_count": 4,
+      "truncated": false
+    },
+    {
+      "case": "vocalized",
+      "group_count": null,
+      "results": [
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:202",
+          "id": 8589934594,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "",
+          "segment": 1,
+          "text": "<font color=red>מַחְשֵׁב</font> נוח",
+          "text_status": "Ok",
+          "title": "Device B"
+        }
+      ],
+      "total_count": 1,
+      "truncated": false
+    },
+    {
+      "case": "advanced-negative",
+      "group_count": null,
+      "results": [
+        {
+          "continues_to_next_line": false,
+          "file_path": "id:101",
+          "id": 4294967299,
+          "is_pdf": false,
+          "merged": [],
+          "merged_count": 1,
+          "reference": "חומרה",
+          "segment": 2,
+          "text": "<font color=red>מסך</font> כחול",
+          "text_status": "Ok",
+          "title": "Device A"
+        }
+      ],
+      "total_count": 1,
+      "truncated": false
+    }
+  ]
+}

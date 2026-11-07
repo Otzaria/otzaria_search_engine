@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 compile_error!(
     "features `sqlite-host` and `sqlite-bundled` are mutually exclusive (libsqlite3-sys \
      silently lets `loadable_extension` win); build the app with \
-     `--no-default-features --features sqlite-host`"
+     `--no-default-features --features sqlite-host,flutter-bridge`"
 );
 #[cfg(not(any(feature = "sqlite-host", feature = "sqlite-bundled")))]
 compile_error!("enable exactly one of the features `sqlite-bundled` or `sqlite-host`");
