@@ -33,6 +33,7 @@ pub struct LexicalSearchCancelled;
 impl LexicalSearchCancelled {
     pub const MESSAGE: &'static str = "lexical search cancelled";
 
+    #[cfg(any(feature = "flutter-bridge", test))]
     pub(crate) fn is(err: &anyhow::Error) -> bool {
         err.downcast_ref::<Self>().is_some()
     }

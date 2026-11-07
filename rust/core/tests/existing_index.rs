@@ -1,4 +1,6 @@
-use otzaria_search_core::api::search_engine::{ResultsOrder, SearchEngine, TextStorage};
+use otzaria_search_core::api::search_engine::{
+    check_index_compatibility, ResultsOrder, SearchEngine, TextStorage,
+};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
@@ -34,6 +36,10 @@ fn reads_an_index_built_by_the_unmodified_canonical_7_0_1_engine() {
     let directory = tempfile::tempdir().unwrap();
     copy_index(directory.path());
     let before = files(directory.path());
+    let compatibility = check_index_compatibility(directory.path().to_string_lossy().into_owned());
+    assert!(compatibility.compatible);
+    assert_eq!(compatibility.found_schema_version, Some(10));
+    assert_eq!(compatibility.required_schema_version, 11);
     let expected: serde_json::Value =
         serde_json::from_str(include_str!("fixtures/canonical-7.0.1/expected.json")).unwrap();
     let reader = SearchEngine::open_read_only(directory.path().to_str().unwrap()).unwrap();

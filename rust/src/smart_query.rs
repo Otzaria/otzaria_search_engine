@@ -1,5 +1,6 @@
 //! Placeholder spellings shared by smart retrieval and query embedding.
 
+#[cfg(any(feature = "semantic-integration", test))]
 use std::borrow::Cow;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -55,6 +56,7 @@ pub(crate) fn vocalized_pattern(word: &str, voc: &VocalizedFlags) -> String {
 }
 
 /// Semantic scoring uses this copy; session keys and lexical queries retain the input.
+#[cfg(any(feature = "semantic-integration", test))]
 pub(crate) fn canonical(query: &str) -> Cow<'_, str> {
     let replacements: Vec<_> = hebrew_query::query_word_spans(query)
         .into_iter()
