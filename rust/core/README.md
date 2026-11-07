@@ -77,13 +77,18 @@ Use the existing suspend/resume protocol to release handles before a database
 replacement on platforms which prohibit replacing open files.
 
 The compatibility policy is owned by the canonical engine, not the facade. The
-current baseline (`6fa52571ddb307a4a28baf0768d0831106edadb3`) creates schema **11**
+current baseline (`8ef29fd592793fbc9d5af0299fdd7a8607789bac`) creates schema **11**
 and explicitly reads schemas **10 and 11**. Opening an existing schema-10 index
 never upgrades its metadata or pretends it contains schema-11 note provenance.
 Schemas 7–9 require rebuilding in the app; a future schema requires a newer
 engine. The metadata version and the actual Tantivy schema must agree. The MCP
 keeps its database-only tools available when search is incompatible and must
 never rebuild or rewrite an app-owned index itself.
+
+The application checkout `3168cc9e586e48078cfe7c40a59e1d9df2e4f67d` separately
+pins engine `b78d36eaffcb2a5fa679d34a52133512ee55c084` in both its manifests.
+That engine still reads and writes schema 10. This shared-core proposal does not
+advance the application's dependency pin or assume it already uses schema 11.
 
 ## Validation
 
@@ -123,9 +128,9 @@ results. Neither fixture is a full production-library performance benchmark.
 
 1. MCP admission control was merged as [otzaria_mcp#4](https://github.com/Otzaria/otzaria_mcp/pull/4).
    Its later reserved maintenance slot and live response metadata must stay intact.
-2. Merge the shared-core change in `otzaria_search_engine` after its Rust,
+2. Merge [the shared-core change #84](https://github.com/Otzaria/otzaria_search_engine/pull/84) after its Rust,
    generated-bridge and platform checks pass.
-3. Merge the MCP migration pinned to that reviewed engine revision (or the
+3. Merge [MCP migration #5](https://github.com/Otzaria/otzaria_mcp/pull/5) pinned to that reviewed engine revision (or the
    resulting immutable merge revision), with its `tantivy-fst` patch pinned to
    the same engine commit. Carry the canonical Tantivy fork revision too.
 
@@ -136,13 +141,13 @@ is now an ordinary `core/tests/writer_lifecycle.rs` target, alongside the
 canonical `rust/tests/index_writer_shutdown.rs` suite. The current Tantivy pin is
 `130b2682807d2a609d09ba432ba4d0ccc8faf7ed`.
 
-This proposal also carries the four-file concurrency correction and deterministic
-regression from [PR #82](https://github.com/Otzaria/otzaria_search_engine/pull/82),
-head `11083b6e8a934cf1daa4833f112e782d3911c1ab`, as a separate commit. It prevents
-Rayon workers from waiting on cache work owned by their own suspended ancestor;
-outside Rayon, the existing single-flight behavior stays. This makes the core
-independent of that PR's merge order. If #82 merges first, drop the duplicate
-commit during rebase, retaining its behavior and test.
+[PR #82](https://github.com/Otzaria/otzaria_search_engine/pull/82) is also merged
+in this baseline. The rebase drops our duplicate of its initial commit and
+preserves follow-up `9f6719073aa24834cfe53005e1190d8689e1b0d1` unchanged. Rayon
+workers do not wait on cache work owned by their own suspended ancestor. Gate
+owners retain parallel segment scans; duplicate contenders scan inline. Outside
+Rayon, the existing single-flight behavior stays. The regression exercises one,
+two and four Rayon workers, alongside scan parity, cancellation and gate ownership.
 
 The exact earlier shared-core proposal, including its independent schema-10
 fixture, is preserved on
@@ -151,3 +156,8 @@ Its source was recovered from retained Git objects before the changes were
 replayed over current upstream. No old source tree was substituted for the newer
 engine implementation, and historical validation is not presented as testing the
 new combination.
+
+The subsequently validated pre-rebase head is independently preserved on
+[`recovery/shared-core-20261107-b22aab7`](https://github.com/Otzaria/otzaria_search_engine/tree/recovery/shared-core-20261107-b22aab7).
+The current rebase evidence and the earlier records remain distinguishable in
+[VALIDATION.md](VALIDATION.md).

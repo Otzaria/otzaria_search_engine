@@ -1,0 +1,23 @@
+{
+  "source_head": "60913c9be8960bae514225aea01c741c24161e3f",
+  "base": "8ef29fd592793fbc9d5af0299fdd7a8607789bac",
+  "checks": [
+    {
+      "name": "host-contracts",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "rust/core/Cargo.toml",
+        "--locked"
+      ],
+      "exit_code": 101,
+      "elapsed_s": 16.121,
+      "log": "existing-target-build-failure.log.gz",
+      "log_sha256": "f4a16af8d1143f8d53b724a0862c7f5c62c0d06d53f8acaedb999fa9ec429b7a",
+      "gzip_sha256": "f0b90181a4068542943a74657844164235d4a19b9be130428db3df41dc95ce8a"
+    }
+  ],
+  "target_directory": "/workspace/scratch/823dd8bcb941/target",
+  "scope": "Initial build reused an existing target from a different worktree and failed for a missing Tantivy rlib; a fresh isolated target was used afterward."
+}

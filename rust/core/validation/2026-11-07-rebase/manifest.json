@@ -1,0 +1,149 @@
+{
+  "source_head": "60913c9be8960bae514225aea01c741c24161e3f",
+  "base": "8ef29fd592793fbc9d5af0299fdd7a8607789bac",
+  "target_directory": "/workspace/scratch/823dd8bcb941/target-core-rebased",
+  "checks": [
+    {
+      "name": "host-contracts",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "rust/core/Cargo.toml",
+        "--locked"
+      ],
+      "exit_code": 0,
+      "elapsed_s": 46.729,
+      "log": "host-contracts.log.gz",
+      "log_sha256": "b302e7f43469988e52a30e9d822935923fd01323115ed389b37b6889e853f7ba",
+      "gzip_sha256": "121d2efade197b160dec4b51911dc85e395f8f7a22a10bae4ffa6ec42f08053b"
+    },
+    {
+      "name": "host-contracts-semantic-integration",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "rust/core/Cargo.toml",
+        "--locked",
+        "--features",
+        "semantic-integration"
+      ],
+      "exit_code": 0,
+      "elapsed_s": 13.3,
+      "log": "host-contracts-semantic-integration.log.gz",
+      "log_sha256": "3c7447fca9fcbcb9cf5f39c0b6fd9577630675b96e31e312a0e745506cfcea91",
+      "gzip_sha256": "fbd76cffcf5d3506435c4330edcb4aa38d75826eff5d3d972dc08f0cf06e45df"
+    },
+    {
+      "name": "term-scan-contracts",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "rust/Cargo.toml",
+        "--locked",
+        "--no-default-features",
+        "--features",
+        "sqlite-bundled",
+        "--lib",
+        "term_automaton::tests"
+      ],
+      "exit_code": 0,
+      "elapsed_s": 30.223,
+      "log": "term-scan-contracts.log.gz",
+      "log_sha256": "6457aaadd5a59caff03bd82990576d8af221df539125d42de43fbce25dab51d9",
+      "gzip_sha256": "7663165593c91dab372a8aabbbcb108abf3ec66a85a6a4ed6fbd15e9d516f1a9"
+    },
+    {
+      "name": "work-gate-contracts",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "rust/Cargo.toml",
+        "--locked",
+        "--no-default-features",
+        "--features",
+        "sqlite-bundled",
+        "--lib",
+        "highlight_cache::tests"
+      ],
+      "exit_code": 0,
+      "elapsed_s": 0.387,
+      "log": "work-gate-contracts.log.gz",
+      "log_sha256": "8a727f90d3f8ac85aed82a3972fdf8799b60a812e0bd6a55ee062eb8849c1d06",
+      "gzip_sha256": "dfeea3b62381eee7318055fb760e51268c4c0a06de4d23aab832d6a2ffe55b39"
+    },
+    {
+      "name": "cold-primer-concurrency",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "rust/Cargo.toml",
+        "--locked",
+        "--no-default-features",
+        "--features",
+        "sqlite-bundled",
+        "--lib",
+        "cold_any_order_search_on_rayon_finishes_while_highlight_primer_owns_term_work"
+      ],
+      "exit_code": 0,
+      "elapsed_s": 0.557,
+      "log": "cold-primer-concurrency.log.gz",
+      "log_sha256": "79a735bec8692d93c0ee0bab6cd29ce2b43c97bc057626d0d67df406697ce375",
+      "gzip_sha256": "a2c93ff5a42dd389bed4db7efd5bd730897b40096a1a0abc016316301b5b90af"
+    },
+    {
+      "name": "facade-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--manifest-path",
+        "rust/core/Cargo.toml",
+        "--locked",
+        "--all-targets",
+        "--no-deps",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "elapsed_s": 18.067,
+      "log": "facade-clippy.log.gz",
+      "log_sha256": "14d12370bba29654fa02814de7046dddb838cf0dc3d1bdcf3e012882cc19e6ce",
+      "gzip_sha256": "e479b1a75a261fad1d979290e7e0d608becbb5eb3959e073a0a67f1a0435514d"
+    },
+    {
+      "name": "formatting",
+      "command": [
+        "cargo",
+        "fmt",
+        "--manifest-path",
+        "rust/Cargo.toml",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_s": 1.489,
+      "log": "formatting.log.gz",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "gzip_sha256": "f61f27bd17de546264aa58f40f3aafaac7021e0ef69c17f6b1b4cd7664a037ec"
+    },
+    {
+      "name": "diff-check",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_s": 0.018,
+      "log": "diff-check.log.gz",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "gzip_sha256": "f61f27bd17de546264aa58f40f3aafaac7021e0ef69c17f6b1b4cd7664a037ec"
+    }
+  ]
+}

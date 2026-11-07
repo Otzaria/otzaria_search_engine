@@ -1,0 +1,32 @@
+{
+  "base": "8ef29fd592793fbc9d5af0299fdd7a8607789bac",
+  "head": "60913c9be8960bae514225aea01c741c24161e3f",
+  "tree": "c6106d6fb188a25b9ebf9664a7635fe39b6e5b5e",
+  "previous_local_head": "4b6bd560b77d1d2a77a15147f8570203aded65a7",
+  "previous_remote_head": "b22aab7c7addd845d69919272074d437408e5cbe",
+  "upstream_followup": "9f6719073aa24834cfe53005e1190d8689e1b0d1",
+  "delta_patch_id": "c3e6e3fce2d77710fafde6c17ea6ca39b105482e",
+  "upstream_patch_id": "c3e6e3fce2d77710fafde6c17ea6ca39b105482e",
+  "changed_paths_from_previous_head": [
+    "rust/src/api/search_concurrency_tests.rs",
+    "rust/src/api/search_engine.rs",
+    "rust/src/highlight_cache.rs",
+    "rust/src/quality_bench.rs",
+    "rust/src/term_automaton.rs"
+  ],
+  "ordered_commits": [
+    "e286bc74e02306e7ac11d7b5f582996f570c801e palmoni5 <216508796+palmoni5@users.noreply.github.com> / palmoni5 <216508796+palmoni5@users.noreply.github.com> Expose the canonical engine through a headless shared Rust core",
+    "3c2bacd9c46fb2212d5ea83896aef881296361ec palmoni5 <216508796+palmoni5@users.noreply.github.com> / palmoni5 <216508796+palmoni5@users.noreply.github.com> Validate the headless core against current schemas and writer lifecycle",
+    "2dc86d9e3272e04e1de33682797777f6c215c0f0 palmoni5 <216508796+palmoni5@users.noreply.github.com> / palmoni5 <216508796+palmoni5@users.noreply.github.com> Record fresh shared-core validation and preserve the prior report",
+    "ed32265a0e85c67aa8c3aedee64e7999eb9c1bd6 palmoni5 <216508796+palmoni5@users.noreply.github.com> / palmoni5 <216508796+palmoni5@users.noreply.github.com> Snapshot index bytes around the live writer on Windows",
+    "7f51b6ea7cde966b33f9ea60f9001f52a2dbda3c palmoni5 <216508796+palmoni5@users.noreply.github.com> / palmoni5 <216508796+palmoni5@users.noreply.github.com> Keep hook analysis compatible with code_assets 1.x and 2.x",
+    "60913c9be8960bae514225aea01c741c24161e3f palmoni5 <216508796+palmoni5@users.noreply.github.com> / palmoni5 <216508796+palmoni5@users.noreply.github.com> Hold the reopened writer lock throughout reader coexistence tests"
+  ],
+  "independent_qa": {
+    "normalized_diff_sha256": "d982421e8e0f8172b67b50b9ded1b684e385ab164f639d8123372476844986f8",
+    "normalized_diff_bytes": 11766,
+    "normalization": "Remove Git index headers and hunk line numbers only; compare all remaining bytes.",
+    "independently_executed_tests": false
+  },
+  "preserved_pre_rebase_validation_sha256": "bc8e9ef212b62a32e2fd2e73361f62144851008c341f7e135dd7c67da06bc2e5"
+}

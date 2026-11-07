@@ -1,3 +1,9 @@
+> **Current branch:** the proposal is now rebased on `8ef29fd592793fbc9d5af0299fdd7a8607789bac`,
+> including the merged PR #82 and its additional parallel-scan correction.
+> See the [current rebase record](validation/2026-11-07-rebase/README.md) for its
+> exact source comparison and fresh checks. The original pre-rebase record below
+> is preserved verbatim; its results apply to the earlier source identified there.
+
 # Shared-core validation — 2026-11-07
 
 This record applies to the resumed proposal on canonical engine
