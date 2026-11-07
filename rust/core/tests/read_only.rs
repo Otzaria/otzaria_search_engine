@@ -90,7 +90,9 @@ fn opening_preserves_ids_order_snippets_and_every_index_file() {
     // the reader/writer coexistence contract exercised on every platform.
     drop(writer);
     let before = files(dir.path());
-    let writer = SearchEngine::new(dir.path().to_str().unwrap());
+    let mut writer = SearchEngine::new(dir.path().to_str().unwrap());
+    writer.set_economy_indexing(true).unwrap();
+    writer.open_index_writer().unwrap();
     // The writer remains open: a read-only instance must not contend for its lock.
     let reader = SearchEngine::open_read_only(dir.path().to_str().unwrap()).unwrap();
     assert_eq!(
@@ -149,7 +151,9 @@ fn schema_11_read_only_search_retains_note_provenance_and_highlights() {
     // writer's locked bytes on Windows. Search still runs beside a live writer.
     drop(writer);
     let before = files(dir.path());
-    let writer = SearchEngine::new(dir.path().to_str().unwrap());
+    let mut writer = SearchEngine::new(dir.path().to_str().unwrap());
+    writer.set_economy_indexing(true).unwrap();
+    writer.open_index_writer().unwrap();
     let reader = SearchEngine::open_read_only(dir.path().to_str().unwrap()).unwrap();
     assert_eq!(query(&reader), expected);
     drop(reader);
