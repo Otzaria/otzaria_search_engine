@@ -56,7 +56,11 @@ use crate::highlight_cache::{DisplayPattern, HighlightCache};
 use crate::highlight_matcher as display_highlight_matcher;
 use crate::id_lookup::IdSetQuery;
 use crate::index_directory::{atomic_replace, IndexDirectory};
-use crate::lexical_cancellation::{LexicalCancellations, LexicalRequest, LexicalSearchCancelled};
+use crate::lexical_cancellation::LexicalCancellations;
+#[cfg(any(feature = "flutter-bridge", test))]
+use crate::lexical_cancellation::LexicalRequest;
+#[cfg(any(feature = "flutter-bridge", test))]
+use crate::lexical_cancellation::LexicalSearchCancelled;
 use crate::lexicons::{
     AcronymLexicon, TranslationLexicon, MAX_ACRONYM_EXPANSIONS, MAX_TRANSLATION_EXPANSIONS,
 };
@@ -15103,6 +15107,7 @@ impl SearchEngine {
     /// The counts go out as the first event so the UI can show totals and the
     /// facet tree before the first snippet chunk is even built.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(any(feature = "flutter-bridge", test))]
     fn run_search_stream_with_counts<F>(
         &self,
         query: Box<dyn Query>,
@@ -17460,6 +17465,8 @@ struct RankedPage {
     addresses: Vec<DocAddress>,
     /// 0 unless counted.
     total: u32,
+    // Full counts are consumed by the Flutter stream and its engine tests.
+    #[cfg_attr(not(any(feature = "flutter-bridge", test)), allow(dead_code))]
     book_counts: Option<HashMap<String, u32>>,
 }
 
@@ -17703,6 +17710,7 @@ impl SearchEngine {
     /// [`Self::search_user_regex_stream`] into `emit`, which returns `false` once nobody
     /// listens.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(any(feature = "flutter-bridge", test))]
     pub(crate) fn user_regex_stream_into(
         &self,
         raw: &str,
@@ -17951,6 +17959,7 @@ impl SearchEngine {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[cfg(any(feature = "flutter-bridge", test))]
     fn user_regex_term_stream(
         &self,
         searcher: &Searcher,
@@ -18315,7 +18324,9 @@ struct GroupedPage {
     truncated: bool,
 }
 
+#[cfg(any(feature = "flutter-bridge", test))]
 struct CallbackSink<'a, T>(&'a mut dyn FnMut(T) -> bool);
+#[cfg(any(feature = "flutter-bridge", test))]
 impl<T> CallbackSink<'_, T> {
     fn add(&mut self, update: T) -> Result<(), ()> {
         if (self.0)(update) {
@@ -18326,6 +18337,7 @@ impl<T> CallbackSink<'_, T> {
     }
 }
 
+#[cfg(any(feature = "flutter-bridge", test))]
 fn result_chunks<T>(items: &[T], chunk_size: usize) -> impl Iterator<Item = &[T]> {
     let first_size = chunk_size.max(1);
     #[cfg(test)]

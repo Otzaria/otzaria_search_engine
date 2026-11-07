@@ -76,10 +76,13 @@ must serialize the transition with all requests using the previous configuration
 Use the existing suspend/resume protocol to release handles before a database
 replacement on platforms which prohibit replacing open files.
 
-The schema contract has not changed. Version 7.0.1 reads schema 10. Legacy schema
-7/8/9 is refused with the canonical rebuild requirement; a future schema is
-refused as an engine-too-old condition. The MCP must keep its database-only tools
-available and explain that the app must rebuild/upgrade its index. The MCP must
+The compatibility policy is owned by the canonical engine, not the facade. The
+current baseline (`6fa52571ddb307a4a28baf0768d0831106edadb3`) creates schema **11**
+and explicitly reads schemas **10 and 11**. Opening an existing schema-10 index
+never upgrades its metadata or pretends it contains schema-11 note provenance.
+Schemas 7–9 require rebuilding in the app; a future schema requires a newer
+engine. The metadata version and the actual Tantivy schema must agree. The MCP
+keeps its database-only tools available when search is incompatible and must
 never rebuild or rewrite an app-owned index itself.
 
 ## Validation
@@ -109,29 +112,42 @@ searching and closing it must leave every index file byte-identical. A separate
 test closes the reader, replaces its directory and verifies the reopened content.
 See the fixture README for provenance and reproduction instructions.
 
-Local Linux validation for this extraction passed all eight facade integration
-tests and 845 headless engine unit tests; 27 pre-existing tests were ignored. One
-unit test that creates a directory under its working directory first failed on a
-full workspace disk, then passed from a writable temporary directory using the
-same compiled test binary. CI also exercises the facade on Windows and retains
-the existing generated-binding and Flutter tests.
+The current execution record is in [VALIDATION.md](VALIDATION.md). It distinguishes
+fresh tests on this rebased change from the independently preserved earlier work.
+The facade contracts run with parallel test execution; one also issues 64 searches
+from four concurrent threads against the same read-only engine. A schema-11
+fixture verifies that note markers, note bodies and highlights match the writer's
+results. Neither fixture is a full production-library performance benchmark.
 
 ## Integration order
 
-1. MCP admission control can merge independently of this crate boundary.
-2. Merge the shared-core change in `otzaria_search_engine`.
-3. Merge the MCP migration pinned to that reviewed engine revision (or a resulting
-   immutable merge revision), after its compatibility and parity tests pass.
+1. MCP admission control was merged as [otzaria_mcp#4](https://github.com/Otzaria/otzaria_mcp/pull/4).
+   Its later reserved maintenance slot and live response metadata must stay intact.
+2. Merge the shared-core change in `otzaria_search_engine` after its Rust,
+   generated-bridge and platform checks pass.
+3. Merge the MCP migration pinned to that reviewed engine revision (or the
+   resulting immutable merge revision), with its `tantivy-fst` patch pinned to
+   the same engine commit. Carry the canonical Tantivy fork revision too.
 
-The boundary does not require the unmerged writer-lifecycle PR. It preserves the
-canonical writer implementation and its source location; when that PR merges,
-both hosts receive the same fix on their next pinned engine update. Keep any
-read-only guard when resolving changes around writer creation. Do not enable
-semantic inference or the Flutter bridge incidentally while updating the pin.
+[Writer-lifecycle PR #77](https://github.com/Otzaria/otzaria_search_engine/pull/77)
+is already part of the current baseline. `read_only` and `writer_closed` remain
+independent permanent guards; `open_writer` checks both. The lifecycle contract
+is now an ordinary `core/tests/writer_lifecycle.rs` target, alongside the
+canonical `rust/tests/index_writer_shutdown.rs` suite. The current Tantivy pin is
+`130b2682807d2a609d09ba432ba4d0ccc8faf7ed`.
 
-Writer-lifecycle PR #77 at `2da23091237ed0f0a612de3b2d18cfc99d8b7d2a` also updates
-the Tantivy fork to `b6dfc7bc93336df1b996a6701b8c86c80206b8d1` so writer teardown
-waits for background I/O. Combining it with this boundary must retain both
-`read_only` and `writer_closed` in the engine and constructors, both guards in
-`open_writer`, and that PR's newer Tantivy pin. Update the MCP root patch to the
-same Tantivy revision when advancing its engine pin to the combined revision.
+This proposal also carries the four-file concurrency correction and deterministic
+regression from [PR #82](https://github.com/Otzaria/otzaria_search_engine/pull/82),
+head `11083b6e8a934cf1daa4833f112e782d3911c1ab`, as a separate commit. It prevents
+Rayon workers from waiting on cache work owned by their own suspended ancestor;
+outside Rayon, the existing single-flight behavior stays. This makes the core
+independent of that PR's merge order. If #82 merges first, drop the duplicate
+commit during rebase, retaining its behavior and test.
+
+The exact earlier shared-core proposal, including its independent schema-10
+fixture, is preserved on
+[`recovery/shared-core-20261105`](https://github.com/Otzaria/otzaria_search_engine/tree/recovery/shared-core-20261105).
+Its source was recovered from retained Git objects before the changes were
+replayed over current upstream. No old source tree was substituted for the newer
+engine implementation, and historical validation is not presented as testing the
+new combination.

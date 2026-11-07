@@ -32,6 +32,10 @@ fn fixture() -> (TempDir, SearchEngine) {
             .unwrap();
     }
     writer.commit().unwrap();
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&fs::read(dir.path().join("otzaria_index_meta.json")).unwrap())
+            .unwrap();
+    assert_eq!(metadata["schema_version"], 11);
     (dir, writer)
 }
 
@@ -91,6 +95,55 @@ fn opening_preserves_ids_order_snippets_and_every_index_file() {
     drop(reader);
     assert_eq!(files(dir.path()), before);
     assert_eq!(writer.get_document_count(), 3);
+}
+
+#[test]
+fn schema_11_read_only_search_retains_note_provenance_and_highlights() {
+    let (dir, mut writer) = fixture();
+    writer
+        .add_text_book(
+            "Device with note".into(),
+            "/fixture".into(),
+            "id:303".into(),
+            "מחשב<sup class=\"footnote-marker\">12</sup><i class=\"footnote\">מואר היטב</i> קטן"
+                .into(),
+            None,
+            TextStorage::InIndex,
+            None,
+            None,
+        )
+        .unwrap();
+    writer.commit().unwrap();
+    let query = |engine: &SearchEngine| {
+        projection(
+            engine
+                .search_exact(
+                    "מואר".into(),
+                    vec![],
+                    20,
+                    0,
+                    ResultsOrder::Catalogue,
+                    false,
+                    false,
+                    None,
+                    None,
+                )
+                .unwrap(),
+        )
+    };
+    let expected = query(&writer);
+    assert_eq!(expected.len(), 1);
+    assert!(expected[0]
+        .2
+        .contains("<otzaria-note-marker>12</otzaria-note-marker>"));
+    assert!(expected[0]
+        .2
+        .contains("<otzaria-note><font color=red>מואר</font> היטב</otzaria-note>"));
+    let before = files(dir.path());
+    let reader = SearchEngine::open_read_only(dir.path().to_str().unwrap()).unwrap();
+    assert_eq!(query(&reader), expected);
+    drop(reader);
+    assert_eq!(files(dir.path()), before);
 }
 
 #[test]
@@ -366,8 +419,10 @@ fn missing_or_incompatible_indexes_are_refused_without_creation_or_upgrade() {
     let metadata = dir.path().join("otzaria_index_meta.json");
     let original = fs::read(&metadata).unwrap();
     let mut value: serde_json::Value = serde_json::from_slice(&original).unwrap();
-    // Do not make a legacy index writable or silently rebuild it.
-    for version in [7, 8, 9, 11] {
+    // Do not make a legacy/future index writable or silently rebuild it. Claiming
+    // schema 10 over this schema-11 fixture must also fail the stored-schema
+    // comparison; an actual independent schema-10 index is covered separately.
+    for version in [7, 8, 9, 10, 12] {
         value["schema_version"] = version.into();
         fs::write(&metadata, serde_json::to_vec(&value).unwrap()).unwrap();
         let before = files(dir.path());
