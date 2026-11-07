@@ -1,0 +1,10 @@
+{
+  "format": "otzaria-search-index",
+  "schema_version": 10,
+  "engine_version": "7.0.1",
+  "tantivy_version": "0.26.2",
+  "created_at_unix_seconds": 1793912058,
+  "line_text_version": 4,
+  "chunk_key_version": 1,
+  "chunk_key_chunking_identity": 2685558872390372738
+}

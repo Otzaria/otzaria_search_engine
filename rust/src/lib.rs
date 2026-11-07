@@ -12,6 +12,7 @@ mod cross_line_tests;
 mod derived_columns;
 mod display_highlight;
 mod doc_store;
+#[cfg(feature = "flutter-bridge")]
 mod frb_generated;
 mod highlight_cache;
 mod highlight_matcher;

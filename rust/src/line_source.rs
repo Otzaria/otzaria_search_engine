@@ -1402,7 +1402,17 @@ fn global(source: Source) -> MutexGuard<'static, Global> {
 }
 
 fn owner_port_is_open(port: i64) -> bool {
-    flutter_rust_bridge::for_generated::Channel::new(port).post(())
+    #[cfg(feature = "flutter-bridge")]
+    {
+        flutter_rust_bridge::for_generated::Channel::new(port).post(())
+    }
+    #[cfg(not(feature = "flutter-bridge"))]
+    {
+        // A headless host has no Dart isolate ports. Owned suspension rejects a
+        // port instead of retaining a hold that no runtime could release.
+        let _ = port;
+        false
+    }
 }
 
 impl Global {
@@ -1491,6 +1501,23 @@ pub(crate) fn configure(db_path: &str) -> Result<()> {
     if g.generation != generation {
         wait_for_scans(g, Source::Library);
     }
+    Ok(())
+}
+
+/// Explicit same-path refresh for hosts that replace the library file. Unlike a
+/// cache-only generation bump, this invalidates independent whole-book scans too.
+pub(crate) fn refresh(db_path: &str) -> Result<()> {
+    if db_path.is_empty() {
+        anyhow::bail!("refresh_line_source needs a database path");
+    }
+    // Every line window holds this mutex; once acquired no old window is reading.
+    let mut g = global(Source::Library);
+    g.drop_store();
+    g.set_path(Some(PathBuf::from(db_path)), OpenMode::default());
+    // There may be only a scan connection, with no store in the global slot.
+    // Always invalidate it before waiting, or a same-path refresh can deadlock.
+    g.advance_generation();
+    wait_for_scans(g, Source::Library);
     Ok(())
 }
 
@@ -2705,6 +2732,64 @@ mod tests {
         assert!(replacement.is_current());
         assert_eq!(replacement.path, new_path);
         drop(replacement);
+        reset_for_tests();
+    }
+
+    #[test]
+    fn explicit_same_path_refresh_invalidates_scan_only_connections() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        reset_for_tests();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("refresh.db");
+        Connection::open(&path).unwrap().execute_batch(
+            "CREATE TABLE line(id INTEGER PRIMARY KEY, bookId INTEGER, lineIndex INTEGER, content TEXT);
+             INSERT INTO line VALUES(1, 1, 0, 'sample');"
+        ).unwrap();
+        configure(path.to_str().unwrap()).unwrap();
+        // There is no cached row-window connection for drop_store to close.
+        let session = begin_scan(Source::Library).unwrap();
+        let generation = global(Source::Library).generation;
+        assert!(global(Source::Library).store.is_none());
+        std::thread::scope(|scope| {
+            let refreshing = scope.spawn(|| refresh(path.to_str().unwrap()));
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while session.is_current() && Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            let invalidated = !session.is_current();
+            // Always release before asserting, so a broken implementation that
+            // waits without invalidating is a failure, not a hung test process.
+            drop(session);
+            refreshing.join().unwrap().unwrap();
+            assert!(invalidated, "same-path refresh did not invalidate the scan");
+        });
+        assert_eq!(global(Source::Library).scans, 0);
+        assert!(global(Source::Library).generation > generation);
+        assert!(global(Source::Library).store.is_none());
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch("BEGIN EXCLUSIVE; ROLLBACK")
+            .unwrap();
+        let session = begin_scan(Source::Library).unwrap();
+        assert!(session.is_current());
+        drop(session);
+        reset_for_tests();
+    }
+
+    #[test]
+    fn explicit_refresh_rejects_empty_path_without_disturbing_the_source() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        reset_for_tests();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("configured.db");
+        configure(path.to_str().unwrap()).unwrap();
+        let generation = global(Source::Library).generation;
+        assert!(refresh("").is_err());
+        assert_eq!(
+            global(Source::Library).path.as_deref(),
+            Some(path.as_path())
+        );
+        assert_eq!(global(Source::Library).generation, generation);
         reset_for_tests();
     }
 
