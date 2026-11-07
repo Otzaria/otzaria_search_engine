@@ -1,0 +1,45 @@
+name: Shared core economy diagnostic
+
+on:
+  push:
+    branches: [diag/shared-core-economy-20261107]
+
+permissions:
+  contents: read
+
+jobs:
+  economy-order-controls:
+    name: Immutable economy binaries with order controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: controller
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          ref: 8ef29fd592793fbc9d5af0299fdd7a8607789bac
+          path: base
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          ref: 4761356749815d283ede41ef956c64b3dbffe048
+          path: head
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - name: Build once per revision, then run the predeclared schedule
+        run: >
+          python3 controller/tool/shared_core_economy_diagnostic.py
+          --base base --head head
+          --out "${{ runner.temp }}/economy-diagnostic"
+          --build-root "${{ runner.temp }}/economy-builds"
+      - name: Preserve binaries, provenance and partial results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: economy-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/economy-diagnostic/
+          if-no-files-found: error
+          compression-level: 1
+          retention-days: 14
