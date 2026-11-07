@@ -325,9 +325,16 @@ type ScanHits = (Vec<(String, usize, u32)>, bool);
 /// collection budget a word is served with.
 pub(crate) const COLLECT_CAP: usize = 50_000;
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ScanMode {
+    Parallel,
+    /// A duplicate computation must not yield to further competing requests.
+    Inline,
+}
+
 /// Every term `automata` (then each of `extra`) matches in `segments`,
 /// ranked by branch, then length — the affix letters around the typed root
-/// — then document frequency (descending). Scans parallelize outside Rayon; at most
+/// — then document frequency (descending). The caller selects scan parallelism; at most
 /// `cap` distinct terms are gathered. The usual combined scan is fast; if it
 /// reaches the cap before ranking, retry in branch order so newly added broad
 /// branches cannot evict an earlier exact branch. The flag reports truncation.
@@ -336,6 +343,7 @@ pub(crate) fn collect_ranked<T>(
     automata: &TermAutomata,
     extra: &[T],
     cap: usize,
+    mode: ScanMode,
 ) -> tantivy::Result<(Vec<RankedTerm>, bool)>
 where
     T: tantivy_fst::Automaton + Sync,
@@ -367,9 +375,9 @@ where
             )
         }
     };
-    // A Rayon caller may own a term gate: don't yield it to a competing request.
-    // Outer word tasks can still run in parallel; scans stay on this worker.
-    let scans: Vec<ScanHits> = if rayon::current_thread_index().is_some() {
+    // Gate owners retain segment parallelism, including inside outer word tasks.
+    // Only a contender computing independently must avoid further Rayon yields.
+    let scans: Vec<ScanHits> = if matches!(mode, ScanMode::Inline) {
         pairs
             .iter()
             .map(scan_pair)
@@ -724,6 +732,115 @@ mod tests {
             .collect()
     }
 
+    fn collect_both_modes<T>(
+        segments: &[Arc<InvertedIndexReader>],
+        automata: &TermAutomata,
+        extra: &[T],
+        cap: usize,
+    ) -> (Vec<RankedTerm>, bool)
+    where
+        T: tantivy_fst::Automaton + Sync,
+        T::State: Clone,
+    {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            let parallel =
+                collect_ranked(segments, automata, extra, cap, ScanMode::Parallel).unwrap();
+            let inline = collect_ranked(segments, automata, extra, cap, ScanMode::Inline).unwrap();
+            assert_eq!(parallel, inline);
+            parallel
+        })
+    }
+
+    #[test]
+    fn rayon_owners_parallelize_segments_while_duplicates_stay_on_their_worker() {
+        use std::collections::HashSet;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Condvar;
+        use std::time::Duration;
+
+        struct WorkerProbe<'a> {
+            inner: &'a TermDfa,
+            workers: Mutex<HashSet<usize>>,
+            changed: Condvar,
+            wait_for_peer: AtomicBool,
+        }
+        impl Automaton for WorkerProbe<'_> {
+            type State = StateID;
+
+            fn start(&self) -> StateID {
+                let worker = rayon::current_thread_index().expect("scan runs in the private pool");
+                let mut workers = self.workers.lock().unwrap();
+                workers.insert(worker);
+                self.changed.notify_all();
+                // A bounded rendezvous proves actual overlap without a timing
+                // threshold. A serial regression times out and fails cleanly.
+                if self.wait_for_peer.swap(false, Ordering::Relaxed) {
+                    drop(
+                        self.changed
+                            .wait_timeout_while(workers, Duration::from_secs(10), |workers| {
+                                workers.len() < 2
+                            })
+                            .unwrap(),
+                    );
+                }
+                self.inner.start()
+            }
+            fn is_match(&self, state: &StateID) -> bool {
+                self.inner.is_match(state)
+            }
+            fn can_match(&self, state: &StateID) -> bool {
+                self.inner.can_match(state)
+            }
+            fn accept(&self, state: &StateID, byte: u8) -> StateID {
+                self.inner.accept(state, byte)
+            }
+        }
+
+        let segments = segments_with_terms(&[&["a", "b"], &["a", "c"], &["b"], &["c"]]);
+        let automata = TermAutomata { parts: Vec::new() };
+        let dfa = compile_pattern(".*").unwrap();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap();
+        let mut reference = None;
+        for mode in [ScanMode::Parallel, ScanMode::Inline] {
+            let probe = WorkerProbe {
+                inner: &dfa,
+                workers: Mutex::default(),
+                changed: Condvar::new(),
+                wait_for_peer: AtomicBool::new(matches!(mode, ScanMode::Parallel)),
+            };
+            let result = pool
+                .install(|| {
+                    collect_ranked(&segments, &automata, std::slice::from_ref(&probe), 10, mode)
+                })
+                .unwrap();
+            let workers = probe.workers.lock().unwrap().len();
+            match mode {
+                ScanMode::Parallel => {
+                    assert_eq!(
+                        workers, 2,
+                        "an uncontended owner must use both scan workers"
+                    );
+                    assert!(!result.1);
+                    reference = Some(result);
+                }
+                ScanMode::Inline => {
+                    assert_eq!(
+                        workers, 1,
+                        "a duplicate scan must never yield to another worker"
+                    );
+                    assert_eq!(Some(result), reference);
+                }
+            }
+        }
+    }
+
     #[test]
     fn capped_union_keeps_branch_priority_and_segment_frequencies() {
         let segments = segments_with_terms(&[&["a", "b", "z", "z"], &["c", "d", "z"]]);
@@ -750,7 +867,7 @@ mod tests {
             } else {
                 build_uncached(&patterns).unwrap()
             };
-            let (ranked, capped) = collect_ranked::<TermDfa>(&segments, &automata, &[], 3).unwrap();
+            let (ranked, capped) = collect_both_modes::<TermDfa>(&segments, &automata, &[], 3);
             assert!(capped);
             assert_eq!(ranked.len(), 3);
             assert_eq!(
@@ -770,7 +887,7 @@ mod tests {
     fn capped_union_keeps_quote_transparent_exact_terms() {
         let segments = segments_with_terms(&[&["a", "aa", "aaa", "רמב\"ם"]]);
         let automata = compile_branches(&["רמבם".into(), "a.*".into()]).unwrap();
-        let (ranked, capped) = collect_ranked::<TermDfa>(&segments, &automata, &[], 2).unwrap();
+        let (ranked, capped) = collect_both_modes::<TermDfa>(&segments, &automata, &[], 2);
         assert!(capped);
         assert_eq!(ranked.len(), 2);
         assert_eq!(ranked[0].term, "רמב\"ם");
@@ -782,7 +899,7 @@ mod tests {
         let segments = segments_with_terms(&[&["a", "aa", "aaa", "z"]]);
         let automata = compile_branches(&["z".into()]).unwrap();
         let extra = [tantivy_fst::Regex::new("a.*").unwrap()];
-        let (ranked, capped) = collect_ranked(&segments, &automata, &extra, 3).unwrap();
+        let (ranked, capped) = collect_both_modes(&segments, &automata, &extra, 3);
         assert!(capped);
         assert_eq!(ranked.len(), 3);
         assert_eq!(ranked[0].term, "z");

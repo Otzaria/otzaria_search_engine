@@ -89,11 +89,17 @@ fn any_order_search(engine: &SearchEngine) -> Result<Vec<SearchResult>> {
 
 #[test]
 fn cold_any_order_search_on_rayon_finishes_while_highlight_primer_owns_term_work() {
+    for threads in [1, 2, 4] {
+        search_while_primer_owns_term_work(threads);
+    }
+}
+
+fn search_while_primer_owns_term_work(threads: usize) {
     const DEADLINE: Duration = Duration::from_secs(10);
     let (engine, _dir) = fixture();
     let generation = engine.index_reader.searcher().generation().generation_id();
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(2)
+        .num_threads(threads)
         .build()
         .unwrap();
 

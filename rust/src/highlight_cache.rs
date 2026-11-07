@@ -278,6 +278,50 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rayon_contender_does_not_release_or_replace_the_owners_gate() {
+        let gate = WorkGate::default();
+        let owner = gate.enter("active").unwrap().unwrap();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            assert!(gate.enter("active").unwrap().is_none());
+            gate.clear_idle();
+            assert!(*owner.0.busy.lock().unwrap());
+            // A second contender must still see the original owner as busy.
+            assert!(gate.enter("active").unwrap().is_none());
+        });
+        let original = Arc::downgrade(&owner.0);
+        drop(owner);
+        let next = gate.enter("active").unwrap().unwrap();
+        // An idle key may be pruned and recreated, but never while owned.
+        assert!(original.upgrade().is_none());
+        assert!(*next.0.busy.lock().unwrap());
+    }
+
+    #[test]
+    fn cancelled_rayon_contender_stops_before_duplicating_work() {
+        let gate = WorkGate::default();
+        let owner = gate.enter("active").unwrap().unwrap();
+        let cancellations = crate::lexical_cancellation::LexicalCancellations::default();
+        let request = cancellations.begin(Some(7));
+        cancellations.cancel(7);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+        let result = pool.install(|| {
+            let _scope = request.enter();
+            gate.enter("active")
+        });
+        assert!(crate::lexical_cancellation::LexicalSearchCancelled::is(
+            &result.err().unwrap()
+        ));
+        assert!(*owner.0.busy.lock().unwrap());
+    }
+
+    #[test]
     fn clearing_idle_work_releases_the_key_payload() {
         let gate = WorkGate::default();
         let key = Arc::new("x".repeat(1 << 20));
