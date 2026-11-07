@@ -108,6 +108,10 @@ use otzaria_semantic_search::semantic::types::{
 use otzaria_semantic_search::semantic::versioning::{ModelIdentity, ModelPackage, TextIdentity};
 use std::sync::{PoisonError, RwLock};
 
+#[cfg(test)]
+#[path = "search_concurrency_tests.rs"]
+mod search_concurrency_tests;
+
 // ── Public data types ──────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -13093,10 +13097,12 @@ impl SearchEngine {
             return Ok(entry.clone());
         }
 
-        let _work = self.term_work.enter(cache_key.clone())?;
+        let work = self.term_work.enter(cache_key.clone())?;
         if let Some(entry) = self.term_cache.lock().unwrap().get(&cache_key) {
             return Ok(entry.clone());
         }
+        #[cfg(test)]
+        search_concurrency_tests::after_materialize_gate(&cache_key);
         crate::lexical_cancellation::check_current()?;
         let automata = term_automaton::compile_branches(branches).map_err(|e| {
             // Surface the failure loudly: the historical failure mode here
@@ -13131,6 +13137,14 @@ impl SearchEngine {
             &automata,
             &typo_automata,
             term_automaton::COLLECT_CAP.max(max_expansions as usize),
+            // Rayon workers never wait for another owner. Keep their duplicate
+            // scan inline so it cannot recursively yield to more contenders;
+            // owners still fan out over segments even within outer word tasks.
+            if work.is_some() {
+                term_automaton::ScanMode::Parallel
+            } else {
+                term_automaton::ScanMode::Inline
+            },
         )?;
         let (kept, truncated) = term_automaton::within_budgets(
             ranked,

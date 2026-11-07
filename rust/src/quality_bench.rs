@@ -79,6 +79,7 @@ fn selected(
         &automata,
         typo,
         term_automaton::COLLECT_CAP.max(max_expansions as usize),
+        term_automaton::ScanMode::Parallel,
     )
     .unwrap();
     let budget = std::env::var("BENCH_BUDGET")

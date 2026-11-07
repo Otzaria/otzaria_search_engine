@@ -3,7 +3,7 @@
 //! book opened from its results for the same display pattern.
 //!
 //! Keyed by the searcher generation, so a commit is never served an older snapshot.
-//! Concurrent requests share one computation per key; unrelated keys remain independent.
+//! Requests outside Rayon share one computation per key; pool workers never wait for it.
 
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -237,7 +237,7 @@ impl<K: Eq + Hash> WorkGate<K> {
         self.0.lock().unwrap().len()
     }
 
-    pub(crate) fn enter(&self, key: K) -> Result<Working> {
+    pub(crate) fn enter(&self, key: K) -> Result<Option<Working>> {
         let work = {
             let mut active = self.0.lock().unwrap();
             active.retain(|_, work| Arc::strong_count(work) > 1);
@@ -246,6 +246,11 @@ impl<K: Eq + Hash> WorkGate<K> {
         let mut busy = work.busy.lock().unwrap();
         while *busy {
             crate::lexical_cancellation::check_current()?;
+            // The owner may be waiting for this worker's ancestor Rayon job.
+            // Compute independently instead of blocking that job's completion.
+            if rayon::current_thread_index().is_some() {
+                return Ok(None);
+            }
             busy = work
                 .changed
                 .wait_timeout(busy, Duration::from_millis(10))
@@ -255,7 +260,7 @@ impl<K: Eq + Hash> WorkGate<K> {
         crate::lexical_cancellation::check_current()?;
         *busy = true;
         drop(busy);
-        Ok(Working(work))
+        Ok(Some(Working(work)))
     }
 }
 
@@ -271,6 +276,50 @@ impl Drop for Working {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rayon_contender_does_not_release_or_replace_the_owners_gate() {
+        let gate = WorkGate::default();
+        let owner = gate.enter("active").unwrap().unwrap();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            assert!(gate.enter("active").unwrap().is_none());
+            gate.clear_idle();
+            assert!(*owner.0.busy.lock().unwrap());
+            // A second contender must still see the original owner as busy.
+            assert!(gate.enter("active").unwrap().is_none());
+        });
+        let original = Arc::downgrade(&owner.0);
+        drop(owner);
+        let next = gate.enter("active").unwrap().unwrap();
+        // An idle key may be pruned and recreated, but never while owned.
+        assert!(original.upgrade().is_none());
+        assert!(*next.0.busy.lock().unwrap());
+    }
+
+    #[test]
+    fn cancelled_rayon_contender_stops_before_duplicating_work() {
+        let gate = WorkGate::default();
+        let owner = gate.enter("active").unwrap().unwrap();
+        let cancellations = crate::lexical_cancellation::LexicalCancellations::default();
+        let request = cancellations.begin(Some(7));
+        cancellations.cancel(7);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+        let result = pool.install(|| {
+            let _scope = request.enter();
+            gate.enter("active")
+        });
+        assert!(crate::lexical_cancellation::LexicalSearchCancelled::is(
+            &result.err().unwrap()
+        ));
+        assert!(*owner.0.busy.lock().unwrap());
+    }
 
     #[test]
     fn clearing_idle_work_releases_the_key_payload() {
@@ -303,13 +352,13 @@ mod tests {
     #[test]
     fn clearing_work_keeps_active_and_waiting_requests_on_the_same_gate() {
         let gate = WorkGate::default();
-        let first = gate.enter("active").unwrap();
+        let first = gate.enter("active").unwrap().unwrap();
         let original = Arc::downgrade(&first.0);
         gate.clear_idle();
         let (sender, receiver) = std::sync::mpsc::channel();
         std::thread::scope(|scope| {
             scope.spawn(|| {
-                let next = gate.enter("active").unwrap();
+                let next = gate.enter("active").unwrap().unwrap();
                 sender
                     .send(Arc::ptr_eq(&next.0, &original.upgrade().unwrap()))
                     .unwrap();
