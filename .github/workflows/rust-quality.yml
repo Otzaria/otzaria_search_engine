@@ -154,6 +154,42 @@ jobs:
             ${{ runner.temp }}/indexing-measurements/samples.jsonl
             ${{ runner.temp }}/indexing-measurements/medians.json
 
+  headless-core:
+    name: Headless shared core (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          save-if: ${{ github.ref == 'refs/heads/refactor' }}
+          key: headless-${{ matrix.os }}
+      # Separate invocations are intentional: --workspace with the Flutter
+      # package would unify flutter-bridge into the graph being tested.
+      - name: Verify the standalone dependency boundary
+        shell: bash
+        run: |
+          cargo tree --manifest-path rust/core/Cargo.toml --locked -e normal --prefix none --format '{p}' > headless-dependencies.txt
+          if grep -E '^(flutter_rust_bridge|tokio|rmcp) ' headless-dependencies.txt; then
+            echo "::error::The shared Rust core unexpectedly pulls in a transport/runtime."
+            exit 1
+          fi
+      - name: Read-only and concurrent host contracts
+        run: cargo test --manifest-path rust/core/Cargo.toml --locked -- --test-threads=1
+      - name: Explicit line-source refresh without Dart
+        run: >
+          cargo test --manifest-path rust/Cargo.toml --locked
+          --no-default-features --features sqlite-bundled --lib explicit_ -- --test-threads=1
+      - name: Check the Flutter host-SQLite configuration
+        run: >
+          cargo check --manifest-path rust/Cargo.toml --locked --lib
+          --no-default-features --features sqlite-host,flutter-bridge
+
   real-backend-build:
     name: Real semantic backend (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

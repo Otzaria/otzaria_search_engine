@@ -20,7 +20,7 @@ const nativeBuild = NativeBuild(
   cargo: CargoOptions(
     libName: 'search_engine',
     noDefaultFeatures: true,
-    features: ['semantic', 'sqlite-host'],
+    features: ['semantic', 'sqlite-host', 'flutter-bridge'],
   ),
   precompiled: PrecompiledBinaries(
     urlPrefix:
