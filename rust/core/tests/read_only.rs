@@ -85,7 +85,12 @@ fn opening_preserves_ids_order_snippets_and_every_index_file() {
     assert!(expected
         .iter()
         .all(|r| r.2.contains("<font color=red>מחשב</font>")));
+    // Windows prevents even reading the writer's byte-range-locked file. Take
+    // complete byte snapshots with that handle closed, then reopen it to keep
+    // the reader/writer coexistence contract exercised on every platform.
+    drop(writer);
     let before = files(dir.path());
+    let writer = SearchEngine::new(dir.path().to_str().unwrap());
     // The writer remains open: a read-only instance must not contend for its lock.
     let reader = SearchEngine::open_read_only(dir.path().to_str().unwrap()).unwrap();
     assert_eq!(
@@ -93,8 +98,9 @@ fn opening_preserves_ids_order_snippets_and_every_index_file() {
         expected
     );
     drop(reader);
-    assert_eq!(files(dir.path()), before);
     assert_eq!(writer.get_document_count(), 3);
+    drop(writer);
+    assert_eq!(files(dir.path()), before);
 }
 
 #[test]
@@ -139,10 +145,16 @@ fn schema_11_read_only_search_retains_note_provenance_and_highlights() {
     assert!(expected[0]
         .2
         .contains("<otzaria-note><font color=red>מואר</font> היטב</otzaria-note>"));
+    // As above, retain all lock files in the byte comparison without reading a
+    // writer's locked bytes on Windows. Search still runs beside a live writer.
+    drop(writer);
     let before = files(dir.path());
+    let writer = SearchEngine::new(dir.path().to_str().unwrap());
     let reader = SearchEngine::open_read_only(dir.path().to_str().unwrap()).unwrap();
     assert_eq!(query(&reader), expected);
     drop(reader);
+    assert_eq!(writer.get_document_count(), 4);
+    drop(writer);
     assert_eq!(files(dir.path()), before);
 }
 
