@@ -15,6 +15,13 @@ static PEAK_PREPARATIONS: AtomicU64 = AtomicU64::new(0);
 static RESERVED: AtomicU64 = AtomicU64::new(0);
 static PEAK_RESERVED: AtomicU64 = AtomicU64::new(0);
 
+/// A process-local library-preparation/enqueue reservation hint for scheduling.
+/// Excludes reservation gaps, final commit and background writer work. A positive
+/// value can include I/O waits and can change after the load.
+pub(crate) fn has_library_preparation_reservations() -> bool {
+    RESERVED.load(Ordering::Relaxed) != 0
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct IndexingDiagnostics {
     pub buffered_bytes: u64,

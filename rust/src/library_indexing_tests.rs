@@ -446,6 +446,7 @@ fn library_books_index_like_the_bytes_the_app_reads() {
 #[test]
 fn a_cancelled_unreadable_or_mismatched_book_adds_nothing() {
     let _guard = crate::external_text_tests::guard();
+    assert_eq!(crate::indexing_diagnostics::snapshot().reserved_bytes, 0);
     let dir = tempfile::TempDir::new().unwrap();
     let db = dir.path().join("seforim.db");
     write_fixture(&db);
@@ -462,6 +463,7 @@ fn a_cancelled_unreadable_or_mismatched_book_adds_nothing() {
     assert!(results
         .iter()
         .all(|r| r.status == LibraryBookStatus::Unavailable && r.docs == 0));
+    assert_eq!(crate::indexing_diagnostics::snapshot().reserved_bytes, 0);
 
     configure_line_source(db.display().to_string()).unwrap();
     let cancel = IndexingCancellationToken::new();
@@ -470,6 +472,7 @@ fn a_cancelled_unreadable_or_mismatched_book_adds_nothing() {
     assert!(results
         .iter()
         .all(|r| r.status == LibraryBookStatus::Cancelled && r.docs == 0));
+    assert_eq!(crate::indexing_diagnostics::snapshot().reserved_bytes, 0);
 
     // A title that no longer matches; LibraryDb under another book's file path.
     inputs[0].db_title = Some("אחר".to_string());
@@ -479,6 +482,7 @@ fn a_cancelled_unreadable_or_mismatched_book_adds_nothing() {
         .unwrap();
     assert_eq!(results[0].status, LibraryBookStatus::Missing);
     assert_eq!(results[1].status, LibraryBookStatus::Failed);
+    assert_eq!(crate::indexing_diagnostics::snapshot().reserved_bytes, 0);
     engine.commit().unwrap();
     assert!(stored_documents(&engine).is_empty());
 }
@@ -535,6 +539,7 @@ fn real_library_books_prepare_like_the_bytes_the_app_reads() {
 #[test]
 fn a_batch_enqueues_in_input_order_while_searches_run() {
     let _guard = crate::external_text_tests::guard();
+    assert_eq!(crate::indexing_diagnostics::snapshot().reserved_bytes, 0);
     let dir = tempfile::TempDir::new().unwrap();
     let db = dir.path().join("seforim.db");
     let conn = rusqlite::Connection::open(&db).unwrap();
@@ -589,6 +594,7 @@ fn a_batch_enqueues_in_input_order_while_searches_run() {
         }
         batch.join().unwrap()
     });
+    assert_eq!(crate::indexing_diagnostics::snapshot().reserved_bytes, 0);
     assert!(results
         .iter()
         .enumerate()
@@ -615,6 +621,7 @@ fn a_batch_enqueues_in_input_order_while_searches_run() {
 #[test]
 fn a_book_that_panics_fails_alone_and_the_batch_finishes() {
     let _guard = crate::external_text_tests::guard();
+    assert_eq!(crate::indexing_diagnostics::snapshot().reserved_bytes, 0);
     let dir = tempfile::TempDir::new().unwrap();
     let db = dir.path().join("seforim.db");
     let conn = rusqlite::Connection::open(&db).unwrap();
@@ -665,6 +672,7 @@ fn a_book_that_panics_fails_alone_and_the_batch_finishes() {
     let results = results.recv_timeout(std::time::Duration::from_secs(60));
     crate::library_indexing::PANIC_ON_BOOK.store(i64::MIN, std::sync::atomic::Ordering::Relaxed);
     let results = results.expect("the batch finishes").unwrap();
+    assert_eq!(crate::indexing_diagnostics::snapshot().reserved_bytes, 0);
     assert_eq!(results[0].status, LibraryBookStatus::Failed);
     assert!(results[1..]
         .iter()
