@@ -1,0 +1,88 @@
+name: Shared core render producer diagnostic
+
+on:
+  push:
+    branches: [diag/shared-core-render-producer-20261108]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  render-producer-controls:
+    name: Preserved B and H versus one candidate build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: controller
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          ref: 7b1d1329591c0d019c9835b21c28450c32b2d5fc
+          fetch-depth: 2
+          path: candidate
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - name: Download the immutable source artifact ZIP
+        env:
+          ARTIFACT_READ_TOKEN: ${{ github.token }}
+          ORIGINAL_ARCHIVE: ${{ runner.temp }}/original-economy.zip
+        run: |
+          python3 - <<'PY'
+          import os
+          import shutil
+          from urllib.error import HTTPError, URLError
+          from urllib.parse import urlsplit
+          from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+          class NoRedirect(HTTPRedirectHandler):
+              def redirect_request(self, request, response, code, message, headers, new_url):
+                  return None
+
+          opener = build_opener(NoRedirect())
+          request = Request(
+              "https://api.github.com/repos/Otzaria/otzaria_search_engine/actions/artifacts/13594355530/zip",
+              headers={"Accept": "application/vnd.github+json",
+                       "Authorization": "Bearer " + os.environ["ARTIFACT_READ_TOKEN"],
+                       "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "otzaria-render-producer-diagnostic"},
+          )
+          try:
+              with opener.open(request, timeout=60):
+                  raise RuntimeError("GitHub artifact endpoint did not return its expected redirect")
+          except HTTPError as error:
+              code, location = error.code, error.headers.get("Location")
+              error.close()
+              if code != 302 or not location:
+                  raise RuntimeError(f"GitHub artifact request failed with HTTP {code}") from None
+          except URLError:
+              raise RuntimeError("GitHub artifact request failed") from None
+          parsed = urlsplit(location)
+          if (parsed.scheme != "https" or not parsed.hostname
+                  or parsed.username is not None or parsed.password is not None or parsed.port not in (None, 443)):
+              raise RuntimeError("Artifact storage redirect must use HTTPS without user credentials")
+          # This separate request carries no GitHub token and cannot redirect again.
+          storage_request = Request(location, headers={"User-Agent": "otzaria-render-producer-diagnostic"})
+          try:
+              with opener.open(storage_request, timeout=60) as source, open(os.environ["ORIGINAL_ARCHIVE"], "wb") as target:
+                  shutil.copyfileobj(source, target)
+          except (HTTPError, URLError):
+              raise RuntimeError("Artifact storage download failed; no redirected credentials were sent") from None
+          PY
+      - name: Build C once, then measure the fixed B/H/C and control schedule
+        run: >
+          python3 controller/tool/shared_core_render_producer_diagnostic.py
+          --archive "${{ runner.temp }}/original-economy.zip"
+          --candidate candidate
+          --out "${{ runner.temp }}/render-producer-diagnostic"
+          --build-root "${{ runner.temp }}/render-producer-build"
+      - name: Preserve binaries, provenance and partial results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: render-producer-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/render-producer-diagnostic/
+          if-no-files-found: error
+          compression-level: 1
+          retention-days: 14
