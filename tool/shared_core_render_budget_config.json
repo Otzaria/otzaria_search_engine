@@ -1,0 +1,167 @@
+{
+  "counts": {
+    "main_processes": 64,
+    "wide_processes": 32
+  },
+  "decision_policy": "No automatic timing pass or promotion; correctness and provenance failures stop and preserve partial evidence.",
+  "original": {
+    "H_manifest_and_lock_sha256": {
+      "rust/Cargo.lock": "0f6893c788643324b8329d9c405024e6ed6a244c055f6a0813b532b6e1a41965",
+      "rust/Cargo.toml": "2c43174e97f812f21374c493544f9eff8eb24325903cc42e2eba5675dcbfd798",
+      "rust/tests/indexing_throughput.rs": "58b15ac4a0736284bae336b48f6d334bc1de8bcfd3ac52689ab0417ec264ebca"
+    },
+    "H_original_executable_sha256": "974a92cc60324467d26ebad61c7d21ca0e7512087201eaa037ff357d42151337",
+    "H_original_layout": {
+      "alignment_bytes": 8,
+      "size_bytes": 1600
+    },
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "dependency_graph_normalization": "Replace exact checkout file URI with file://$CHECKOUT recursively; serialize sorted-key compact JSON with ensure_ascii=True.",
+    "dependency_graph_source_sha256": "f0de046aa1e79ca22cb8a0cc92f813052263d6ac1ec9a87150d7654f1fc63e68",
+    "expected_document_stamps_decimal_strings": [
+      [
+        "12000",
+        "10670837542768650437",
+        "12239437396104776778",
+        "466580576850794485"
+      ],
+      [
+        "12000",
+        "12556540028025398920",
+        "12239437396104776778",
+        "1305838161414759608"
+      ],
+      [
+        "12000",
+        "11771105542890313335",
+        "12239437396104776778",
+        "1766832365589335079"
+      ],
+      [
+        "12000",
+        "13425863573125874666",
+        "12239437396104776778",
+        "10256193090095268506"
+      ],
+      [
+        "12000",
+        "11252811464134988281",
+        "12239437396104776778",
+        "16582632582370218217"
+      ],
+      [
+        "12000",
+        "3407739187330623868",
+        "12239437396104776778",
+        "12641815827962878892"
+      ],
+      [
+        "12000",
+        "4698479715532565275",
+        "12239437396104776778",
+        "15230846581160197067"
+      ],
+      [
+        "12000",
+        "15402450988303931278",
+        "12239437396104776778",
+        "16678097620878167934"
+      ]
+    ],
+    "fixture_path": "rust/tests/indexing_throughput.rs",
+    "fixture_sha256": "58b15ac4a0736284bae336b48f6d334bc1de8bcfd3ac52689ab0417ec264ebca",
+    "helper_sha256": "d82706e96fc4c1d213870d33e6bc83204ec8d6597da128795554c3226b31850e",
+    "layout_source_sha256": "c85a383fa627537380b6d94c9c0fb60d402f3b0bdd4beb9e48215d3afa8e49e6",
+    "normalized_dependency_graph_sha256": "e43f5133c855fdce74165397c086512cdceeea00d514c6c2f816bf1fb8e65266",
+    "phase1_controller_commit": "fc9cc131e070882f6531238a57d7f911249e6752",
+    "phase1_environment_sha256": "873c9e63ef7f014fde6762a1e15715ba32fc4da716791cd1cc9706afa1217e17",
+    "phase1_run": 42420237162,
+    "phase1_samples_sha256": "bd51bb7c11667f22f9af593a82ffacba29a56f9ffed4a1312cf999f31ea8f519",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.1\nLLVM version: 23.1.1"
+  },
+  "revisions": {
+    "E": {
+      "commit": "1042c9f2d08bec0015970d1ee5035e75d85967fe",
+      "parent": "4761356749815d283ede41ef956c64b3dbffe048",
+      "source_git_blob": "6c4936b1455574db8a0b7b3c169e75bf669d2322",
+      "source_sha256": "a2d13740a4b9f503b331cdd6f693d6c865060926c4deeb2c06caec359ea04dc9",
+      "tree": "3c20c1716f3f43d6ae8751f3539494562edd0c4c"
+    },
+    "H": {
+      "commit": "4761356749815d283ede41ef956c64b3dbffe048",
+      "source_git_blob": "323afb9343b6812af3faf4da8bc08375192ef292",
+      "source_sha256": "17554b51dbfb4ef26dba0184abeb3520f3e77ad8eb02d3c9ae589ee57a1c9c93",
+      "tree": "34341d9cffd3348587f509e587593c1f67cf4eec"
+    }
+  },
+  "schema_version": 1,
+  "source_path": "rust/src/api/search_engine.rs",
+  "state": "frozen",
+  "timeouts_seconds": {
+    "build": 1200,
+    "controller_budget": 3300,
+    "layout": 60,
+    "measured_process": 180
+  },
+  "wide": {
+    "behavior_cases": 44,
+    "boundary_totals": [
+      16383,
+      16384,
+      16385
+    ],
+    "case_marker": "OTZARIA_RENDER_CASE ",
+    "complete_marker": "OTZARIA_RENDER_COMPLETE ",
+    "indexing_overlapped": false,
+    "limits": [
+      1,
+      7,
+      8,
+      10,
+      15,
+      16,
+      50,
+      100
+    ],
+    "manifest_sha256": "bbe73ab0fd6aea08d93f79bd93478a6aeddce4134c9aacc116ea17f302cec170",
+    "measured_queries": 30,
+    "order_environment": "OTZARIA_RENDER_CASE_ORDER",
+    "overlay_path": "rust/tests/render_scheduling.rs",
+    "percentile_rule": "sorted[ceil((n - 1) * p)]",
+    "post_timing_validation_queries_per_timed_case": 1,
+    "preflight_cases": 10,
+    "profiles": [
+      "short",
+      "long",
+      "mixed"
+    ],
+    "schema_version": 1,
+    "snapshot_environment": "OTZARIA_RENDER_OUTPUT_DIR",
+    "source_sha256": "36a2bba3efc689a9e92064baeafccf7d954566561d7bc838dbca7b8488edaf7a",
+    "standard_cases": 48,
+    "storage_modes": [
+      "LibraryDb",
+      "InIndex"
+    ],
+    "target": "render_scheduling",
+    "test_name": "measure_render_scheduling",
+    "timed_cases": 14,
+    "timed_limits": {
+      "long": [
+        10,
+        100
+      ],
+      "mixed": [
+        10
+      ],
+      "short": [
+        1,
+        10,
+        50,
+        100
+      ]
+    },
+    "total_cases": 58,
+    "warmup_queries": 5
+  }
+}

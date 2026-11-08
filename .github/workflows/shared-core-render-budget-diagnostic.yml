@@ -1,0 +1,51 @@
+name: Shared core bounded render diagnostic
+
+on:
+  push:
+    branches: [diag/shared-core-render-budget-20261108]
+
+permissions:
+  contents: read
+
+jobs:
+  render-budget-controls:
+    name: Two clean H and E builds with fixed controls and output equality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: controller
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          ref: 4761356749815d283ede41ef956c64b3dbffe048
+          path: head
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          ref: 1042c9f2d08bec0015970d1ee5035e75d85967fe
+          fetch-depth: 2
+          path: candidate
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - name: Build each source once and execute the frozen H and E protocol
+        run: >
+          python3 controller/tool/shared_core_render_budget_diagnostic.py
+          --head head
+          --candidate candidate
+          --config controller/tool/shared_core_render_budget_config.json
+          --helper controller/tool/shared_core_economy_helper.py
+          --wide-fixture controller/tool/shared_core_render_scheduling.rs
+          --fixture-manifest controller/tool/shared_core_render_scheduling_manifest.json
+          --out "${{ runner.temp }}/render-budget-diagnostic"
+          --build-root "${{ runner.temp }}/render-budget-build"
+      - name: Preserve binaries, source provenance and all partial evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: render-budget-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/render-budget-diagnostic/
+          if-no-files-found: error
+          compression-level: 1
+          retention-days: 14
