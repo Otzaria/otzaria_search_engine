@@ -1,5 +1,31 @@
 # Shared-core economy-mode performance investigation
 
+## Dated update: 2026-11-08
+
+The [completed exact-binary topology experiment](topology/RESULTS.md) reused the
+original B/H executables for 64 fresh processes, with zero Rust builds. It
+reproduced the SMT finding: median process-level p95 rose from **3.4050735 to
+4.2567320 ms (+25.011%)** on sibling logical CPUs `[0, 1]`. On distinct cores
+`[0, 2]`, it changed from **4.7944705 to 4.5444895 ms (−5.214%)**, with mixed
+real-block results. Controls varied on both topologies. Independent QA verified
+the complete artifact and calculations. This narrows the observed conditions;
+it does not identify a source cause or remove the performance hold.
+
+A separate render-producer candidate is preserved on
+[`diag/shared-core-render-source-20261108`](https://github.com/Otzaria/otzaria_search_engine/tree/diag/shared-core-render-source-20261108),
+source commit `7b1d1329591c0d019c9835b21c28450c32b2d5fc`. Its
+[72-process B/H/C experiment](https://github.com/Otzaria/otzaria_search_engine/actions/runs/42431839752)
+completed successfully, but the candidate remains **unpromoted**. Successful
+execution alone does not establish a performance fix. The candidate evidence
+and independent interpretation are being preserved separately under
+[`render-candidate/`](render-candidate/); this diagnostic changes neither
+production proposal.
+
+This dated update supplements the original record below. Earlier measurements,
+control results and negative findings are retained verbatim; references below
+to the next topology experiment describe the plan before that experiment ran.
+
+
 Status: the focused diagnostic reproduced the binary-associated tail-latency
 finding in both execution orders. Its source cause remains unresolved.
 Production [engine #84](https://github.com/Otzaria/otzaria_search_engine/pull/84)

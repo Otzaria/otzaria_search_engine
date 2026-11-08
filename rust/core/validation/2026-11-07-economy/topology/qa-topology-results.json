@@ -1,0 +1,996 @@
+{
+  "affinities": {
+    "distinct_physical_cores": [
+      0,
+      2
+    ],
+    "smt_siblings": [
+      0,
+      1
+    ]
+  },
+  "archive_sha256": "45f82b3cba4c894ddcc4f2587eedbb409d2736ee1b28d6c0748313e265a56d48",
+  "artifact": {
+    "archive_download_url": "https://api.github.com/repos/Otzaria/otzaria_search_engine/actions/artifacts/13597940923/zip",
+    "created_at": "2026-11-08T00:54:32Z",
+    "digest": "sha256:45f82b3cba4c894ddcc4f2587eedbb409d2736ee1b28d6c0748313e265a56d48",
+    "expired": false,
+    "expires_at": "2026-11-22T00:54:30Z",
+    "id": 13597940923,
+    "name": "economy-topology-42431565386-1",
+    "size_in_bytes": 11939632,
+    "updated_at": "2026-11-08T00:54:32Z",
+    "url": "https://api.github.com/repos/Otzaria/otzaria_search_engine/actions/artifacts/13597940923",
+    "workflow_run": {
+      "head_branch": "diag/shared-core-economy-topology-20261107",
+      "head_repository_id": 847290930,
+      "head_sha": "1c1630d0b0034ddcfaf724fca92643764f44a9a7",
+      "id": 42431565386,
+      "repository_id": 847290930
+    }
+  },
+  "binary_sha256": {
+    "B": "a58b7ec047d3b39d0f4417571d652920d14ea7f8370030aa6bddd349dc506e5a",
+    "H": "974a92cc60324467d26ebad61c7d21ca0e7512087201eaa037ff357d42151337"
+  },
+  "checks": [
+    "Independent GitHub API artifact identity/digest and successful job conclusion match the supplied ZIP.",
+    "All 148 manifest entries and extracted bytes match; no duplicate/unsafe/symlink archive paths.",
+    "Approved controller bytes and exact controller run/commit/ref are preserved.",
+    "All 64 records match the independently constructed schedule, separate context JSON and raw stdout; all process exits are zero.",
+    "All retained original source-artifact files are byte-identical to the original ZIP, and all document stamps equal the accepted phase-1 stamps.",
+    "Exact original B/H executable SHA-256 values are preserved; this run performs zero Rust builds.",
+    "Allowed topology, reciprocal sibling pair, distinct same-package core, two-CPU budget and runtime fixture settings match the design.",
+    "All published real medians, block contrasts and descriptive interactions agree with independent recalculation.",
+    "All 64 processes have the same buffer/spill/reservation/preparation peaks."
+  ],
+  "completed_processes": 64,
+  "controller_commit": "1c1630d0b0034ddcfaf724fca92643764f44a9a7",
+  "controller_sha256": "2b62a452e1484af74dd141ab58e6bc67df0696caa092c40958665ffa1705a688",
+  "created_at": "2026-11-08T01:00:05.250053+00:00",
+  "interpretation": [
+    "SMT H/B p95 increases 25.011457168252015 percent; all four real blocks and all eight adjacent real comparisons are positive, in both orders.",
+    "Distinct-core overall H/B p95 decreases 5.213943854696779 percent, but its four blocks are mixed: two negative and two positive.",
+    "All four matched real-block H/B ratios are lower on distinct cores than on siblings; overall ratio of ratios is 0.7582189528255107. This is descriptive interaction evidence on one runner, not a source-level mechanism.",
+    "Same-binary controls remain nonflat on both topologies and their adjacent comparisons include both signs. They must remain visible and must not be subtracted ad hoc from the real effects.",
+    "Absolute distinct-core p95 is not generally lower than sibling-core p95 despite faster indexing; query observation counts also differ. These are distinct workloads within the same closed-loop fixture.",
+    "Per-process percentiles are observations; individual queries are not pooled independent replicates. Unpaired B/H ranges overlap.",
+    "The throughput increase remains coupled to a shorter query loop and fewer probes, and cannot compensate for the reproduced latency finding.",
+    "Whole-process CPU and host-wide pressure snapshots do not establish query-only CPU cost or exclude brief stalls.",
+    "No production clearance, guard removal, threshold change or causal attribution follows from this result."
+  ],
+  "job": {
+    "conclusion": "success",
+    "id": 128581413159,
+    "logs_url": null,
+    "name": "Preserved binaries on sibling and distinct cores",
+    "run_id": 42431565386,
+    "status": "completed",
+    "steps": [
+      {
+        "conclusion": "success",
+        "name": "Set up job",
+        "number": 1,
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "name": "Run actions/checkout@v5",
+        "number": 2,
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "name": "Download the immutable source artifact ZIP",
+        "number": 3,
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "name": "Verify the artifact, then compare two logical-CPU topologies",
+        "number": 4,
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "name": "Preserve binaries, provenance and partial results",
+        "number": 5,
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "name": "Post Run actions/checkout@v5",
+        "number": 10,
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "name": "Complete job",
+        "number": 11,
+        "status": "completed"
+      }
+    ]
+  },
+  "manifest_entries_verified": 148,
+  "manifest_sha256": "5c1d187f8602819c9e1ea757adaf57fef79006d2944c13b45eb4dc4d44b8fe5d",
+  "matched_real_block_interactions": {
+    "R1": 0.6827801965291699,
+    "R2": 0.7792439340965392,
+    "R3": 0.948436598336508,
+    "R4": 0.97609827979924
+  },
+  "p95_distinct_over_sibling_ratio_of_ratios": 0.7582189528255107,
+  "preserved_prior_phase1": {
+    "finding": "Previously verified positive real blocks in both orders and nonflat controls remain unchanged; original attempts are not relabelled.",
+    "real_p95_process_medians_ms": {
+      "B": 3.246257,
+      "H": 4.3923575
+    }
+  },
+  "production_recommendation": "Retain engine PR84 and MCP PR5 as drafts; the scoped SMT regression is reproduced and its source cause remains unresolved.",
+  "qa_actions": {
+    "benchmark_processes": 0,
+    "flutter_runs": 0,
+    "production_edits": 0,
+    "remote_writes": 0,
+    "rust_builds": 0
+  },
+  "qa_artifacts": {
+    "api_provenance_sha256": "539dc6354cfd0488f0057b4865d86ad415fa81c8c9efd80c18c91fd180da4fe5",
+    "audit_script_sha256": "2fbb9fff9ed4a0baf620944aae091dd46fbe01b5f74035c6d023b8741f10b710",
+    "raw_recalculation_sha256": "1fdbe817344aaa09aa40af13ee35391f9673e938a7cbc8fd11760fd278ee7450"
+  },
+  "reviewer": "independent qa_perf",
+  "rust_builds": 0,
+  "selected_cpu_topology": {
+    "0": {
+      "core_id": "0",
+      "core_siblings_list": "0-3",
+      "physical_package_id": "0",
+      "thread_siblings_list": "0-1"
+    },
+    "1": {
+      "core_id": "0",
+      "core_siblings_list": "0-3",
+      "physical_package_id": "0",
+      "thread_siblings_list": "0-1"
+    },
+    "2": {
+      "core_id": "1",
+      "core_siblings_list": "0-3",
+      "physical_package_id": "0",
+      "thread_siblings_list": "2-3"
+    }
+  },
+  "summary": {
+    "distinct_physical_cores": {
+      "adjacent_pairs": {
+        "control": [
+          {
+            "block": "CB1",
+            "change_percent": -2.804758491716286,
+            "pseudo_H_over_B": 0.9719524150828371,
+            "runs": [
+              9,
+              10
+            ]
+          },
+          {
+            "block": "CB1",
+            "change_percent": -7.985369580273005,
+            "pseudo_H_over_B": 0.92014630419727,
+            "runs": [
+              11,
+              12
+            ]
+          },
+          {
+            "block": "CH1",
+            "change_percent": 5.924495404133268,
+            "pseudo_H_over_B": 1.0592449540413327,
+            "runs": [
+              25,
+              26
+            ]
+          },
+          {
+            "block": "CH1",
+            "change_percent": 27.490189154771972,
+            "pseudo_H_over_B": 1.2749018915477197,
+            "runs": [
+              27,
+              28
+            ]
+          },
+          {
+            "block": "CB2",
+            "change_percent": 14.15262786690592,
+            "pseudo_H_over_B": 1.1415262786690592,
+            "runs": [
+              45,
+              46
+            ]
+          },
+          {
+            "block": "CB2",
+            "change_percent": 7.924224334467711,
+            "pseudo_H_over_B": 1.079242243344677,
+            "runs": [
+              47,
+              48
+            ]
+          },
+          {
+            "block": "CH2",
+            "change_percent": -7.0385773796273865,
+            "pseudo_H_over_B": 0.9296142262037261,
+            "runs": [
+              61,
+              62
+            ]
+          },
+          {
+            "block": "CH2",
+            "change_percent": -11.040907809370736,
+            "pseudo_H_over_B": 0.8895909219062926,
+            "runs": [
+              63,
+              64
+            ]
+          }
+        ],
+        "real": [
+          {
+            "block": "R1",
+            "change_percent": -18.31355253043444,
+            "pseudo_H_over_B": 0.8168644746956556,
+            "runs": [
+              5,
+              6
+            ]
+          },
+          {
+            "block": "R1",
+            "change_percent": -16.283840677812613,
+            "pseudo_H_over_B": 0.8371615932218739,
+            "runs": [
+              7,
+              8
+            ]
+          },
+          {
+            "block": "R2",
+            "change_percent": -6.760650739517915,
+            "pseudo_H_over_B": 0.9323934926048209,
+            "runs": [
+              21,
+              22
+            ]
+          },
+          {
+            "block": "R2",
+            "change_percent": -4.005392887534831,
+            "pseudo_H_over_B": 0.9599460711246517,
+            "runs": [
+              23,
+              24
+            ]
+          },
+          {
+            "block": "R3",
+            "change_percent": -3.7861219450554318,
+            "pseudo_H_over_B": 0.9621387805494457,
+            "runs": [
+              33,
+              34
+            ]
+          },
+          {
+            "block": "R3",
+            "change_percent": 39.648846542596,
+            "pseudo_H_over_B": 1.39648846542596,
+            "runs": [
+              35,
+              36
+            ]
+          },
+          {
+            "block": "R4",
+            "change_percent": -4.758613394995592,
+            "pseudo_H_over_B": 0.9524138660500441,
+            "runs": [
+              49,
+              50
+            ]
+          },
+          {
+            "block": "R4",
+            "change_percent": 9.57438838099145,
+            "pseudo_H_over_B": 1.0957438838099145,
+            "runs": [
+              51,
+              52
+            ]
+          }
+        ]
+      },
+      "blocks": [
+        {
+          "actual_binaries": [
+            "B",
+            "H"
+          ],
+          "block": "R1",
+          "change_percent": -17.313033840735315,
+          "kind": "real",
+          "order": "BHHB",
+          "pseudo_H_over_B": 0.8268696615926469,
+          "pseudo_label_p95_medians_ms": {
+            "B": 4.8835375,
+            "H": 4.038049000000001
+          },
+          "topology_precedence": 2
+        },
+        {
+          "actual_binaries": [
+            "B"
+          ],
+          "block": "CB1",
+          "change_percent": -5.47389509818994,
+          "kind": "control",
+          "order": "BHHB",
+          "pseudo_H_over_B": 0.9452610490181006,
+          "pseudo_label_p95_medians_ms": {
+            "B": 4.7573345,
+            "H": 4.496923000000001
+          },
+          "topology_precedence": 1
+        },
+        {
+          "actual_binaries": [
+            "B",
+            "H"
+          ],
+          "block": "R2",
+          "change_percent": -5.36084361645186,
+          "kind": "real",
+          "order": "HBBH",
+          "pseudo_H_over_B": 0.9463915638354814,
+          "pseudo_label_p95_medians_ms": {
+            "B": 5.0469855,
+            "H": 4.776424499999999
+          },
+          "topology_precedence": 2
+        },
+        {
+          "actual_binaries": [
+            "H"
+          ],
+          "block": "CH1",
+          "change_percent": 15.415943620523343,
+          "kind": "control",
+          "order": "HBBH",
+          "pseudo_H_over_B": 1.1541594362052334,
+          "pseudo_label_p95_medians_ms": {
+            "B": 3.9315725,
+            "H": 4.5376615000000005
+          },
+          "topology_precedence": 1
+        },
+        {
+          "actual_binaries": [
+            "B",
+            "H"
+          ],
+          "block": "R3",
+          "change_percent": 13.764190267561393,
+          "kind": "real",
+          "order": "HBBH",
+          "pseudo_H_over_B": 1.137641902675614,
+          "pseudo_label_p95_medians_ms": {
+            "B": 3.9605490000000003,
+            "H": 4.5056865
+          },
+          "topology_precedence": 1
+        },
+        {
+          "actual_binaries": [
+            "B"
+          ],
+          "block": "CB2",
+          "change_percent": 10.917344278541897,
+          "kind": "control",
+          "order": "HBBH",
+          "pseudo_H_over_B": 1.109173442785419,
+          "pseudo_label_p95_medians_ms": {
+            "B": 4.4286045000000005,
+            "H": 4.9120905
+          },
+          "topology_precedence": 2
+        },
+        {
+          "actual_binaries": [
+            "B",
+            "H"
+          ],
+          "block": "R4",
+          "change_percent": 1.9073348760490605,
+          "kind": "real",
+          "order": "BHHB",
+          "pseudo_H_over_B": 1.0190733487604906,
+          "pseudo_label_p95_medians_ms": {
+            "B": 4.462693,
+            "H": 4.5478115
+          },
+          "topology_precedence": 1
+        },
+        {
+          "actual_binaries": [
+            "H"
+          ],
+          "block": "CH2",
+          "change_percent": -9.154301342594318,
+          "kind": "control",
+          "order": "BHHB",
+          "pseudo_H_over_B": 0.9084569865740568,
+          "pseudo_label_p95_medians_ms": {
+            "B": 4.669914,
+            "H": 4.242416
+          },
+          "topology_precedence": 2
+        }
+      ],
+      "real": {
+        "B": {
+          "fixture_medians": {
+            "add_ms": 2151.0943315,
+            "docs_per_sec": 38731.803299493855,
+            "peak_active_preparations": 1.0,
+            "peak_buffered_bytes": 2162688.0,
+            "peak_reserved_bytes": 3145728.0,
+            "peak_rss_kib": 88902.0,
+            "rss_before_kib": 28242.0,
+            "search_during_p50_ms": 0.5325945,
+            "search_during_p95_ms": 4.7944705,
+            "search_during_p99_ms": 7.3166934999999995,
+            "search_idle_p95_ms": 0.345986,
+            "search_samples": 188.0,
+            "spilled_bytes": 205871288.0,
+            "total_ms": 2478.5844235
+          },
+          "p95_values": [
+            4.952529,
+            4.814546,
+            4.965735,
+            5.128236,
+            4.720503,
+            3.2005950000000003,
+            4.774395,
+            4.150990999999999
+          ],
+          "process_context_medians": {
+            "cpu_psi_some_delta_us": 1276240.0,
+            "io_psi_some_delta_us": 12382.5,
+            "memory_psi_some_delta_us": 0.0,
+            "process_wall_seconds": 3.3208488614999965,
+            "whole_process_cpu_seconds": 5.005079500000002,
+            "whole_process_cpu_system_seconds": 0.6237794999999995,
+            "whole_process_cpu_user_seconds": 4.374429500000005
+          },
+          "processes": 8,
+          "run_numbers": [
+            5,
+            8,
+            22,
+            23,
+            34,
+            35,
+            49,
+            52
+          ]
+        },
+        "H": {
+          "fixture_medians": {
+            "add_ms": 2124.1410699999997,
+            "docs_per_sec": 39374.63304126986,
+            "peak_active_preparations": 1.0,
+            "peak_buffered_bytes": 2162688.0,
+            "peak_reserved_bytes": 3145728.0,
+            "peak_rss_kib": 89434.0,
+            "rss_before_kib": 28302.0,
+            "search_during_p50_ms": 0.555507,
+            "search_during_p95_ms": 4.5444895,
+            "search_during_p99_ms": 7.668117,
+            "search_idle_p95_ms": 0.34775999999999996,
+            "search_samples": 186.0,
+            "spilled_bytes": 205871288.0,
+            "total_ms": 2438.1270189999996
+          },
+          "p95_values": [
+            4.045545000000001,
+            4.030553,
+            4.630019,
+            4.922829999999999,
+            4.541779,
+            4.469594000000001,
+            4.5472,
+            4.5484230000000005
+          ],
+          "process_context_medians": {
+            "cpu_psi_some_delta_us": 1308546.0,
+            "io_psi_some_delta_us": 11105.5,
+            "memory_psi_some_delta_us": 0.0,
+            "process_wall_seconds": 3.2707998939999925,
+            "whole_process_cpu_seconds": 4.9791864999999955,
+            "whole_process_cpu_system_seconds": 0.6216739999999987,
+            "whole_process_cpu_user_seconds": 4.353320499999995
+          },
+          "processes": 8,
+          "run_numbers": [
+            6,
+            7,
+            21,
+            24,
+            33,
+            36,
+            50,
+            51
+          ]
+        }
+      },
+      "real_by_order": {
+        "BHHB": {
+          "H_over_B": 0.8961099041072419,
+          "change_percent": -10.38900958927581,
+          "p95_process_medians_ms": {
+            "B": 4.7944705,
+            "H": 4.2963725
+          },
+          "processes_per_binary": 4
+        },
+        "HBBH": {
+          "H_over_B": 0.9468895973854865,
+          "change_percent": -5.31104026145135,
+          "p95_process_medians_ms": {
+            "B": 4.843119,
+            "H": 4.5858989999999995
+          },
+          "processes_per_binary": 4
+        }
+      },
+      "real_ratios": {
+        "H_over_B": {
+          "add_ms": 0.9874699769762281,
+          "docs_per_sec": 1.0165969484251822,
+          "peak_active_preparations": 1.0,
+          "peak_buffered_bytes": 1.0,
+          "peak_reserved_bytes": 1.0,
+          "peak_rss_kib": 1.005984117342692,
+          "rss_before_kib": 1.0021244954323347,
+          "search_during_p50_ms": 1.0430205343840389,
+          "search_during_p95_ms": 0.9478605614530322,
+          "search_during_p99_ms": 1.0480303705492104,
+          "search_idle_p95_ms": 1.005127375096102,
+          "search_samples": 0.9893617021276596,
+          "spilled_bytes": 1.0,
+          "total_ms": 0.9836772134463466
+        }
+      }
+    },
+    "smt_siblings": {
+      "adjacent_pairs": {
+        "control": [
+          {
+            "block": "CB1",
+            "change_percent": -2.2787647855969317,
+            "pseudo_H_over_B": 0.9772123521440307,
+            "runs": [
+              13,
+              14
+            ]
+          },
+          {
+            "block": "CB1",
+            "change_percent": 10.3492785361317,
+            "pseudo_H_over_B": 1.103492785361317,
+            "runs": [
+              15,
+              16
+            ]
+          },
+          {
+            "block": "CH1",
+            "change_percent": 25.42359332581099,
+            "pseudo_H_over_B": 1.25423593325811,
+            "runs": [
+              29,
+              30
+            ]
+          },
+          {
+            "block": "CH1",
+            "change_percent": 11.058000365051068,
+            "pseudo_H_over_B": 1.1105800036505107,
+            "runs": [
+              31,
+              32
+            ]
+          },
+          {
+            "block": "CB2",
+            "change_percent": 32.01486975466577,
+            "pseudo_H_over_B": 1.3201486975466576,
+            "runs": [
+              41,
+              42
+            ]
+          },
+          {
+            "block": "CB2",
+            "change_percent": 6.799242114209902,
+            "pseudo_H_over_B": 1.067992421142099,
+            "runs": [
+              43,
+              44
+            ]
+          },
+          {
+            "block": "CH2",
+            "change_percent": -23.83476882445755,
+            "pseudo_H_over_B": 0.7616523117554245,
+            "runs": [
+              57,
+              58
+            ]
+          },
+          {
+            "block": "CH2",
+            "change_percent": 11.717126781872288,
+            "pseudo_H_over_B": 1.117171267818723,
+            "runs": [
+              59,
+              60
+            ]
+          }
+        ],
+        "real": [
+          {
+            "block": "R1",
+            "change_percent": 35.131755062749434,
+            "pseudo_H_over_B": 1.3513175506274944,
+            "runs": [
+              1,
+              2
+            ]
+          },
+          {
+            "block": "R1",
+            "change_percent": 6.858620209838473,
+            "pseudo_H_over_B": 1.0685862020983847,
+            "runs": [
+              3,
+              4
+            ]
+          },
+          {
+            "block": "R2",
+            "change_percent": 21.292871958248206,
+            "pseudo_H_over_B": 1.212928719582482,
+            "runs": [
+              17,
+              18
+            ]
+          },
+          {
+            "block": "R2",
+            "change_percent": 21.60471598128599,
+            "pseudo_H_over_B": 1.21604715981286,
+            "runs": [
+              19,
+              20
+            ]
+          },
+          {
+            "block": "R3",
+            "change_percent": 22.74618796155712,
+            "pseudo_H_over_B": 1.2274618796155712,
+            "runs": [
+              37,
+              38
+            ]
+          },
+          {
+            "block": "R3",
+            "change_percent": 17.573135499177273,
+            "pseudo_H_over_B": 1.1757313549917727,
+            "runs": [
+              39,
+              40
+            ]
+          },
+          {
+            "block": "R4",
+            "change_percent": 1.8564884002984838,
+            "pseudo_H_over_B": 1.0185648840029848,
+            "runs": [
+              53,
+              54
+            ]
+          },
+          {
+            "block": "R4",
+            "change_percent": 6.500830660751533,
+            "pseudo_H_over_B": 1.0650083066075153,
+            "runs": [
+              55,
+              56
+            ]
+          }
+        ]
+      },
+      "blocks": [
+        {
+          "actual_binaries": [
+            "B",
+            "H"
+          ],
+          "block": "R1",
+          "change_percent": 21.10334567345953,
+          "kind": "real",
+          "order": "BHHB",
+          "pseudo_H_over_B": 1.2110334567345953,
+          "pseudo_label_p95_medians_ms": {
+            "B": 3.208233,
+            "H": 3.8852775000000004
+          },
+          "topology_precedence": 1
+        },
+        {
+          "actual_binaries": [
+            "B"
+          ],
+          "block": "CB1",
+          "change_percent": 4.242267435680835,
+          "kind": "control",
+          "order": "BHHB",
+          "pseudo_H_over_B": 1.0424226743568084,
+          "pseudo_label_p95_medians_ms": {
+            "B": 3.57514,
+            "H": 3.726807
+          },
+          "topology_precedence": 2
+        },
+        {
+          "actual_binaries": [
+            "B",
+            "H"
+          ],
+          "block": "R2",
+          "change_percent": 21.449975088062033,
+          "kind": "real",
+          "order": "HBBH",
+          "pseudo_H_over_B": 1.2144997508806203,
+          "pseudo_label_p95_medians_ms": {
+            "B": 3.3899409999999994,
+            "H": 4.1170825
+          },
+          "topology_precedence": 1
+        },
+        {
+          "actual_binaries": [
+            "H"
+          ],
+          "block": "CH1",
+          "change_percent": 18.23779195652795,
+          "kind": "control",
+          "order": "HBBH",
+          "pseudo_H_over_B": 1.1823779195652795,
+          "pseudo_label_p95_medians_ms": {
+            "B": 3.9046695,
+            "H": 4.616795
+          },
+          "topology_precedence": 2
+        },
+        {
+          "actual_binaries": [
+            "B",
+            "H"
+          ],
+          "block": "R3",
+          "change_percent": 19.949177907195793,
+          "kind": "real",
+          "order": "HBBH",
+          "pseudo_H_over_B": 1.199491779071958,
+          "pseudo_label_p95_medians_ms": {
+            "B": 3.8666255,
+            "H": 4.637985499999999
+          },
+          "topology_precedence": 2
+        },
+        {
+          "actual_binaries": [
+            "B"
+          ],
+          "block": "CB2",
+          "change_percent": 19.399042244654787,
+          "kind": "control",
+          "order": "HBBH",
+          "pseudo_H_over_B": 1.1939904224465478,
+          "pseudo_label_p95_medians_ms": {
+            "B": 3.11353,
+            "H": 3.717525
+          },
+          "topology_precedence": 1
+        },
+        {
+          "actual_binaries": [
+            "B",
+            "H"
+          ],
+          "block": "R4",
+          "change_percent": 4.402739954637513,
+          "kind": "real",
+          "order": "BHHB",
+          "pseudo_H_over_B": 1.0440273995463751,
+          "pseudo_label_p95_medians_ms": {
+            "B": 3.7570695,
+            "H": 3.9224835000000002
+          },
+          "topology_precedence": 2
+        },
+        {
+          "actual_binaries": [
+            "H"
+          ],
+          "block": "CH2",
+          "change_percent": -8.06739404232647,
+          "kind": "control",
+          "order": "BHHB",
+          "pseudo_H_over_B": 0.9193260595767353,
+          "pseudo_label_p95_medians_ms": {
+            "B": 4.399469,
+            "H": 4.0445465
+          },
+          "topology_precedence": 1
+        }
+      ],
+      "real": {
+        "B": {
+          "fixture_medians": {
+            "add_ms": 3424.3023169999997,
+            "docs_per_sec": 25610.75006621252,
+            "peak_active_preparations": 1.0,
+            "peak_buffered_bytes": 2162688.0,
+            "peak_reserved_bytes": 3145728.0,
+            "peak_rss_kib": 92348.0,
+            "rss_before_kib": 28116.0,
+            "search_during_p50_ms": 0.8003804999999999,
+            "search_during_p95_ms": 3.4050735,
+            "search_during_p99_ms": 7.6505275,
+            "search_idle_p95_ms": 0.457925,
+            "search_samples": 294.0,
+            "spilled_bytes": 205871288.0,
+            "total_ms": 3748.425949
+          },
+          "p95_values": [
+            3.232779,
+            3.183687,
+            3.3642619999999996,
+            3.4156199999999997,
+            3.551971,
+            4.18128,
+            3.394527,
+            4.119612
+          ],
+          "process_context_medians": {
+            "cpu_psi_some_delta_us": 1810941.0,
+            "io_psi_some_delta_us": 10424.0,
+            "memory_psi_some_delta_us": 0.0,
+            "process_wall_seconds": 4.623512105499984,
+            "whole_process_cpu_seconds": 7.41022849999998,
+            "whole_process_cpu_system_seconds": 0.7588125000000003,
+            "whole_process_cpu_user_seconds": 6.656709500000005
+          },
+          "processes": 8,
+          "run_numbers": [
+            1,
+            4,
+            18,
+            19,
+            38,
+            39,
+            53,
+            56
+          ]
+        },
+        "H": {
+          "fixture_medians": {
+            "add_ms": 3333.5280949999997,
+            "docs_per_sec": 26298.03375938766,
+            "peak_active_preparations": 1.0,
+            "peak_buffered_bytes": 2162688.0,
+            "peak_reserved_bytes": 3145728.0,
+            "peak_rss_kib": 89086.0,
+            "rss_before_kib": 28202.0,
+            "search_during_p50_ms": 0.836081,
+            "search_during_p95_ms": 4.2567319999999995,
+            "search_during_p99_ms": 7.3443380000000005,
+            "search_idle_p95_ms": 0.4709045,
+            "search_samples": 283.0,
+            "spilled_bytes": 205871288.0,
+            "total_ms": 3650.4640815000002
+          },
+          "p95_values": [
+            4.368511000000001,
+            3.402044,
+            4.08061,
+            4.153555,
+            4.359909,
+            4.916061999999999,
+            3.4575460000000002,
+            4.387421
+          ],
+          "process_context_medians": {
+            "cpu_psi_some_delta_us": 2033479.5,
+            "io_psi_some_delta_us": 12786.5,
+            "memory_psi_some_delta_us": 0.0,
+            "process_wall_seconds": 4.523343378500002,
+            "whole_process_cpu_seconds": 7.343846999999989,
+            "whole_process_cpu_system_seconds": 0.7033229999999986,
+            "whole_process_cpu_user_seconds": 6.638565000000028
+          },
+          "processes": 8,
+          "run_numbers": [
+            2,
+            3,
+            17,
+            20,
+            37,
+            40,
+            54,
+            55
+          ]
+        }
+      },
+      "real_by_order": {
+        "BHHB": {
+          "H_over_B": 1.1808805870741446,
+          "change_percent": 18.088058707414454,
+          "p95_process_medians_ms": {
+            "B": 3.313653,
+            "H": 3.9130285000000002
+          },
+          "processes_per_binary": 4
+        },
+        "HBBH": {
+          "H_over_B": 1.221866208851811,
+          "change_percent": 22.186620885181107,
+          "p95_process_medians_ms": {
+            "B": 3.4837955,
+            "H": 4.2567319999999995
+          },
+          "processes_per_binary": 4
+        }
+      },
+      "real_ratios": {
+        "H_over_B": {
+          "add_ms": 0.9734911775898553,
+          "docs_per_sec": 1.026835750276672,
+          "peak_active_preparations": 1.0,
+          "peak_buffered_bytes": 1.0,
+          "peak_reserved_bytes": 1.0,
+          "peak_rss_kib": 0.9646770910035951,
+          "rss_before_kib": 1.0030587565798834,
+          "search_during_p50_ms": 1.0446044100274807,
+          "search_during_p95_ms": 1.2501145716825202,
+          "search_during_p99_ms": 0.9599779884458948,
+          "search_idle_p95_ms": 1.0283441611617623,
+          "search_samples": 0.9625850340136054,
+          "spilled_bytes": 1.0,
+          "total_ms": 0.9738658656105681
+        }
+      }
+    }
+  },
+  "verification_status": "PASS: complete and authentic diagnostic evidence at the approved source"
+}
