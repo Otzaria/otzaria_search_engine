@@ -16938,112 +16938,110 @@ impl SearchEngine {
 
         // A snippet costs as much as its line is long, and one line can hold a whole book.
         use rayon::prelude::*;
-        let results = documents
-            .par_iter()
-            .zip(texts.into_par_iter())
+        // resolve_hit_texts preserves one text per loaded document, in the same order.
+        let results = texts
+            .into_par_iter()
             .enumerate()
-            .map(
-                |(slot, ((_, retrieved_doc), hit_text))| -> Result<SearchResult> {
-                    cancellation.check()?;
-                    let title = retrieved_doc
-                        .get_first(title_field)
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string();
-                    let reference = retrieved_doc
-                        .get_first(reference_field)
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string();
-                    let id = retrieved_doc
-                        .get_first(id_field)
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or_default();
-                    let segment = retrieved_doc
-                        .get_first(segment_field)
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or_default();
-                    let is_pdf = retrieved_doc
-                        .get_first(is_pdf_field)
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or_default();
-                    let file_path = retrieved_doc
-                        .get_first(file_path_field)
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string();
+            .map(|(slot, hit_text)| -> Result<SearchResult> {
+                cancellation.check()?;
+                let retrieved_doc = &documents[slot].1;
+                let title = retrieved_doc
+                    .get_first(title_field)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let reference = retrieved_doc
+                    .get_first(reference_field)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let id = retrieved_doc
+                    .get_first(id_field)
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or_default();
+                let segment = retrieved_doc
+                    .get_first(segment_field)
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or_default();
+                let is_pdf = retrieved_doc
+                    .get_first(is_pdf_field)
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or_default();
+                let file_path = retrieved_doc
+                    .get_first(file_path_field)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
 
-                    let text_status = hit_text.status;
-                    let (text, shown_vocalized) = match rendering {
-                        HitRendering::PlainAndVocalized => {
-                            let vocalized = hit_text
-                                .vocalized
-                                .map(|text| hit_text.notes.clone().display(text, true));
-                            (hit_text.notes.display(hit_text.plain, false), vocalized)
-                        }
-                        _ => (hit_text.display_notes(vocalized_field), None),
-                    };
-                    let cross_line_html = match (next_lines.get(slot), phrase) {
-                        (Some(Some(next)), Some(pf)) => {
-                            Self::cross_line_snippet_html(searcher, &text, next, pf, hl)
-                        }
-                        _ => None,
-                    };
-                    let continues_to_next_line = cross_line_html.is_some();
-                    let result_text = match (text_status, cross_line_html) {
-                        (TextStatus::Ok, Some(html)) => html,
-                        (TextStatus::Ok, None) => {
-                            match Self::snippet_html(searcher, snippet_generator, &text, hl, phrase)
-                            {
-                                Some((offset, html)) => {
-                                    let html = text.annotate(
-                                        html,
-                                        offset,
-                                        &hl.highlight_prefix,
-                                        &hl.highlight_postfix,
-                                    );
-                                    shown_vocalized
-                                        .as_ref()
-                                        .and_then(|vocalized| {
-                                            crate::vocalized_snippet::vocalize_snippet_html(
-                                                &html,
-                                                &text,
-                                                offset,
-                                                vocalized,
-                                                &hl.highlight_prefix,
-                                                &hl.highlight_postfix,
-                                            )
-                                        })
-                                        .unwrap_or(html)
-                                }
-                                None => bounded_display_snippet(
-                                    shown_vocalized.as_ref().unwrap_or(&text),
-                                    hl.max_chars,
-                                ),
+                let text_status = hit_text.status;
+                let (text, shown_vocalized) = match rendering {
+                    HitRendering::PlainAndVocalized => {
+                        let vocalized = hit_text
+                            .vocalized
+                            .map(|text| hit_text.notes.clone().display(text, true));
+                        (hit_text.notes.display(hit_text.plain, false), vocalized)
+                    }
+                    _ => (hit_text.display_notes(vocalized_field), None),
+                };
+                let cross_line_html = match (next_lines.get(slot), phrase) {
+                    (Some(Some(next)), Some(pf)) => {
+                        Self::cross_line_snippet_html(searcher, &text, next, pf, hl)
+                    }
+                    _ => None,
+                };
+                let continues_to_next_line = cross_line_html.is_some();
+                let result_text = match (text_status, cross_line_html) {
+                    (TextStatus::Ok, Some(html)) => html,
+                    (TextStatus::Ok, None) => {
+                        match Self::snippet_html(searcher, snippet_generator, &text, hl, phrase) {
+                            Some((offset, html)) => {
+                                let html = text.annotate(
+                                    html,
+                                    offset,
+                                    &hl.highlight_prefix,
+                                    &hl.highlight_postfix,
+                                );
+                                shown_vocalized
+                                    .as_ref()
+                                    .and_then(|vocalized| {
+                                        crate::vocalized_snippet::vocalize_snippet_html(
+                                            &html,
+                                            &text,
+                                            offset,
+                                            vocalized,
+                                            &hl.highlight_prefix,
+                                            &hl.highlight_postfix,
+                                        )
+                                    })
+                                    .unwrap_or(html)
                             }
+                            None => bounded_display_snippet(
+                                shown_vocalized.as_ref().unwrap_or(&text),
+                                hl.max_chars,
+                            ),
                         }
-                        // The line no longer matches what was indexed: painting the query's
-                        // terms into it would claim a match the index never saw.
-                        (TextStatus::Stale, _) => bounded_plain_snippet(&text, hl.max_chars),
-                        (TextStatus::Unavailable, _) => String::new(),
-                    };
+                    }
+                    // The line no longer matches what was indexed: painting the query's
+                    // terms into it would claim a match the index never saw.
+                    (TextStatus::Stale, _) => bounded_plain_snippet(&text, hl.max_chars),
+                    (TextStatus::Unavailable, _) => String::new(),
+                };
 
-                    cancellation.check()?;
-                    Ok(SearchResult {
-                        title,
-                        reference,
-                        text: result_text,
-                        id,
-                        segment,
-                        is_pdf,
-                        file_path,
-                        merged_count: 1,
-                        merged: Vec::new(),
-                        text_status,
-                        continues_to_next_line,
-                    })
-                },
-            )
+                cancellation.check()?;
+                Ok(SearchResult {
+                    title,
+                    reference,
+                    text: result_text,
+                    id,
+                    segment,
+                    is_pdf,
+                    file_path,
+                    merged_count: 1,
+                    merged: Vec::new(),
+                    text_status,
+                    continues_to_next_line,
+                })
+            })
             .collect::<Result<Vec<_>>>()?;
         cancellation.check()?;
         Ok(results)
