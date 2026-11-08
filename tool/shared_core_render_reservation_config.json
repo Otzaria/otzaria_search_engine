@@ -1,0 +1,347 @@
+{
+  "changed_source_paths": [
+    "rust/src/api/search_engine.rs",
+    "rust/src/indexing_diagnostics.rs",
+    "rust/src/library_indexing_tests.rs"
+  ],
+  "counts": {
+    "main_processes": 64,
+    "wide_processes": 32
+  },
+  "decision_policy": "No automatic timing pass or promotion; correctness and provenance failures stop and preserve partial evidence.",
+  "lifecycle_tests": {
+    "expected_ignored_per_command": 0,
+    "expected_passed_per_command": 1,
+    "library_harness_retention_max_bytes": 134217728,
+    "per_test_timeout_seconds": 180,
+    "scope": "Existing guarded success, caught preparation panic, and unavailable/pre-cancelled/mismatch tests with reservation-drain assertions. No deterministic post-admission cancellation claim.",
+    "target_kind": [
+      "cdylib",
+      "staticlib",
+      "rlib"
+    ],
+    "target_name": "search_engine",
+    "test_names": [
+      "library_indexing_tests::a_batch_enqueues_in_input_order_while_searches_run",
+      "library_indexing_tests::a_book_that_panics_fails_alone_and_the_batch_finishes",
+      "library_indexing_tests::a_cancelled_unreadable_or_mismatched_book_adds_nothing"
+    ]
+  },
+  "original": {
+    "H_manifest_and_lock_sha256": {
+      "rust/Cargo.lock": "0f6893c788643324b8329d9c405024e6ed6a244c055f6a0813b532b6e1a41965",
+      "rust/Cargo.toml": "2c43174e97f812f21374c493544f9eff8eb24325903cc42e2eba5675dcbfd798",
+      "rust/tests/indexing_throughput.rs": "58b15ac4a0736284bae336b48f6d334bc1de8bcfd3ac52689ab0417ec264ebca"
+    },
+    "H_original_executable_sha256": "974a92cc60324467d26ebad61c7d21ca0e7512087201eaa037ff357d42151337",
+    "H_original_layout": {
+      "alignment_bytes": 8,
+      "size_bytes": 1600
+    },
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "dependency_graph_normalization": "Replace exact checkout file URI with file://$CHECKOUT recursively; serialize sorted-key compact JSON with ensure_ascii=True.",
+    "dependency_graph_source_sha256": "f0de046aa1e79ca22cb8a0cc92f813052263d6ac1ec9a87150d7654f1fc63e68",
+    "expected_document_stamps_decimal_strings": [
+      [
+        "12000",
+        "10670837542768650437",
+        "12239437396104776778",
+        "466580576850794485"
+      ],
+      [
+        "12000",
+        "12556540028025398920",
+        "12239437396104776778",
+        "1305838161414759608"
+      ],
+      [
+        "12000",
+        "11771105542890313335",
+        "12239437396104776778",
+        "1766832365589335079"
+      ],
+      [
+        "12000",
+        "13425863573125874666",
+        "12239437396104776778",
+        "10256193090095268506"
+      ],
+      [
+        "12000",
+        "11252811464134988281",
+        "12239437396104776778",
+        "16582632582370218217"
+      ],
+      [
+        "12000",
+        "3407739187330623868",
+        "12239437396104776778",
+        "12641815827962878892"
+      ],
+      [
+        "12000",
+        "4698479715532565275",
+        "12239437396104776778",
+        "15230846581160197067"
+      ],
+      [
+        "12000",
+        "15402450988303931278",
+        "12239437396104776778",
+        "16678097620878167934"
+      ]
+    ],
+    "fixture_path": "rust/tests/indexing_throughput.rs",
+    "fixture_sha256": "58b15ac4a0736284bae336b48f6d334bc1de8bcfd3ac52689ab0417ec264ebca",
+    "helper_sha256": "d82706e96fc4c1d213870d33e6bc83204ec8d6597da128795554c3226b31850e",
+    "layout_source_sha256": "c85a383fa627537380b6d94c9c0fb60d402f3b0bdd4beb9e48215d3afa8e49e6",
+    "normalized_dependency_graph_sha256": "e43f5133c855fdce74165397c086512cdceeea00d514c6c2f816bf1fb8e65266",
+    "phase1_controller_commit": "fc9cc131e070882f6531238a57d7f911249e6752",
+    "phase1_environment_sha256": "873c9e63ef7f014fde6762a1e15715ba32fc4da716791cd1cc9706afa1217e17",
+    "phase1_run": 42420237162,
+    "phase1_samples_sha256": "bd51bb7c11667f22f9af593a82ffacba29a56f9ffed4a1312cf999f31ea8f519",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.1\nLLVM version: 23.1.1"
+  },
+  "reuse_H": {
+    "artifact_id": 13600987145,
+    "artifact_name": "render-budget-diagnostic-42436690593-1",
+    "binaries": {
+      "indexing_throughput": {
+        "bytes": 15012848,
+        "path": "binaries/H-indexing_throughput",
+        "sha256": "974a92cc60324467d26ebad61c7d21ca0e7512087201eaa037ff357d42151337"
+      },
+      "render_scheduling": {
+        "bytes": 15124880,
+        "path": "binaries/H-render_scheduling",
+        "sha256": "37f58310a3365b81509c43ecbfa04127e621b5c60d993a72c7b5c3ae3ed2db21"
+      }
+    },
+    "files": {
+      "SHA256SUMS": {
+        "bytes": 262380,
+        "sha256": "18e51784acc85570e0c7917333b3b5b4a534aeae441da020795f69867b5482d7"
+      },
+      "build-logs/H/build-environment.json": {
+        "bytes": 128,
+        "sha256": "cab0e93c4806d9edd71ed8901a553f2c419820e6a35e80142a5d208f7b88c733"
+      },
+      "build-logs/H/cargo.jsonl": {
+        "bytes": 199553,
+        "sha256": "1961aef3201766ba828c92562e930c085876fdbb767c2ce6854266f1cbe20db8"
+      },
+      "build-logs/H/cargo.stderr.log": {
+        "bytes": 9223,
+        "sha256": "35fe3cd88c43fe03513689f8c14c679601b471d005bcb531bfb8b3f9ba938d4d"
+      },
+      "build-logs/H/command.json": {
+        "bytes": 320,
+        "sha256": "5b9b1c54363d82ec18f96e911f7a16588579df796c3e064d516534d4aa4cffef"
+      },
+      "build-logs/H/dependencies-before.json": {
+        "bytes": 158648,
+        "sha256": "f0de046aa1e79ca22cb8a0cc92f813052263d6ac1ec9a87150d7654f1fc63e68"
+      },
+      "build-logs/H/dependencies-with-overlays.json": {
+        "bytes": 158648,
+        "sha256": "f0de046aa1e79ca22cb8a0cc92f813052263d6ac1ec9a87150d7654f1fc63e68"
+      },
+      "build-logs/H/duration.json": {
+        "bytes": 59,
+        "sha256": "e2c2ad1938cad35c85b9632db134809bafb1c06f22f168d1111b198644f4c21c"
+      },
+      "build-logs/H/layout.log": {
+        "bytes": 195,
+        "sha256": "09b4891657ba922e38dc86b7338f0ba91ba0e6a1c03d48fa050972af7b3f708c"
+      },
+      "build-logs/H/overlays.json": {
+        "bytes": 286,
+        "sha256": "371820b65b9d60d67243201d53411da4c8f42cf73aa602869e86516ea94b1de5"
+      },
+      "build-logs/H/provenance.json": {
+        "bytes": 2185,
+        "sha256": "32c7e274583fc6cbe69822d56385ed643ef0bffa7205c62abe351366d071a994"
+      },
+      "build-logs/H/selected-artifacts.json": {
+        "bytes": 3525,
+        "sha256": "a07396270b3c567c9a707970791a4a65cdb918fb426532a8b653ac0d0b7ecc83"
+      },
+      "build-logs/H/source-after.json": {
+        "bytes": 649,
+        "sha256": "877315ea01976761e1685d0280e5ea66bf3fee1dd99e2519d63d5158cd9ea2a6"
+      },
+      "build-logs/H/source-before.json": {
+        "bytes": 649,
+        "sha256": "877315ea01976761e1685d0280e5ea66bf3fee1dd99e2519d63d5158cd9ea2a6"
+      },
+      "config.json": {
+        "bytes": 5391,
+        "sha256": "e2c43924f2a17a1f2f31b258e3d3f50f49d0a7a8348e7022a21adc0afecf1c39"
+      },
+      "environment.json": {
+        "bytes": 18982,
+        "sha256": "9922dbc48bcce8ed5e77f2569061dfd0291aef7b18256a84e8375ce29df7c04c"
+      },
+      "indexing_throughput.rs": {
+        "bytes": 9961,
+        "sha256": "58b15ac4a0736284bae336b48f6d334bc1de8bcfd3ac52689ab0417ec264ebca"
+      },
+      "layout_metadata.rs": {
+        "bytes": 283,
+        "sha256": "c85a383fa627537380b6d94c9c0fb60d402f3b0bdd4beb9e48215d3afa8e49e6"
+      },
+      "phase1-helper.py": {
+        "bytes": 25663,
+        "sha256": "d82706e96fc4c1d213870d33e6bc83204ec8d6597da128795554c3226b31850e"
+      },
+      "render-budget-controller.py": {
+        "bytes": 68750,
+        "sha256": "31114dc6c8156f171a55d689e05a5e0c268916978fce94dbdd20201162505cb4"
+      },
+      "render_scheduling.rs": {
+        "bytes": 24302,
+        "sha256": "36a2bba3efc689a9e92064baeafccf7d954566561d7bc838dbca7b8488edaf7a"
+      },
+      "source-provenance.json": {
+        "bytes": 1365,
+        "sha256": "f75d613233fcfb7ef8b7c5b1ed7a91ed3f1d1c0f62bd9b83e1a0131ce106673d"
+      },
+      "source/H-search_engine.rs": {
+        "bytes": 800301,
+        "sha256": "17554b51dbfb4ef26dba0184abeb3520f3e77ad8eb02d3c9ae589ee57a1c9c93"
+      },
+      "status.json": {
+        "bytes": 514,
+        "sha256": "f295dfb36d0a0ecce4bbbf40d0cab70f3afac2aeb35506b9e8e258b23ec67a33"
+      },
+      "wide-fixture-manifest.json": {
+        "bytes": 184162,
+        "sha256": "bbe73ab0fd6aea08d93f79bd93478a6aeddce4134c9aacc116ea17f302cec170"
+      }
+    },
+    "manifest_entries": 2163,
+    "policy": "Verify original run/artifact/ZIP and every manifest member; remeasure both exact H executables in this job. Original timing observations are not imported into analysis.",
+    "regular_files": 2164,
+    "repository": "Otzaria/otzaria_search_engine",
+    "run_attempt": 1,
+    "run_id": 42436690593,
+    "workflow_commit": "7b95de5b12002e4c80cbc2ecce6e36b495e8906d",
+    "zip_bytes": 28108189,
+    "zip_sha256": "838ec0832746b204294a515c7ce1531e74f4ac4d6218606a416c89d6df5aa34c"
+  },
+  "revisions": {
+    "F": {
+      "commit": "4bb3d8e7d11499861ce0655c88841eb23e0f1649",
+      "parent": "4761356749815d283ede41ef956c64b3dbffe048",
+      "source_files": {
+        "rust/src/api/search_engine.rs": {
+          "git_blob": "0897e4c834e8d1a63b12b0854fc9b7191b9ef2d8",
+          "sha256": "e7958fe9956de0c9c48acf199a546f90503fec06c2baf43af67de5083c90b32c"
+        },
+        "rust/src/indexing_diagnostics.rs": {
+          "git_blob": "b0a64c91ad53d8126d823ccdabf32eb4e610d3e9",
+          "sha256": "335a658b973cb496fdbcf554b5e7762697df728e475ffa9ec813abb960338e34"
+        },
+        "rust/src/library_indexing_tests.rs": {
+          "git_blob": "acd5b6b4168f05e278ec04e95657f21c0dc93416",
+          "sha256": "b3955039b32fee57993a10f9dd3dd6420c36b10e48b2b06ea91a33faa5c7fb82"
+        }
+      },
+      "source_git_blob": "0897e4c834e8d1a63b12b0854fc9b7191b9ef2d8",
+      "source_sha256": "e7958fe9956de0c9c48acf199a546f90503fec06c2baf43af67de5083c90b32c",
+      "tree": "2c11451ab6e15f65709dc54d62aca4e224087e29"
+    },
+    "H": {
+      "commit": "4761356749815d283ede41ef956c64b3dbffe048",
+      "source_files": {
+        "rust/src/api/search_engine.rs": {
+          "git_blob": "323afb9343b6812af3faf4da8bc08375192ef292",
+          "sha256": "17554b51dbfb4ef26dba0184abeb3520f3e77ad8eb02d3c9ae589ee57a1c9c93"
+        },
+        "rust/src/indexing_diagnostics.rs": {
+          "git_blob": "0922ebccaeb6068f486153e627b65b909296123f",
+          "sha256": "70a22a757d0f21cbfc2e3224a9cb67d9beb42a4d88650d0697824009c62ab64f"
+        },
+        "rust/src/library_indexing_tests.rs": {
+          "git_blob": "eab7162618aa71e45be6e5c18a7acf67a3d4b6c2",
+          "sha256": "57dd6028d97641db66f32c0b042ab0a1d5c164da1512dfdc48073f4b0f1a2b89"
+        }
+      },
+      "source_git_blob": "323afb9343b6812af3faf4da8bc08375192ef292",
+      "source_sha256": "17554b51dbfb4ef26dba0184abeb3520f3e77ad8eb02d3c9ae589ee57a1c9c93",
+      "tree": "34341d9cffd3348587f509e587593c1f67cf4eec"
+    }
+  },
+  "schema_version": 1,
+  "source_path": "rust/src/api/search_engine.rs",
+  "state": "frozen",
+  "timeouts_seconds": {
+    "build": 2100,
+    "controller_budget": 3900,
+    "layout": 60,
+    "measured_process": 180
+  },
+  "wide": {
+    "behavior_cases": 44,
+    "boundary_totals": [
+      16383,
+      16384,
+      16385
+    ],
+    "case_marker": "OTZARIA_RENDER_CASE ",
+    "complete_marker": "OTZARIA_RENDER_COMPLETE ",
+    "indexing_overlapped": false,
+    "limits": [
+      1,
+      7,
+      8,
+      10,
+      15,
+      16,
+      50,
+      100
+    ],
+    "manifest_contract_sha256": "9b771807de0f20f5ec862d3bbeff3a3d9de38a19ddaf0b1623c63e6273a66df5",
+    "manifest_sha256": "572421adfe2e6a2aa6d0c80d317df93c98f00bf3c53f9eaf60f9d962b688d09f",
+    "measured_queries": 30,
+    "order_environment": "OTZARIA_RENDER_CASE_ORDER",
+    "original_manifest_sha256": "bbe73ab0fd6aea08d93f79bd93478a6aeddce4134c9aacc116ea17f302cec170",
+    "overlay_path": "rust/tests/render_scheduling.rs",
+    "percentile_rule": "sorted[ceil((n - 1) * p)]",
+    "post_timing_validation_queries_per_timed_case": 1,
+    "preflight_cases": 10,
+    "profiles": [
+      "short",
+      "long",
+      "mixed"
+    ],
+    "schema_version": 1,
+    "snapshot_environment": "OTZARIA_RENDER_OUTPUT_DIR",
+    "source_sha256": "36a2bba3efc689a9e92064baeafccf7d954566561d7bc838dbca7b8488edaf7a",
+    "standard_cases": 48,
+    "storage_modes": [
+      "LibraryDb",
+      "InIndex"
+    ],
+    "target": "render_scheduling",
+    "test_name": "measure_render_scheduling",
+    "timed_cases": 14,
+    "timed_limits": {
+      "long": [
+        10,
+        100
+      ],
+      "mixed": [
+        10
+      ],
+      "short": [
+        1,
+        10,
+        50,
+        100
+      ]
+    },
+    "total_cases": 58,
+    "warmup_queries": 5
+  }
+}

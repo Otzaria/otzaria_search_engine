@@ -1,0 +1,54 @@
+name: Shared core reservation gated render diagnostic
+
+on:
+  push:
+    branches: [diag/shared-core-render-reservation-20261108]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  render-reservation-controls:
+    name: Reused H and one clean F build with lifecycle gates and fixed controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: controller
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          ref: 4761356749815d283ede41ef956c64b3dbffe048
+          path: head
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          ref: 4bb3d8e7d11499861ce0655c88841eb23e0f1649
+          fetch-depth: 2
+          path: candidate
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - name: Verify reused H, build F once, run lifecycle gates and execute the frozen protocol
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          python3 controller/tool/shared_core_render_reservation_diagnostic.py
+          --head head
+          --candidate candidate
+          --config controller/tool/shared_core_render_reservation_config.json
+          --helper controller/tool/shared_core_economy_helper.py
+          --wide-fixture controller/tool/shared_core_render_scheduling.rs
+          --fixture-manifest controller/tool/shared_core_render_reservation_manifest.json
+          --out "${{ runner.temp }}/render-reservation-diagnostic"
+          --build-root "${{ runner.temp }}/render-reservation-build"
+      - name: Preserve binaries, source provenance, lifecycle logs and all partial evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: render-reservation-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/render-reservation-diagnostic/
+          if-no-files-found: error
+          compression-level: 1
+          retention-days: 14
