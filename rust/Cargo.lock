@@ -1422,6 +1422,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "otzaria-search-core"
+version = "7.0.1"
+dependencies = [
+ "search_engine",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "otzaria-semantic-search"
 version = "0.1.0"
 source = "git+https://github.com/Otzaria/otzaria-semantic-search?rev=a79901ff1a34bc9d57b994b905de7ec9ad69bb7a#a79901ff1a34bc9d57b994b905de7ec9ad69bb7a"
@@ -1723,6 +1732,7 @@ dependencies = [
  "env_logger",
  "fancy-regex 0.14.0",
  "flutter_rust_bridge",
+ "flutter_rust_bridge_macros",
  "htmlescape",
  "log",
  "lru 0.12.5",

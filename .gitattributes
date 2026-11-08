@@ -8,3 +8,5 @@
 *.rs text eol=lf
 *.png binary
 *.jar binary
+# Preserve the independently built Tantivy fixture byte-for-byte on every host.
+rust/core/tests/fixtures/**/index/** -text

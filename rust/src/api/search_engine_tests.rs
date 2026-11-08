@@ -12470,6 +12470,82 @@ mod semantic_verification {
     }
 
     #[test]
+    fn semantic_benchmark_opens_vectors_without_enabling_index_writes() {
+        use crate::smart_search_bench::{open_read_only, open_vectors, SemanticInputs};
+
+        let dir = TempDir::new().unwrap();
+        let built = built(&dir);
+        let model_identity = dir.path().join("model.json");
+        fs::write(&model_identity, serde_json::to_vec(&built.model).unwrap()).unwrap();
+        let inputs = SemanticInputs {
+            vectors: dir.path().join("vectors"),
+            model: built.model_file.clone(),
+            model_identity,
+            onnx_runtime: None,
+        };
+        // Install an actual small vector set with the deterministic mock backend.
+        // Close the writer before snapshotting every lexical index file on Windows.
+        drop(open(&dir, built));
+        let index = dir.path().join("index");
+        let files = || {
+            fs::read_dir(&index)
+                .unwrap()
+                .map(|entry| {
+                    let entry = entry.unwrap();
+                    (entry.file_name(), fs::read(entry.path()).unwrap())
+                })
+                .collect::<std::collections::BTreeMap<_, _>>()
+        };
+        let before = files();
+        let mut engine = open_read_only(&index).unwrap();
+        let public_open = || SemanticArtifactInput {
+            vectors_dir: inputs.vectors.to_string_lossy().into_owned(),
+            model_path: inputs.model.to_string_lossy().into_owned(),
+            model_identity_json: fs::read_to_string(&inputs.model_identity).unwrap(),
+            onnx_runtime_path: None,
+            scan_threads: None,
+        };
+        assert_eq!(
+            engine
+                .open_semantic_artifact(public_open())
+                .err()
+                .unwrap()
+                .kind,
+            SemanticErrorKind::ReadOnlySession
+        );
+        // Exercise the same vector-opening route as all five real-data benchmarks.
+        open_vectors(&engine, &inputs).unwrap();
+        open_vectors(&engine, &inputs).unwrap();
+        let response = search(&engine, SemanticRetrievalMode::SemanticOnly);
+        assert!(response.fallback_reason.is_none());
+        let top = response.results.first().expect("a semantic hit");
+        assert_eq!(top.snippet_html, PROBE);
+        assert_eq!(top.source, SemanticResultSource::Semantic);
+        for refusal in [
+            engine.open_index_writer(),
+            engine.clear(),
+            engine.set_book_order(vec![]).map(|_| ()),
+        ] {
+            assert!(refusal.unwrap_err().to_string().contains("read-only"));
+        }
+        assert_eq!(
+            engine.reset_semantic_index().err().unwrap().kind,
+            SemanticErrorKind::ReadOnlySession
+        );
+        assert_eq!(
+            engine
+                .open_semantic_artifact(public_open())
+                .err()
+                .unwrap()
+                .kind,
+            SemanticErrorKind::ReadOnlySession
+        );
+        engine.disable_semantic();
+        drop(engine);
+        assert_eq!(files(), before, "benchmark changed the lexical index");
+    }
+
+    #[test]
     fn a_line_whose_text_is_not_the_vectors_is_not_shown_as_semantic() {
         let dir = TempDir::new().unwrap();
         let mut engine = opened(&dir);

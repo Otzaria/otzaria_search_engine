@@ -41,8 +41,12 @@ final class TargetToolchain {
           },
           androidApi: code.android.targetNdkApi,
         ),
+        // code_assets 1.x has only targetVersion; retain the supported Flutter
+        // minimum while using its compatible major-version getter on 2.x.
+        // ignore: deprecated_member_use
         OS.iOS => TargetToolchain(appleVersion: '${code.iOS.targetVersion}.0'),
         OS.macOS => TargetToolchain(
+          // ignore: deprecated_member_use
           appleVersion: '${code.macOS.targetVersion}.0',
         ),
         _ => const TargetToolchain(),

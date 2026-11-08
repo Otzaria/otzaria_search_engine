@@ -1,0 +1,252 @@
+{
+  "index_settings": {
+    "docstore_compression": "zstd(compression_level=3)",
+    "docstore_blocksize": 16384
+  },
+  "segments": [
+    {
+      "segment_id": "814f67eb-608b-4992-8662-a2ae95cfbfd3",
+      "max_doc": 7,
+      "deletes": null
+    },
+    {
+      "segment_id": "0e8db192-85de-4038-8299-d3f5598d9b87",
+      "max_doc": 1,
+      "deletes": null
+    },
+    {
+      "segment_id": "8d00bb5f-d5da-48aa-8643-c3a1659bf5a0",
+      "max_doc": 1,
+      "deletes": null
+    }
+  ],
+  "schema": [
+    {
+      "name": "text",
+      "type": "text",
+      "options": {
+        "indexing": {
+          "record": "position",
+          "fieldnorms": true,
+          "tokenizer": "hebrew"
+        },
+        "stored": false,
+        "fast": false
+      }
+    },
+    {
+      "name": "textVocalized",
+      "type": "text",
+      "options": {
+        "indexing": {
+          "record": "position",
+          "fieldnorms": true,
+          "tokenizer": "hebrew_vocalized"
+        },
+        "stored": false,
+        "fast": false
+      }
+    },
+    {
+      "name": "reference",
+      "type": "text",
+      "options": {
+        "stored": true,
+        "fast": false
+      }
+    },
+    {
+      "name": "title",
+      "type": "text",
+      "options": {
+        "indexing": {
+          "record": "basic",
+          "fieldnorms": false,
+          "tokenizer": "raw"
+        },
+        "stored": false,
+        "fast": true
+      }
+    },
+    {
+      "name": "id",
+      "type": "u64",
+      "options": {
+        "indexed": false,
+        "fieldnorms": false,
+        "fast": true,
+        "stored": true
+      }
+    },
+    {
+      "name": "segment",
+      "type": "u64",
+      "options": {
+        "indexed": false,
+        "fieldnorms": false,
+        "fast": false,
+        "stored": true
+      }
+    },
+    {
+      "name": "isPdf",
+      "type": "bool",
+      "options": {
+        "indexed": false,
+        "fieldnorms": false,
+        "fast": true,
+        "stored": false
+      }
+    },
+    {
+      "name": "filePath",
+      "type": "text",
+      "options": {
+        "indexing": {
+          "record": "basic",
+          "fieldnorms": false,
+          "tokenizer": "raw"
+        },
+        "stored": false,
+        "fast": true
+      }
+    },
+    {
+      "name": "contentHash",
+      "type": "u64",
+      "options": {
+        "indexed": false,
+        "fieldnorms": false,
+        "fast": true,
+        "stored": false
+      }
+    },
+    {
+      "name": "textHash",
+      "type": "u64",
+      "options": {
+        "indexed": false,
+        "fieldnorms": false,
+        "fast": true,
+        "stored": false
+      }
+    },
+    {
+      "name": "metadataHash",
+      "type": "u64",
+      "options": {
+        "indexed": false,
+        "fieldnorms": false,
+        "fast": true,
+        "stored": false
+      }
+    },
+    {
+      "name": "sourceHash",
+      "type": "u64",
+      "options": {
+        "indexed": false,
+        "fieldnorms": false,
+        "fast": true,
+        "stored": false
+      }
+    },
+    {
+      "name": "sectionOffset",
+      "type": "u64",
+      "options": {
+        "indexed": false,
+        "fieldnorms": false,
+        "fast": true,
+        "stored": false
+      }
+    },
+    {
+      "name": "lineHash",
+      "type": "u64",
+      "options": {
+        "indexed": false,
+        "fieldnorms": false,
+        "fast": true,
+        "stored": false
+      }
+    },
+    {
+      "name": "lineCheck",
+      "type": "u64",
+      "options": {
+        "indexed": false,
+        "fieldnorms": false,
+        "fast": true,
+        "stored": false
+      }
+    },
+    {
+      "name": "topics",
+      "type": "facet",
+      "options": {
+        "stored": false
+      }
+    },
+    {
+      "name": "chunkKey",
+      "type": "u64",
+      "options": {
+        "indexed": false,
+        "fieldnorms": false,
+        "fast": true,
+        "stored": false
+      }
+    },
+    {
+      "name": "textStored",
+      "type": "text",
+      "options": {
+        "stored": true,
+        "fast": false
+      }
+    },
+    {
+      "name": "textVocalizedStored",
+      "type": "text",
+      "options": {
+        "stored": true,
+        "fast": false
+      }
+    },
+    {
+      "name": "lineFirst",
+      "type": "u64",
+      "options": {
+        "indexed": false,
+        "fieldnorms": false,
+        "fast": true,
+        "stored": false
+      }
+    },
+    {
+      "name": "lineLast",
+      "type": "u64",
+      "options": {
+        "indexed": false,
+        "fieldnorms": false,
+        "fast": true,
+        "stored": false
+      }
+    },
+    {
+      "name": "lineEdge",
+      "type": "text",
+      "options": {
+        "indexing": {
+          "record": "basic",
+          "fieldnorms": false,
+          "tokenizer": "raw"
+        },
+        "stored": false,
+        "fast": false
+      }
+    }
+  ],
+  "opstamp": 12
+}

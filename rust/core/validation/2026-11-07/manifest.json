@@ -1,0 +1,104 @@
+{
+  "date": "2026-11-07",
+  "implementation": "3173eeededad79aeced96453aee9cae71cec2741",
+  "baseline": "6fa52571ddb307a4a28baf0768d0831106edadb3",
+  "rustc": "1.99.1 (58cf8f9c3 2026-10-13)",
+  "cargo": "1.99.1 (5f94df478 2026-08-27)",
+  "os": "Linux 6.18.57 x86_64",
+  "available_logical_cpus": 9,
+  "cargo_build_jobs": 3,
+  "incremental": false,
+  "dev_debug": 0,
+  "test_debug": 0,
+  "logs": [
+    {
+      "name": "host-contracts",
+      "log": "host-contracts.log.gz",
+      "uncompressed_bytes": 6445,
+      "sha256": "5481635c8b50df45f583923c69ef4b40cfb8cdc0822524ed3cbf3949f2b13714",
+      "summaries": [
+        "    Finished `test` profile [unoptimized] target(s) in 8.67s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ]
+    },
+    {
+      "name": "host-contracts-semantic-integration",
+      "log": "host-contracts-semantic-integration.log.gz",
+      "uncompressed_bytes": 6431,
+      "sha256": "47004a466e9c4311fe110b809a322df1ae126b4fd940574c13b482eff2d4c98c",
+      "summaries": [
+        "    Finished `test` profile [unoptimized] target(s) in 12.98s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ]
+    },
+    {
+      "name": "headless-engine",
+      "log": "headless-engine.log.gz",
+      "uncompressed_bytes": 502906,
+      "sha256": "18b08eb875c23fbca22d4c98e2b4cdff0720ff10cd61e66eb94250d67220fa5f",
+      "summaries": [
+        "    Finished `test` profile [unoptimized] target(s) in 14.88s",
+        "test result: ok. 882 passed; 0 failed; 27 ignored; 0 measured; 0 filtered out; finished in 69.89s"
+      ]
+    },
+    {
+      "name": "writer-shutdown",
+      "log": "writer-shutdown.log.gz",
+      "uncompressed_bytes": 1052,
+      "sha256": "50464ad7bd54fc2969a0ca88e8de87b68b39563781cae56ab25a6ff386ba8f94",
+      "summaries": [
+        "    Finished `test` profile [unoptimized] target(s) in 19.89s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.16s"
+      ]
+    },
+    {
+      "name": "flutter-bridge-compile",
+      "log": "flutter-bridge-compile.log.gz",
+      "uncompressed_bytes": 2423,
+      "sha256": "704197c53b477f94211097bf352afc01d30bc5e732e613e56d350fb7b3d1c887",
+      "summaries": [
+        "    Finished `dev` profile [unoptimized] target(s) in 11.36s"
+      ]
+    },
+    {
+      "name": "host-sqlite-bridge-compile",
+      "log": "host-sqlite-bridge-compile.log.gz",
+      "uncompressed_bytes": 261,
+      "sha256": "d29947f9b41ee2b7a475f12313e919a01783997b443440b106d24b8a01366941",
+      "summaries": [
+        "    Finished `dev` profile [unoptimized] target(s) in 21.77s"
+      ]
+    },
+    {
+      "name": "facade-clippy",
+      "log": "facade-clippy.log.gz",
+      "uncompressed_bytes": 1380,
+      "sha256": "25d0f1b09cf93762994443df7f55e5f0da281d8101829c05b49247d05c7dbfe9",
+      "summaries": [
+        "    Finished `dev` profile [unoptimized] target(s) in 29.31s"
+      ]
+    },
+    {
+      "name": "runtime-dependencies",
+      "log": "runtime-dependencies.log.gz",
+      "uncompressed_bytes": 6979,
+      "sha256": "3c9e2a3d7c0add6fd328ad9c30ee7a4f927f66de44ca1302a431dd53071a3ad2",
+      "summaries": []
+    },
+    {
+      "name": "formatting",
+      "log": "formatting.log.gz",
+      "uncompressed_bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "summaries": []
+    }
+  ]
+}

@@ -4,7 +4,7 @@
 //! [`SearchEngine::add_library_books`]: crate::api::search_engine::SearchEngine::add_library_books
 
 use crate::api::search_engine::TextStorage;
-use flutter_rust_bridge::frb;
+use flutter_rust_bridge_macros::frb;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The database a book's rows are read from.
