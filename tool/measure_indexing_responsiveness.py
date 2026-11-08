@@ -46,7 +46,7 @@ def main():
     parser.add_argument("--base", type=Path, required=True)
     parser.add_argument("--head", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--repeats", type=int, default=2)
+    parser.add_argument("--repeats", type=int, default=5)
     args = parser.parse_args()
     if args.repeats < 2:
         parser.error("at least two repetitions are required")
@@ -85,9 +85,12 @@ def measure(args):
                   "Baseline and head run an identical fixture. Additional diagnostic counters only exist on the head."],
     }
     (args.out / "environment.json").write_text(json.dumps(metadata, indent=2) + "\n")
+    if len(cpus) < 4:
+        raise RuntimeError("four-core calibration needs at least four CPUs in the runner affinity")
     cases = [("two-core-normal", cpus[:2], False),
-             ("available-cores-normal", cpus, False),
-             ("two-core-economy", cpus[:2], True)]
+             ("four-core-normal", cpus[:4], False),
+             ("two-core-economy", cpus[:2], True),
+             ("four-core-economy", cpus[:4], True)]
     records = []
     with (args.out / "samples.jsonl").open("w") as samples:
         for case, affinity, economy in cases:
