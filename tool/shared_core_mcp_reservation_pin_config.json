@@ -72,7 +72,7 @@
       "mcp/Cargo.toml": "0ca6243be9a512629b6177c60a4b9bd237c56074a5f1d2123a974a50f78fe9e6"
     }
   },
-  "purpose": "Prepare only. Freeze the final MCP candidate commit/tree after core F is adopted; never launch automatically from this template.",
+  "purpose": "Frozen comparison of the exact MCP H and F pins after controlled core validation. Full current-head CI remains a separate requirement; completion does not automatically promote or merge anything.",
   "revisions": {
     "F": {
       "core_commit": "4bb3d8e7d11499861ce0655c88841eb23e0f1649",
@@ -88,8 +88,8 @@
         "rust/src/library_indexing_tests.rs": "acd5b6b4168f05e278ec04e95657f21c0dc93416"
       },
       "core_tree": "2c11451ab6e15f65709dc54d62aca4e224087e29",
-      "mcp_commit": null,
-      "mcp_tree": null
+      "mcp_commit": "f042c353e64a913e6aa8a1b562c851e1365e1def",
+      "mcp_tree": "6e9802ec44537a144218e66ab264b2f07c2af595"
     },
     "H": {
       "core_commit": "4761356749815d283ede41ef956c64b3dbffe048",
@@ -146,7 +146,7 @@
     "test_name": "mcp_reads_independently_built_schema10_index_without_changing_it"
   },
   "schema_version": 1,
-  "state": "unfrozen",
+  "state": "frozen",
   "temporary_storage": "one new shared TMPDIR on /dev/shm tmpfs for H and F",
   "timeouts_seconds": {
     "benchmark": 120,
