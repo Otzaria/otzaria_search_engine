@@ -8,6 +8,10 @@
 //! and an entry in [`MODES`]; rows, summary and CSV follow. [`semantic_pages`] times whole
 //! `search_semantic` pages on a real vector set (`OTZ_VECTORS`, `OTZ_MODEL`, ...), and
 //! [`passage_highlights`] the passage highlights of their semantic hits.
+//!
+//! The lexical index remains read-only. Opening `OTZ_VECTORS` permits the sidecar's
+//! recovery and cleanup there; use a separate copy when its bytes must be preserved.
+//! This test-only capability is not exposed by the production read-only API.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -176,11 +180,11 @@ impl Config {
 /// The inputs of a semantic session, for modes that need vectors; `None` unless all are set.
 /// `OTZ_VECTORS` is the set's directory, the one holding `CURRENT`.
 #[cfg_attr(not(feature = "semantic-integration"), allow(dead_code))]
-struct SemanticInputs {
-    vectors: PathBuf,
-    model: PathBuf,
-    model_identity: PathBuf,
-    onnx_runtime: Option<PathBuf>,
+pub(crate) struct SemanticInputs {
+    pub(crate) vectors: PathBuf,
+    pub(crate) model: PathBuf,
+    pub(crate) model_identity: PathBuf,
+    pub(crate) onnx_runtime: Option<PathBuf>,
 }
 
 impl SemanticInputs {
@@ -699,11 +703,11 @@ fn dictionary_forms() -> Result<()> {
 
 /// Open the vector set `inputs` names on `engine`; how long it took, in ms.
 #[cfg(feature = "semantic-integration")]
-fn open_vectors(engine: &SearchEngine, inputs: &SemanticInputs) -> Result<f64> {
+pub(crate) fn open_vectors(engine: &SearchEngine, inputs: &SemanticInputs) -> Result<f64> {
     use crate::api::search_engine::SemanticArtifactInput;
     let (opened, open_ms) = time(|| {
         engine
-            .open_semantic_artifact(SemanticArtifactInput {
+            .open_semantic_artifact_for_bench(SemanticArtifactInput {
                 vectors_dir: inputs.vectors.to_string_lossy().into_owned(),
                 model_path: inputs.model.to_string_lossy().into_owned(),
                 model_identity_json: fs::read_to_string(&inputs.model_identity)?,

@@ -5978,6 +5978,25 @@ impl SearchEngine {
                 "opening semantic artifacts can recover files on a read-only index",
             ));
         }
+        self.open_semantic_artifact_impl(config)
+    }
+
+    /// Real-data benchmarks keep the lexical directory read-only but explicitly
+    /// allow recovery/cleanup in their separate vector set. Keep this capability
+    /// out of production builds; every lexical and semantic mutation guard stays
+    /// active on the engine, including the public artifact-open guard.
+    #[cfg(all(test, feature = "semantic-integration"))]
+    pub(crate) fn open_semantic_artifact_for_bench(
+        &self,
+        config: SemanticArtifactInput,
+    ) -> Result<SemanticStatus, SemanticError> {
+        self.open_semantic_artifact_impl(config)
+    }
+
+    fn open_semantic_artifact_impl(
+        &self,
+        config: SemanticArtifactInput,
+    ) -> Result<SemanticStatus, SemanticError> {
         #[cfg(feature = "semantic-integration")]
         {
             // Whatever this changed, no page a search computed before it is served after it.
