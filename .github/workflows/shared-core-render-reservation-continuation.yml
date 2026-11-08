@@ -1,0 +1,56 @@
+name: Shared core reservation render continuation
+
+on:
+  push:
+    branches: [diag/shared-core-render-reservation-continuation-20261108]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  render-reservation-continuation:
+    name: Exact H and F executable reuse with fresh lifecycle gates and fixed controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: controller
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          ref: 4761356749815d283ede41ef956c64b3dbffe048
+          path: head
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          ref: 4bb3d8e7d11499861ce0655c88841eb23e0f1649
+          fetch-depth: 2
+          path: candidate
+          persist-credentials: false
+      - name: Verify exact input executables, rerun lifecycle gates and execute the frozen protocol
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          python3 controller/tool/shared_core_render_reservation_continuation.py
+          --head head
+          --candidate candidate
+          --config controller/tool/shared_core_render_reservation_continuation_config.json
+          --protocol controller/tool/shared_core_render_reservation_diagnostic.py
+          --protocol-config controller/tool/shared_core_render_reservation_config.json
+          --helper controller/tool/shared_core_economy_helper.py
+          --wide-fixture controller/tool/shared_core_render_scheduling.rs
+          --fixture-manifest controller/tool/shared_core_render_reservation_manifest.json
+          --out "${{ runner.temp }}/render-reservation-continuation"
+          --input-root "${{ runner.temp }}/render-reservation-continuation-inputs"
+      - name: Preserve exact executables, both lifecycle streams and all partial evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: render-reservation-continuation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/render-reservation-continuation/
+          if-no-files-found: error
+          compression-level: 1
+          retention-days: 14
+
