@@ -1,0 +1,470 @@
+{
+  "adjacent_pairs": [
+    {
+      "B_p95_ms": 3.520314,
+      "B_run": 1,
+      "H_over_B_percent": 25.18513973469412,
+      "H_p95_ms": 4.40691,
+      "H_run": 2,
+      "block": "R1",
+      "kind": "real",
+      "pair": 1
+    },
+    {
+      "B_p95_ms": 3.2649380000000003,
+      "B_run": 4,
+      "H_over_B_percent": 8.773642868562881,
+      "H_p95_ms": 3.551392,
+      "H_run": 3,
+      "block": "R1",
+      "kind": "real",
+      "pair": 2
+    },
+    {
+      "B_p95_ms": 3.4567859999999997,
+      "B_run": 5,
+      "H_over_B_percent": 5.732781838389767,
+      "H_p95_ms": 3.654956,
+      "H_run": 6,
+      "block": "CB1",
+      "kind": "control",
+      "pair": 1
+    },
+    {
+      "B_p95_ms": 3.069983,
+      "B_run": 8,
+      "H_over_B_percent": 3.4553611534656747,
+      "H_p95_ms": 3.176062,
+      "H_run": 7,
+      "block": "CB1",
+      "kind": "control",
+      "pair": 2
+    },
+    {
+      "B_p95_ms": 3.198162,
+      "B_run": 10,
+      "H_over_B_percent": 42.62998559797786,
+      "H_p95_ms": 4.5615380000000005,
+      "H_run": 9,
+      "block": "R2",
+      "kind": "real",
+      "pair": 1
+    },
+    {
+      "B_p95_ms": 4.168142,
+      "B_run": 11,
+      "H_over_B_percent": 5.030130931239896,
+      "H_p95_ms": 4.377805,
+      "H_run": 12,
+      "block": "R2",
+      "kind": "real",
+      "pair": 2
+    },
+    {
+      "B_p95_ms": 4.064491,
+      "B_run": 14,
+      "H_over_B_percent": 20.472994035415493,
+      "H_p95_ms": 4.896614,
+      "H_run": 13,
+      "block": "CH1",
+      "kind": "control",
+      "pair": 1
+    },
+    {
+      "B_p95_ms": 3.917384,
+      "B_run": 15,
+      "H_over_B_percent": -0.31533799086329584,
+      "H_p95_ms": 3.905031,
+      "H_run": 16,
+      "block": "CH1",
+      "kind": "control",
+      "pair": 2
+    },
+    {
+      "B_p95_ms": 3.635668,
+      "B_run": 18,
+      "H_over_B_percent": 35.21446402696837,
+      "H_p95_ms": 4.915949,
+      "H_run": 17,
+      "block": "R3",
+      "kind": "real",
+      "pair": 1
+    },
+    {
+      "B_p95_ms": 3.227576,
+      "B_run": 19,
+      "H_over_B_percent": 1.7017105096827967,
+      "H_p95_ms": 3.2824999999999998,
+      "H_run": 20,
+      "block": "R3",
+      "kind": "real",
+      "pair": 2
+    },
+    {
+      "B_p95_ms": 3.825953,
+      "B_run": 22,
+      "H_over_B_percent": 2.156430045011004,
+      "H_p95_ms": 3.908457,
+      "H_run": 21,
+      "block": "CB2",
+      "kind": "control",
+      "pair": 1
+    },
+    {
+      "B_p95_ms": 3.6152200000000003,
+      "B_run": 23,
+      "H_over_B_percent": 36.687808764058595,
+      "H_p95_ms": 4.941565,
+      "H_run": 24,
+      "block": "CB2",
+      "kind": "control",
+      "pair": 2
+    },
+    {
+      "B_p95_ms": 2.939568,
+      "B_run": 25,
+      "H_over_B_percent": 34.339569623835885,
+      "H_p95_ms": 3.9490030000000003,
+      "H_run": 26,
+      "block": "R4",
+      "kind": "real",
+      "pair": 1
+    },
+    {
+      "B_p95_ms": 3.177038,
+      "B_run": 28,
+      "H_over_B_percent": 54.12777561993276,
+      "H_p95_ms": 4.896698,
+      "H_run": 27,
+      "block": "R4",
+      "kind": "real",
+      "pair": 2
+    },
+    {
+      "B_p95_ms": 4.14609,
+      "B_run": 29,
+      "H_over_B_percent": -4.168288676801524,
+      "H_p95_ms": 3.9732689999999997,
+      "H_run": 30,
+      "block": "CH2",
+      "kind": "control",
+      "pair": 1
+    },
+    {
+      "B_p95_ms": 4.281163,
+      "B_run": 32,
+      "H_over_B_percent": 14.75092165376557,
+      "H_p95_ms": 4.912674,
+      "H_run": 31,
+      "block": "CH2",
+      "kind": "control",
+      "pair": 2
+    }
+  ],
+  "artifact": {
+    "analysis_sha256": "f14644a54ce5e36aa53005f0ac0c238fa4ad8b6400e1c74367eeda73d1e3c079",
+    "controller_sha256": "d82706e96fc4c1d213870d33e6bc83204ec8d6597da128795554c3226b31850e",
+    "manifest_entries_verified": 94,
+    "manifest_sha256": "3e03fc38f77577816f586bac1fb326c0a9230b42338cdcde8b50eee835794b4a",
+    "raw_stdout_records_verified": 32,
+    "resolved_schedule_sha256": "3c6b22b6eecd4e0e3d2caa27eddf07e2049cbc06b3296b3423a145322ee5666c",
+    "samples_sha256": "bd51bb7c11667f22f9af593a82ffacba29a56f9ffed4a1312cf999f31ea8f519",
+    "schedule_sha256": "d985ca35323dec6e5bdc6d8da9a81afe04a4c8e86a21005358a263f6d105a852",
+    "total_files": 95,
+    "zip_sha256": "6f31738c00b39e519e84b5aa9ef076509423a4c64965ee581349f54734b8bd48"
+  },
+  "audit_version": 1,
+  "audited_at_utc": "2026-11-07T23:09:50.369286+00:00",
+  "auditor": "independent publication_qa agent",
+  "blocks": [
+    {
+      "H_over_B_percent": 17.28823041502363,
+      "actual_binaries": [
+        "B",
+        "H"
+      ],
+      "block": "R1",
+      "kind": "real",
+      "middle_over_edges_percent": 17.28823041502363,
+      "order": "BHHB",
+      "pseudo_label_p95_medians_ms": {
+        "B": 3.392626,
+        "H": 3.979151
+      }
+    },
+    {
+      "H_over_B_percent": 4.661556123711441,
+      "actual_binaries": [
+        "B"
+      ],
+      "block": "CB1",
+      "kind": "control",
+      "middle_over_edges_percent": 4.661556123711441,
+      "order": "BHHB",
+      "pseudo_label_p95_medians_ms": {
+        "B": 3.2633845,
+        "H": 3.415509
+      }
+    },
+    {
+      "H_over_B_percent": 21.354521887774403,
+      "actual_binaries": [
+        "B",
+        "H"
+      ],
+      "block": "R2",
+      "kind": "real",
+      "middle_over_edges_percent": -17.59680772960609,
+      "order": "HBBH",
+      "pseudo_label_p95_medians_ms": {
+        "B": 3.6831519999999998,
+        "H": 4.4696715000000005
+      }
+    },
+    {
+      "H_over_B_percent": 10.270393861091542,
+      "actual_binaries": [
+        "H"
+      ],
+      "block": "CH1",
+      "kind": "control",
+      "middle_over_edges_percent": -9.313827131178321,
+      "order": "HBBH",
+      "pseudo_label_p95_medians_ms": {
+        "B": 3.9909375000000002,
+        "H": 4.4008225
+      }
+    },
+    {
+      "H_over_B_percent": 19.454430004237054,
+      "actual_binaries": [
+        "B",
+        "H"
+      ],
+      "block": "R3",
+      "kind": "real",
+      "middle_over_edges_percent": -16.286068255105324,
+      "order": "HBBH",
+      "pseudo_label_p95_medians_ms": {
+        "B": 3.431622,
+        "H": 4.0992245
+      }
+    },
+    {
+      "H_over_B_percent": 18.933157447085257,
+      "actual_binaries": [
+        "B"
+      ],
+      "block": "CB2",
+      "kind": "control",
+      "middle_over_edges_percent": -15.91915816706443,
+      "order": "HBBH",
+      "pseudo_label_p95_medians_ms": {
+        "B": 3.7205865000000005,
+        "H": 4.425011
+      }
+    },
+    {
+      "H_over_B_percent": 44.61779947899211,
+      "actual_binaries": [
+        "B",
+        "H"
+      ],
+      "block": "R4",
+      "kind": "real",
+      "middle_over_edges_percent": 44.61779947899211,
+      "order": "BHHB",
+      "pseudo_label_p95_medians_ms": {
+        "B": 3.058303,
+        "H": 4.4228505
+      }
+    },
+    {
+      "H_over_B_percent": 5.442936150131006,
+      "actual_binaries": [
+        "H"
+      ],
+      "block": "CH2",
+      "kind": "control",
+      "middle_over_edges_percent": 5.442936150131006,
+      "order": "BHHB",
+      "pseudo_label_p95_medians_ms": {
+        "B": 4.2136265,
+        "H": 4.4429715
+      }
+    }
+  ],
+  "host": {
+    "cpu_model": "AMD EPYC 7763 64-Core Processor",
+    "filesystem": "Filesystem     Type 1K-blocks     Used Available Use% Mounted on\n/dev/root      ext4 151263856 61910424  89337048  41% /",
+    "measurement_affinity": [
+      0,
+      1
+    ],
+    "platform": "Linux-7.0.0-1017-azure-x86_64-with-glibc2.39",
+    "scope": "Two logical CPUs that are SMT siblings of one physical core; not two physical cores. Original physical topology was not recorded.",
+    "selected_cpu_topology": {
+      "0": {
+        "core_id": "0",
+        "core_siblings_list": "0-3",
+        "physical_package_id": "0",
+        "thread_siblings_list": "0-1"
+      },
+      "1": {
+        "core_id": "0",
+        "core_siblings_list": "0-3",
+        "physical_package_id": "0",
+        "thread_siblings_list": "0-1"
+      }
+    },
+    "tmpdir": "/tmp"
+  },
+  "integrity": {
+    "all_document_stamps_equal_including_original_24_rows": true,
+    "all_processes_succeeded": true,
+    "all_schema_versions": [
+      11
+    ],
+    "exact_binary_hashes_match_original_attempts": true,
+    "exact_schedule_match": true,
+    "fixture_sha256": "58b15ac4a0736284bae336b48f6d334bc1de8bcfd3ac52689ab0417ec264ebca",
+    "helper_dependency_graph_unchanged": true,
+    "original_artifacts": [
+      {
+        "artifact_id": 13590907581,
+        "files_sha256": {
+          "environment.json": "ba88efdba7515bb5058a39266dc224639035e4ab05211d271f4ba61b65eb7f47",
+          "medians.json": "e078b9b7d3b01a3cd6f201b0c55a116146f5eafd7fd59502f1ebf512ede2cee5",
+          "samples.jsonl": "93fe740c98ffc5789f1119852705ac57b94a821dab5e1b344ffc3fe32fdd48e8"
+        },
+        "rows": 12
+      },
+      {
+        "artifact_id": 13591982411,
+        "files_sha256": {
+          "environment.json": "ba88efdba7515bb5058a39266dc224639035e4ab05211d271f4ba61b65eb7f47",
+          "medians.json": "8afbf210c5dd1d797023a9638380a181cda50a463ad32466501b21e65ec33d42",
+          "samples.jsonl": "14497948c8ebf37471f7d3a567279bb8f0d2fb9f79f30fcc288657532857f1bd"
+        },
+        "rows": 12
+      }
+    ]
+  },
+  "limitations": [
+    "Warm repeated exact query over a committed 12,000-document seed while indexing 96,000 documents; final commit follows query sampling.",
+    "Latency includes result-ID collection/assertion and excludes the fixed 10 ms inter-query sleep.",
+    "Per-process percentiles are observations; individual queries are not independent process replicates and were not pooled.",
+    "Same-binary pseudo-label contrasts are nonzero; control adjacent pairs span negative and positive changes, and current unpaired binary ranges overlap.",
+    "The closed query loop yields fewer measured head queries; indexing throughput and search load are coupled, so throughput improvement is not independent compensation for tail latency.",
+    "Whole-process CPU/PSI includes indexing, setup and cleanup and cannot attribute search CPU or exclude brief query-specific stalls.",
+    "Equal SearchEngine size/alignment excludes object-size growth only; field offsets and generated-code effects remain unmeasured.",
+    "The economy-only controlled schedule differs from the original eight-normal-process prefix, although exact executable bytes match.",
+    "Two logical CPUs on one physical SMT core is the observed scope; broader hardware and Flutter UI performance are not established."
+  ],
+  "real_median_percent_changes": {
+    "add_ms": -2.7147966154909664,
+    "docs_per_sec": 2.7258893859293254,
+    "peak_rss_kib": 0.12325028611672728,
+    "search_during_p50_ms": 4.3503743557906205,
+    "search_during_p95_ms": 35.30529160198963,
+    "search_during_p99_ms": 7.715377748323693,
+    "search_idle_p95_ms": 2.214664189857962,
+    "search_samples": -4.04721753794266
+  },
+  "real_process_medians": {
+    "B": {
+      "add_ms": 3444.947274,
+      "docs_per_sec": 25437.332442752027,
+      "peak_rss_kib": 90872.0,
+      "search_during_p50_ms": 0.8206765,
+      "search_during_p95_ms": 3.246257,
+      "search_during_p99_ms": 6.8717115,
+      "search_idle_p95_ms": 0.4632305,
+      "search_samples": 296.5
+    },
+    "H": {
+      "add_ms": 3351.423962,
+      "docs_per_sec": 26130.72598787256,
+      "peak_rss_kib": 90984.0,
+      "search_during_p50_ms": 0.856379,
+      "search_during_p95_ms": 4.3923575,
+      "search_during_p99_ms": 7.40189,
+      "search_idle_p95_ms": 0.4734895,
+      "search_samples": 284.5
+    }
+  },
+  "resource_metrics_unique": {
+    "active_preparations": [
+      0
+    ],
+    "peak_active_preparations": [
+      1
+    ],
+    "peak_buffered_bytes": [
+      2162688
+    ],
+    "peak_reserved_bytes": [
+      3145728
+    ],
+    "reserved_bytes": [
+      0
+    ],
+    "spilled_bytes": [
+      205871288
+    ]
+  },
+  "revisions": {
+    "B": {
+      "binary_sha256": "a58b7ec047d3b39d0f4417571d652920d14ea7f8370030aa6bddd349dc506e5a",
+      "commit": "8ef29fd592793fbc9d5af0299fdd7a8607789bac",
+      "layout": {
+        "alignment_bytes": 8,
+        "size_bytes": 1600
+      },
+      "tracked_source_clean": true,
+      "tree": "18e153968c54bb7e5bedd6e5de45dd8d58a7f12a"
+    },
+    "H": {
+      "binary_sha256": "974a92cc60324467d26ebad61c7d21ca0e7512087201eaa037ff357d42151337",
+      "commit": "4761356749815d283ede41ef956c64b3dbffe048",
+      "layout": {
+        "alignment_bytes": 8,
+        "size_bytes": 1600
+      },
+      "tracked_source_clean": true,
+      "tree": "34341d9cffd3348587f509e587593c1f67cf4eec"
+    }
+  },
+  "run_url": "https://github.com/Otzaria/otzaria_search_engine/actions/runs/42420237162",
+  "sample_counts": {
+    "queries_per_process_max": 301,
+    "queries_per_process_min": 280,
+    "real": 16,
+    "real_per_binary": 8,
+    "same_binary_control": 16,
+    "total": 32
+  },
+  "verdict": {
+    "additional_benchmark_executed_by_auditor": false,
+    "finding": "Reproduced binary-associated concurrent-search tail increase in this SMT-constrained workload; source cause remains unidentified.",
+    "performance_threshold_changed": false,
+    "production_source_edited": false,
+    "readiness": "HOLD: engine PR84 and MCP PR5 remain drafts"
+  },
+  "whole_process_context_medians": {
+    "B": {
+      "cpu_some_delta_us": 1784552.5,
+      "io_some_delta_us": 15061.5,
+      "memory_some_delta_us": 0.0,
+      "whole_process_cpu_seconds": 7.453646500000019,
+      "whole_process_wall_seconds": 4.674654208999982
+    },
+    "H": {
+      "cpu_some_delta_us": 1977176.0,
+      "io_some_delta_us": 17055.5,
+      "memory_some_delta_us": 0.0,
+      "whole_process_cpu_seconds": 7.391174500000073,
+      "whole_process_wall_seconds": 4.574504850999915
+    }
+  }
+}

@@ -1,0 +1,292 @@
+{
+  "B": {
+    "binary_sha256": "a58b7ec047d3b39d0f4417571d652920d14ea7f8370030aa6bddd349dc506e5a",
+    "build_wall_seconds": 728.707276435,
+    "commit": "8ef29fd592793fbc9d5af0299fdd7a8607789bac",
+    "files_sha256": {
+      "rust/Cargo.lock": "150f2a8803ab49f8a3b57cf128550865e3677a10e1d3508df08e201f2688aa04",
+      "rust/Cargo.toml": "3b179f328e06f8006ea7f26e7cc8d5f5be36e41ca2e3c51762d88ec5a228609a",
+      "rust/tests/indexing_throughput.rs": "58b15ac4a0736284bae336b48f6d334bc1de8bcfd3ac52689ab0417ec264ebca"
+    },
+    "layout": {
+      "alignment_bytes": 8,
+      "size_bytes": 1600
+    },
+    "layout_executable_sha256": "4ece0d79d729a7cd7f464469e3fac54a6ab650ffd841839f66c0813c478fa3a5",
+    "resolved_graph_sha256": "6df2765b31e9ec0a8771bdee51e4963786f1367f02a4429551b1f8b79c0a81b7",
+    "tracked_source_clean": true,
+    "tree": "18e153968c54bb7e5bedd6e5de45dd8d58a7f12a"
+  },
+  "H": {
+    "binary_sha256": "974a92cc60324467d26ebad61c7d21ca0e7512087201eaa037ff357d42151337",
+    "build_wall_seconds": 724.771894557,
+    "commit": "4761356749815d283ede41ef956c64b3dbffe048",
+    "files_sha256": {
+      "rust/Cargo.lock": "0f6893c788643324b8329d9c405024e6ed6a244c055f6a0813b532b6e1a41965",
+      "rust/Cargo.toml": "2c43174e97f812f21374c493544f9eff8eb24325903cc42e2eba5675dcbfd798",
+      "rust/tests/indexing_throughput.rs": "58b15ac4a0736284bae336b48f6d334bc1de8bcfd3ac52689ab0417ec264ebca"
+    },
+    "layout": {
+      "alignment_bytes": 8,
+      "size_bytes": 1600
+    },
+    "layout_executable_sha256": "ebf13f1d18876164f3e1b5a7732e87a4874b5faaa8c08f027217ed38ee9d199c",
+    "resolved_graph_sha256": "f0de046aa1e79ca22cb8a0cc92f813052263d6ac1ec9a87150d7654f1fc63e68",
+    "tracked_source_clean": true,
+    "tree": "34341d9cffd3348587f509e587593c1f67cf4eec"
+  },
+  "allowed_affinity": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+  "controller_commit": "fc9cc131e070882f6531238a57d7f911249e6752",
+  "controller_sha256": "d82706e96fc4c1d213870d33e6bc83204ec8d6597da128795554c3226b31850e",
+  "cpu_topology": {
+    "lscpu": [
+      {
+        "data": "x86_64",
+        "field": "Architecture:"
+      },
+      {
+        "data": "32-bit, 64-bit",
+        "field": "CPU op-mode(s):"
+      },
+      {
+        "data": "48 bits physical, 48 bits virtual",
+        "field": "Address sizes:"
+      },
+      {
+        "data": "Little Endian",
+        "field": "Byte Order:"
+      },
+      {
+        "data": "4",
+        "field": "CPU(s):"
+      },
+      {
+        "data": "0-3",
+        "field": "On-line CPU(s) list:"
+      },
+      {
+        "data": "AuthenticAMD",
+        "field": "Vendor ID:"
+      },
+      {
+        "data": "AMD EPYC 7763 64-Core Processor",
+        "field": "Model name:"
+      },
+      {
+        "data": "25",
+        "field": "CPU family:"
+      },
+      {
+        "data": "1",
+        "field": "Model:"
+      },
+      {
+        "data": "2",
+        "field": "Thread(s) per core:"
+      },
+      {
+        "data": "2",
+        "field": "Core(s) per socket:"
+      },
+      {
+        "data": "1",
+        "field": "Socket(s):"
+      },
+      {
+        "data": "1",
+        "field": "Stepping:"
+      },
+      {
+        "data": "4890.85",
+        "field": "BogoMIPS:"
+      },
+      {
+        "data": "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good nopl tsc_reliable nonstop_tsc cpuid extd_apicid aperfmperf tsc_known_freq pni pclmulqdq ssse3 fma cx16 pcid sse4_1 sse4_2 movbe popcnt aes xsave avx f16c rdrand hypervisor lahf_lm cmp_legacy svm cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw topoext vmmcall fsgsbase bmi1 avx2 smep bmi2 erms invpcid rdseed adx smap clflushopt clwb sha_ni xsaveopt xsavec xgetbv1 xsaves user_shstk clzero xsaveerptr rdpru arat npt nrip_save tsc_scale vmcb_clean flushbyasid decodeassists pausefilter pfthreshold v_vmsave_vmload umip vaes vpclmulqdq rdpid fsrm",
+        "field": "Flags:"
+      },
+      {
+        "data": "AMD-V",
+        "field": "Virtualization:"
+      },
+      {
+        "data": "Microsoft",
+        "field": "Hypervisor vendor:"
+      },
+      {
+        "data": "full",
+        "field": "Virtualization type:"
+      },
+      {
+        "data": "64 KiB (2 instances)",
+        "field": "L1d cache:"
+      },
+      {
+        "data": "64 KiB (2 instances)",
+        "field": "L1i cache:"
+      },
+      {
+        "data": "1 MiB (2 instances)",
+        "field": "L2 cache:"
+      },
+      {
+        "data": "32 MiB (1 instance)",
+        "field": "L3 cache:"
+      },
+      {
+        "data": "1",
+        "field": "NUMA node(s):"
+      },
+      {
+        "data": "0-3",
+        "field": "NUMA node0 CPU(s):"
+      },
+      {
+        "data": "Not affected",
+        "field": "Vulnerability Gather data sampling:"
+      },
+      {
+        "data": "Not affected",
+        "field": "Vulnerability Ghostwrite:"
+      },
+      {
+        "data": "Not affected",
+        "field": "Vulnerability Indirect target selection:"
+      },
+      {
+        "data": "Not affected",
+        "field": "Vulnerability Itlb multihit:"
+      },
+      {
+        "data": "Not affected",
+        "field": "Vulnerability L1tf:"
+      },
+      {
+        "data": "Not affected",
+        "field": "Vulnerability Mds:"
+      },
+      {
+        "data": "Not affected",
+        "field": "Vulnerability Meltdown:"
+      },
+      {
+        "data": "Not affected",
+        "field": "Vulnerability Mmio stale data:"
+      },
+      {
+        "data": "Not affected",
+        "field": "Vulnerability Old microcode:"
+      },
+      {
+        "data": "Not affected",
+        "field": "Vulnerability Reg file data sampling:"
+      },
+      {
+        "data": "Not affected",
+        "field": "Vulnerability Retbleed:"
+      },
+      {
+        "data": "Vulnerable: Safe RET, no microcode",
+        "field": "Vulnerability Spec rstack overflow:"
+      },
+      {
+        "data": "Vulnerable",
+        "field": "Vulnerability Spec store bypass:"
+      },
+      {
+        "data": "Mitigation; usercopy/swapgs barriers and __user pointer sanitization",
+        "field": "Vulnerability Spectre v1:"
+      },
+      {
+        "data": "Mitigation; Retpolines; STIBP disabled; RSB filling; PBRSB-eIBRS Not affected; BHI Not affected",
+        "field": "Vulnerability Spectre v2:"
+      },
+      {
+        "data": "Not affected",
+        "field": "Vulnerability Srbds:"
+      },
+      {
+        "data": "Vulnerable: No microcode",
+        "field": "Vulnerability Tsa:"
+      },
+      {
+        "data": "Not affected",
+        "field": "Vulnerability Tsx async abort:"
+      },
+      {
+        "data": "Not affected",
+        "field": "Vulnerability Vmscape:"
+      }
+    ]
+  },
+  "explicit_build_environment": {
+    "CARGO_BUILD_JOBS": "1"
+  },
+  "explicit_runtime_environment": {
+    "OTZARIA_BENCH_ECONOMY": "1",
+    "OTZARIA_BENCH_LINES": "12000"
+  },
+  "fixture_sha256": "58b15ac4a0736284bae336b48f6d334bc1de8bcfd3ac52689ab0417ec264ebca",
+  "github": {
+    "GITHUB_REF": "refs/heads/diag/shared-core-economy-20261107",
+    "GITHUB_RUN_ATTEMPT": "1",
+    "GITHUB_RUN_ID": "42420237162",
+    "GITHUB_SHA": "fc9cc131e070882f6531238a57d7f911249e6752",
+    "RUNNER_ARCH": "X64",
+    "RUNNER_OS": "Linux"
+  },
+  "layout_source_sha256": "c85a383fa627537380b6d94c9c0fb60d402f3b0bdd4beb9e48215d3afa8e49e6",
+  "measurement_affinity": [
+    0,
+    1
+  ],
+  "notes": [
+    "Original fixture source is unchanged; separate layout-only example adds no dependency or feature.",
+    "Timed latency includes search, result-ID collection and assertion; 10 ms inter-query sleep is excluded.",
+    "Thirty idle probes warm each process before concurrent indexing; idle p95 is retained.",
+    "Per-query wall/CPU vectors are not instrumented in this first phase.",
+    "Whole-process CPU includes the indexer and cannot attribute search-only CPU time.",
+    "No cooldown, cache drop, build or extra warmup occurs during the schedule.",
+    "Samples are synthetic, warm, two-core Linux economy indexing; not Flutter frame or full-library measurements."
+  ],
+  "platform": "Linux-7.0.0-1017-azure-x86_64-with-glibc2.39",
+  "predeclared_schedule_sha256": "d985ca35323dec6e5bdc6d8da9a81afe04a4c8e86a21005358a263f6d105a852",
+  "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+  "revisions": {
+    "B": "8ef29fd592793fbc9d5af0299fdd7a8607789bac",
+    "H": "4761356749815d283ede41ef956c64b3dbffe048"
+  },
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.1\nLLVM version: 23.1.1",
+  "selected_cpu_topology": {
+    "0": {
+      "core_id": "0",
+      "core_siblings_list": "0-3",
+      "physical_package_id": "0",
+      "thread_siblings_list": "0-1"
+    },
+    "1": {
+      "core_id": "0",
+      "core_siblings_list": "0-3",
+      "physical_package_id": "0",
+      "thread_siblings_list": "0-1"
+    }
+  },
+  "tmpdir": "/tmp",
+  "tmpdir_filesystem": "Filesystem     Type 1K-blocks     Used Available Use% Mounted on\n/dev/root      ext4 151263856 61910424  89337048  41% /",
+  "uname": [
+    "Linux",
+    "runnervm7aw5e",
+    "7.0.0-1017-azure",
+    "#17~24.04.1-Ubuntu SMP PREEMPT Thu Sep 24 18:46:57 UTC 2026",
+    "x86_64",
+    "x86_64"
+  ],
+  "unset_runtime_environment": [
+    "OTZARIA_BENCH_NOTES"
+  ]
+}
