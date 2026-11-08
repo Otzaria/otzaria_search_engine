@@ -16937,11 +16937,32 @@ impl SearchEngine {
         };
 
         // A snippet costs as much as its line is long, and one line can hold a whole book.
+        // This byte-budget heuristic coarsens only small pages of short text.
+        let render_min_len = if texts.len() < 16
+            && texts
+                .iter()
+                .flat_map(|hit| {
+                    [
+                        hit.plain.len(),
+                        hit.vocalized.as_ref().map_or(0, String::len),
+                    ]
+                })
+                .chain(next_lines.iter().flatten().map(|text| text.len()))
+                .try_fold(16 * 1024usize, |remaining, bytes| {
+                    remaining.checked_sub(bytes)
+                })
+                .is_some()
+        {
+            8
+        } else {
+            1
+        };
         use rayon::prelude::*;
         let results = documents
             .par_iter()
             .zip(texts.into_par_iter())
             .enumerate()
+            .with_min_len(render_min_len)
             .map(
                 |(slot, ((_, retrieved_doc), hit_text))| -> Result<SearchResult> {
                     cancellation.check()?;
