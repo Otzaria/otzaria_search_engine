@@ -1,0 +1,222 @@
+{
+  "affinity": "one fixed pair of allowed logical CPUs on different physical cores in the same package; no topology matrix",
+  "benchmark": {
+    "build_profile": "dev",
+    "fixture": "17 deterministic scenarios / 15 indexed lines / sparse stable IDs",
+    "measured_queries": 1700,
+    "processes": 16,
+    "queue": "uncontended, serialized search; use admission_bench for queue behavior",
+    "real_pairs": 4,
+    "rss_scope": "whole process high-water mark, including fixture indexing and warmup",
+    "same_F_control_pairs": 2,
+    "same_H_control_pairs": 2,
+    "total_hit_checksum": 5700,
+    "warmup_queries": 85
+  },
+  "build": {
+    "debug": 0,
+    "examples": [
+      "search_contract",
+      "search_benchmark"
+    ],
+    "incremental": false,
+    "jobs": 3,
+    "opt_level": 0,
+    "profile": "dev",
+    "test": "existing_index"
+  },
+  "contracts": {
+    "golden_path": "mcp/tests/fixtures/search_contract.json",
+    "golden_sha256": "8281246968cb24d8abf3721142ba9fd8653518ea5e7e2ef5b9916a15970a4ea4",
+    "require_output_bytes_equal_golden": true,
+    "scenario_count": 17,
+    "scenario_names": [
+      "advanced_any_word",
+      "advanced_distance",
+      "advanced_negative",
+      "advanced_prefixes",
+      "cross_line",
+      "exact_catalogue",
+      "exact_generation",
+      "exact_nikud",
+      "exact_page",
+      "exact_relevance",
+      "facet_filter",
+      "fuzzy_exact",
+      "fuzzy_typo",
+      "grouped_identical",
+      "grouped_section",
+      "no_hits",
+      "phrase"
+    ]
+  },
+  "diagnostic_branch": "diag/shared-core-mcp-reservation-pin-20261108",
+  "hosting_repository": "Otzaria/otzaria_search_engine",
+  "limitations": [
+    "Small serialized dev-build synthetic fixture; not a production-library, release-build or queue-saturation forecast.",
+    "Four real process observations per binary; same-binary controls are analyzed separately.",
+    "The existing benchmark emits per-process percentiles, not raw per-query vectors.",
+    "Whole-process RSS includes indexing and warmup.",
+    "No performance threshold or automatic promotion; historical runs retain their original pins and environment."
+  ],
+  "mcp_repository": "Otzaria/otzaria_mcp",
+  "pin_files_sha256": {
+    "F": {
+      "Cargo.lock": "133a6384cd640dbc1cb0d7465ee49371b668d25f0d28e4c7cdd0c74c665870e9",
+      "Cargo.toml": "dad66de82c7da1dd0e09a9bc3a18bf7c13141838d3a5e5e77d9c783697366923",
+      "mcp/Cargo.toml": "666ff77c5948ca2e7fd262d3e03bbc53ab16cbbf49a5a3bb701a6c395bd0d9d3"
+    },
+    "H": {
+      "Cargo.lock": "bad10100d61a1000cc3ffc554eda3973326d6822c7914ca5e6d206f2eef28424",
+      "Cargo.toml": "59c0d269aca28f0cbce86edebb09a3c1bacf18ab6676a0955d7f38d47df42ea3",
+      "mcp/Cargo.toml": "0ca6243be9a512629b6177c60a4b9bd237c56074a5f1d2123a974a50f78fe9e6"
+    }
+  },
+  "purpose": "Prepare only. Freeze the final MCP candidate commit/tree after core F is adopted; never launch automatically from this template.",
+  "revisions": {
+    "F": {
+      "core_commit": "4bb3d8e7d11499861ce0655c88841eb23e0f1649",
+      "core_parent_commit": "4761356749815d283ede41ef956c64b3dbffe048",
+      "core_source_files_sha256": {
+        "rust/src/api/search_engine.rs": "e7958fe9956de0c9c48acf199a546f90503fec06c2baf43af67de5083c90b32c",
+        "rust/src/indexing_diagnostics.rs": "335a658b973cb496fdbcf554b5e7762697df728e475ffa9ec813abb960338e34",
+        "rust/src/library_indexing_tests.rs": "b3955039b32fee57993a10f9dd3dd6420c36b10e48b2b06ea91a33faa5c7fb82"
+      },
+      "core_source_git_blobs": {
+        "rust/src/api/search_engine.rs": "0897e4c834e8d1a63b12b0854fc9b7191b9ef2d8",
+        "rust/src/indexing_diagnostics.rs": "b0a64c91ad53d8126d823ccdabf32eb4e610d3e9",
+        "rust/src/library_indexing_tests.rs": "acd5b6b4168f05e278ec04e95657f21c0dc93416"
+      },
+      "core_tree": "2c11451ab6e15f65709dc54d62aca4e224087e29",
+      "mcp_commit": null,
+      "mcp_tree": null
+    },
+    "H": {
+      "core_commit": "4761356749815d283ede41ef956c64b3dbffe048",
+      "core_parent_commit": null,
+      "core_source_files_sha256": {
+        "rust/src/api/search_engine.rs": "17554b51dbfb4ef26dba0184abeb3520f3e77ad8eb02d3c9ae589ee57a1c9c93",
+        "rust/src/indexing_diagnostics.rs": "70a22a757d0f21cbfc2e3224a9cb67d9beb42a4d88650d0697824009c62ab64f",
+        "rust/src/library_indexing_tests.rs": "57dd6028d97641db66f32c0b042ab0a1d5c164da1512dfdc48073f4b0f1a2b89"
+      },
+      "core_source_git_blobs": {
+        "rust/src/api/search_engine.rs": "323afb9343b6812af3faf4da8bc08375192ef292",
+        "rust/src/indexing_diagnostics.rs": "0922ebccaeb6068f486153e627b65b909296123f",
+        "rust/src/library_indexing_tests.rs": "eab7162618aa71e45be6e5c18a7acf67a3d4b6c2"
+      },
+      "core_tree": "34341d9cffd3348587f509e587593c1f67cf4eec",
+      "mcp_commit": "3c4161074e896e461db4e07537bc11fcfafc3b9e",
+      "mcp_tree": "6ac15846a8f329322a0dfa68b5c9621b0e29e737"
+    }
+  },
+  "schema10": {
+    "exact_test_count": 1,
+    "fixture_directory": "mcp/tests/fixtures/canonical-7.0.1",
+    "fixture_files_sha256": {
+      "README.md": "746e8ef2867edc84de7cc20627771c4e3a94931387b9557fdcbba02d037b8bf1",
+      "expected-mcp.json": "5c4bc2fdd5159fdbd5ebcc2ce61c9f0ac7f7bfecfeafed51c7e6c4057f05b0c0",
+      "index/.managed.json": "a5fcf47dbe8bb3acfb328b333829ce8afd21f4eb584459b1170a5f59a6d976d1",
+      "index/.tantivy-meta.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "index/.tantivy-writer.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "index/0e8db19285de40388299d3f5598d9b87.fast": "ba584660590a95f86a4533ebd86b563f92956fb295774cde7d1b061f5672691c",
+      "index/0e8db19285de40388299d3f5598d9b87.fieldnorm": "d99561cba74c28d2d752135dc49118b6246f5556306427db9e2a9b33979f3e58",
+      "index/0e8db19285de40388299d3f5598d9b87.idx": "7895570541e0214b8eb2a74a2b1b1de63887e37813f25c7f3a3c2f097ed9b278",
+      "index/0e8db19285de40388299d3f5598d9b87.pos": "49348f2bc060cb0f238a8c0373f2055425db6aeaae1357594120d4736865a62d",
+      "index/0e8db19285de40388299d3f5598d9b87.store": "7220de2dd57eb52f7fcb96ba30f11862fb6b7056e2fc56e408a1a057acf8426d",
+      "index/0e8db19285de40388299d3f5598d9b87.term": "6f020f5ac530f1fca0b6298fb5fc3005914e41c7f3a4b4eb25c21247d6188b55",
+      "index/814f67eb608b49928662a2ae95cfbfd3.fast": "0da1b2c5661a5afaec52b54293d3dcbc0a52c857dcdbe21a3e16bc1be93c738c",
+      "index/814f67eb608b49928662a2ae95cfbfd3.fieldnorm": "d0e76b584f43eb211d98a0d8f991d63f57fd71120105cb136a704772fcee5509",
+      "index/814f67eb608b49928662a2ae95cfbfd3.idx": "ccf41508576aacf77c62a79a2b97e40b538118034b765ef865dd061a1d1124dc",
+      "index/814f67eb608b49928662a2ae95cfbfd3.pos": "90e9fd23d820165b83ea4494f9c0958c64ad656a397ea83c34eddb0464c61ddc",
+      "index/814f67eb608b49928662a2ae95cfbfd3.store": "2b20182c260807591293979146afd538e08fcc11a5cbeb779b5645d58f4ccbc2",
+      "index/814f67eb608b49928662a2ae95cfbfd3.term": "22f0d224d5dd0f15705efd7c02694ca9523b9884d51c3cfe664752fbc612bd7b",
+      "index/8d00bb5fd5da48aa8643c3a1659bf5a0.fast": "77f7a5bc986b2625c2a02502aaa99d586b9cd3e4b4d8d127659695ffeead7fc4",
+      "index/8d00bb5fd5da48aa8643c3a1659bf5a0.fieldnorm": "d99561cba74c28d2d752135dc49118b6246f5556306427db9e2a9b33979f3e58",
+      "index/8d00bb5fd5da48aa8643c3a1659bf5a0.idx": "7895570541e0214b8eb2a74a2b1b1de63887e37813f25c7f3a3c2f097ed9b278",
+      "index/8d00bb5fd5da48aa8643c3a1659bf5a0.pos": "49348f2bc060cb0f238a8c0373f2055425db6aeaae1357594120d4736865a62d",
+      "index/8d00bb5fd5da48aa8643c3a1659bf5a0.store": "33dee695d644b6dba30692eb1c35e48f6c7c3385aebee60199942ed616f135cd",
+      "index/8d00bb5fd5da48aa8643c3a1659bf5a0.term": "6764468ca850d57293ae637138d917cb5bf98bc215264cebcd3925955f0bf8d4",
+      "index/meta.json": "e7596ee356e3def0594f7897f31d54558be1567c1aef44298bd117d9ac03e9f3",
+      "index/otzaria_book_numbers.json": "c127579cc0b9b974a0be550977e85d24c22896f4e99db25e25590f2dcb0b399d",
+      "index/otzaria_book_order.json": "06196e6adbd342c1e7d9fcf6d092a5dd1ae16b9c50c8295533a9526bc08b9702",
+      "index/otzaria_book_order.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "index/otzaria_index_meta.json": "490dc45810b3a425fb6687c52ee2108a4ff6326325812b7d8f2f14e6ee23fab9"
+    },
+    "regeneration_allowed": false,
+    "test_name": "mcp_reads_independently_built_schema10_index_without_changing_it"
+  },
+  "schema_version": 1,
+  "state": "unfrozen",
+  "temporary_storage": "one new shared TMPDIR on /dev/shm tmpfs for H and F",
+  "timeouts_seconds": {
+    "benchmark": 120,
+    "build": 900,
+    "contract": 120,
+    "controller_budget": 2400,
+    "metadata": 300,
+    "schema10": 120
+  },
+  "toolchain": "1.99.1",
+  "unchanged_tracked_files_sha256": {
+    ".gitattributes": "65d826f223adbb0fd6c1489801a7ca302cf180bfbe44a1d7bd5c9a9d88c01b0e",
+    ".github/workflows/ci.yml": "7e361811db77916f1d3fb0f767103ecf3c47419e47078047997c9868e0ce62b4",
+    ".gitignore": "33e072b58fc389781ebc689b1d46c970bb300283fb80d94c1ad962314236579f",
+    "claude_desktop_config.example.json": "250228cbdf30a5d40ae3dbde2400469a6e51cc8aca2be8283655189e4476c195",
+    "mcp/examples/admission_bench.rs": "88b2b45148688a23e167c363e4cc416a9492d53cc352ed68d0a1f803d6fb9d5e",
+    "mcp/examples/search_benchmark.rs": "f93bb0c8be43458500c3c496761d4cebeaf951bc3d38f7118de5ca39cdf6a9e7",
+    "mcp/examples/search_contract.rs": "dfa03a8a3ee4926e7431f9db366b5f73c4c607f3c604ab26bf94bc38c3dbba83",
+    "mcp/src/admission.rs": "58611c6cc4c16acfc5d48bb81bc315391c25cd7226d4b2961d58f593e30cb7ad",
+    "mcp/src/current_notes_tests.rs": "029e1e6236aa7322923c58ae711415bcc5ead40a5881897f74bb7e2091355087",
+    "mcp/src/db.rs": "ea385c0268908ad5bb5a7f8a20fdd8f6cc896be599a89c42f6b0c369c5f4464d",
+    "mcp/src/fixture_tests.rs": "59f4c375e47e29ba390098bfca4e3b5d019cacacc8d304b4917598cf7f58ef23",
+    "mcp/src/lib.rs": "636aec62c2e85bc2ec2cf586a464c0209775062b01fbe4a45cc5459c4463661e",
+    "mcp/src/links.rs": "1899a24c7c59ba447f7eb330c6f8fda30bf2f343cd28cb4ea6c5036c48fe69b8",
+    "mcp/src/main.rs": "2c348974b35f35899e35df1eaece069048544c5559eb3002dbda452d8dd4f137",
+    "mcp/src/paths.rs": "35b4bd7a6e056ddae123f768c76586efc2c643bef395acf737dbbd47d72b0cee",
+    "mcp/src/refkey.rs": "a26efca6a7a77aeec25c316decf83b1fbcebcee06975347c349ccc4d594afe98",
+    "mcp/src/refs.rs": "68bd45baca5ad76edbe022939c1b48e81e710075588c8a4570f014d0e0efc8da",
+    "mcp/src/reload.rs": "3dbe1008c89061a8e1fe678bcce76b1596f29cb6ba292edd9793bc47b0233f91",
+    "mcp/src/schema7_tests.rs": "66f0a8d0cb537e55c558d2ad769122f56a7bebd95bfcf1c6c32f7657910a39f8",
+    "mcp/src/search.rs": "8a629d8d62b7df3c41320ad8eae3ba19ce5211092b3af5d6d8a01b78460829ad",
+    "mcp/src/server.rs": "8a652405e7ad79c882a424eeea46a61dfcf82ecb08552db5dc9a65729b6eae70",
+    "mcp/src/text.rs": "2a7ef19dc04e6face9315da88904bca5ac3d5f9ec3237ec6aaaf274a195a935a",
+    "mcp/tests/admission_control.rs": "2df3db549db228d1cbae16dd62d6b326ab1dcc117311ab247be98cf1517d693c",
+    "mcp/tests/current_notes_search.rs": "e15547b53381a34e1edbeb91f1647dcfac41b74d20ccd7e25cc47a40276558c6",
+    "mcp/tests/existing_index.rs": "1e515b87fe9a994fcd40e1318d65affc4aac4fbef437a6161129d9e47e9a364a",
+    "mcp/tests/fixtures/canonical-7.0.1/expected-mcp.json": "5c4bc2fdd5159fdbd5ebcc2ce61c9f0ac7f7bfecfeafed51c7e6c4057f05b0c0",
+    "mcp/tests/fixtures/canonical-7.0.1/index/.managed.json": "a5fcf47dbe8bb3acfb328b333829ce8afd21f4eb584459b1170a5f59a6d976d1",
+    "mcp/tests/fixtures/canonical-7.0.1/index/.tantivy-meta.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mcp/tests/fixtures/canonical-7.0.1/index/.tantivy-writer.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mcp/tests/fixtures/canonical-7.0.1/index/0e8db19285de40388299d3f5598d9b87.fast": "ba584660590a95f86a4533ebd86b563f92956fb295774cde7d1b061f5672691c",
+    "mcp/tests/fixtures/canonical-7.0.1/index/0e8db19285de40388299d3f5598d9b87.fieldnorm": "d99561cba74c28d2d752135dc49118b6246f5556306427db9e2a9b33979f3e58",
+    "mcp/tests/fixtures/canonical-7.0.1/index/0e8db19285de40388299d3f5598d9b87.idx": "7895570541e0214b8eb2a74a2b1b1de63887e37813f25c7f3a3c2f097ed9b278",
+    "mcp/tests/fixtures/canonical-7.0.1/index/0e8db19285de40388299d3f5598d9b87.pos": "49348f2bc060cb0f238a8c0373f2055425db6aeaae1357594120d4736865a62d",
+    "mcp/tests/fixtures/canonical-7.0.1/index/0e8db19285de40388299d3f5598d9b87.store": "7220de2dd57eb52f7fcb96ba30f11862fb6b7056e2fc56e408a1a057acf8426d",
+    "mcp/tests/fixtures/canonical-7.0.1/index/0e8db19285de40388299d3f5598d9b87.term": "6f020f5ac530f1fca0b6298fb5fc3005914e41c7f3a4b4eb25c21247d6188b55",
+    "mcp/tests/fixtures/canonical-7.0.1/index/814f67eb608b49928662a2ae95cfbfd3.fast": "0da1b2c5661a5afaec52b54293d3dcbc0a52c857dcdbe21a3e16bc1be93c738c",
+    "mcp/tests/fixtures/canonical-7.0.1/index/814f67eb608b49928662a2ae95cfbfd3.fieldnorm": "d0e76b584f43eb211d98a0d8f991d63f57fd71120105cb136a704772fcee5509",
+    "mcp/tests/fixtures/canonical-7.0.1/index/814f67eb608b49928662a2ae95cfbfd3.idx": "ccf41508576aacf77c62a79a2b97e40b538118034b765ef865dd061a1d1124dc",
+    "mcp/tests/fixtures/canonical-7.0.1/index/814f67eb608b49928662a2ae95cfbfd3.pos": "90e9fd23d820165b83ea4494f9c0958c64ad656a397ea83c34eddb0464c61ddc",
+    "mcp/tests/fixtures/canonical-7.0.1/index/814f67eb608b49928662a2ae95cfbfd3.store": "2b20182c260807591293979146afd538e08fcc11a5cbeb779b5645d58f4ccbc2",
+    "mcp/tests/fixtures/canonical-7.0.1/index/814f67eb608b49928662a2ae95cfbfd3.term": "22f0d224d5dd0f15705efd7c02694ca9523b9884d51c3cfe664752fbc612bd7b",
+    "mcp/tests/fixtures/canonical-7.0.1/index/8d00bb5fd5da48aa8643c3a1659bf5a0.fast": "77f7a5bc986b2625c2a02502aaa99d586b9cd3e4b4d8d127659695ffeead7fc4",
+    "mcp/tests/fixtures/canonical-7.0.1/index/8d00bb5fd5da48aa8643c3a1659bf5a0.fieldnorm": "d99561cba74c28d2d752135dc49118b6246f5556306427db9e2a9b33979f3e58",
+    "mcp/tests/fixtures/canonical-7.0.1/index/8d00bb5fd5da48aa8643c3a1659bf5a0.idx": "7895570541e0214b8eb2a74a2b1b1de63887e37813f25c7f3a3c2f097ed9b278",
+    "mcp/tests/fixtures/canonical-7.0.1/index/8d00bb5fd5da48aa8643c3a1659bf5a0.pos": "49348f2bc060cb0f238a8c0373f2055425db6aeaae1357594120d4736865a62d",
+    "mcp/tests/fixtures/canonical-7.0.1/index/8d00bb5fd5da48aa8643c3a1659bf5a0.store": "33dee695d644b6dba30692eb1c35e48f6c7c3385aebee60199942ed616f135cd",
+    "mcp/tests/fixtures/canonical-7.0.1/index/8d00bb5fd5da48aa8643c3a1659bf5a0.term": "6764468ca850d57293ae637138d917cb5bf98bc215264cebcd3925955f0bf8d4",
+    "mcp/tests/fixtures/canonical-7.0.1/index/meta.json": "e7596ee356e3def0594f7897f31d54558be1567c1aef44298bd117d9ac03e9f3",
+    "mcp/tests/fixtures/canonical-7.0.1/index/otzaria_book_numbers.json": "c127579cc0b9b974a0be550977e85d24c22896f4e99db25e25590f2dcb0b399d",
+    "mcp/tests/fixtures/canonical-7.0.1/index/otzaria_book_order.json": "06196e6adbd342c1e7d9fcf6d092a5dd1ae16b9c50c8295533a9526bc08b9702",
+    "mcp/tests/fixtures/canonical-7.0.1/index/otzaria_book_order.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mcp/tests/fixtures/canonical-7.0.1/index/otzaria_index_meta.json": "490dc45810b3a425fb6687c52ee2108a4ff6326325812b7d8f2f14e6ee23fab9",
+    "mcp/tests/fixtures/search_contract.json": "8281246968cb24d8abf3721142ba9fd8653518ea5e7e2ef5b9916a15970a4ea4",
+    "mcp/tests/library_reload.rs": "928b4d399ef96c6b7de8ca960d2d3f35d0c189cf2a4c23797f8c478379da179f",
+    "mcp/tests/mcp_admission_regression.rs": "85fda4ac37360c434ec8db3c41438fa48c79bf17cb67299a8f11f3995d393aef",
+    "mcp/tests/real_data.rs": "ad6c13c8423a39f7eeb22ca76c3251b9784334c8433ab67ba2a56bbc9b67dfe2",
+    "mcp/tests/reload_regression.rs": "b04fc7e090e09df70b4dd1718632a37ab54d2ebf07b4f0284279c163cde331d0",
+    "mcp/tests/shared_core_contract.rs": "06f29acdb0d506a07a50d9fb756e2cb1f64ad762b8d388b349545a0df2c36cf9",
+    "mcp/tests/support/search_contract.rs": "8152807d5d49fcf0350ec9eee97fc1d357fb6b1bd1b79d36a462e2be8ce1a6b2",
+    "run-stdio.sh": "703024ba60314d19aa2f08944e824a6567d2fd4944d5dec9eda9719fc9f7d979"
+  }
+}

@@ -1,0 +1,73 @@
+name: Shared core MCP reservation pin diagnostic
+
+on:
+  push:
+    branches: [diag/shared-core-mcp-reservation-pin-20261108]
+
+permissions:
+  contents: read
+
+jobs:
+  mcp-reservation-pin:
+    name: Two clean MCP builds with exact contracts and fixed controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: controller
+          persist-credentials: false
+      - name: Require the reviewed final MCP commit before any build
+        id: revisions
+        run: >
+          python3 controller/tool/shared_core_mcp_reservation_pin_diagnostic.py emit-revisions
+          --config controller/tool/shared_core_mcp_reservation_pin_config.json
+          --github-output "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v5
+        with:
+          repository: Otzaria/otzaria_mcp
+          ref: ${{ steps.revisions.outputs.h }}
+          path: mcp-head
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          repository: Otzaria/otzaria_mcp
+          ref: ${{ steps.revisions.outputs.f }}
+          path: mcp-candidate
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - name: Build twice, validate exact outputs, then measure the fixed schedule
+        run: >
+          python3 controller/tool/shared_core_mcp_reservation_pin_diagnostic.py run
+          --head mcp-head
+          --candidate mcp-candidate
+          --config controller/tool/shared_core_mcp_reservation_pin_config.json
+          --workflow controller/.github/workflows/shared-core-mcp-reservation-pin-diagnostic.yml
+          --out "${{ runner.temp }}/mcp-reservation-pin-diagnostic"
+          --build-root "${{ runner.temp }}/mcp-reservation-pin-build"
+          --tmpdir "/dev/shm/otzaria-mcp-reservation-pin-${{ github.run_id }}-${{ github.run_attempt }}"
+      - name: Preserve binaries, source provenance and partial records
+        if: always()
+        id: evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-reservation-pin-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mcp-reservation-pin-diagnostic/
+          if-no-files-found: error
+          include-hidden-files: true
+          compression-level: 1
+          retention-days: 14
+      - name: Record the uploaded archive identity
+        if: always() && steps.evidence.outcome == 'success'
+        env:
+          ARTIFACT_ID: ${{ steps.evidence.outputs.artifact-id }}
+          ARTIFACT_URL: ${{ steps.evidence.outputs.artifact-url }}
+          ARTIFACT_SHA256: ${{ steps.evidence.outputs.artifact-digest }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          value = {key.lower(): os.environ[key] for key in ('ARTIFACT_ID', 'ARTIFACT_URL', 'ARTIFACT_SHA256')}
+          print(json.dumps(value, sort_keys=True))
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
+              output.write('MCP diagnostic archive identity\n\n```json\n' + json.dumps(value, indent=2) + '\n```\n')
+          PY
