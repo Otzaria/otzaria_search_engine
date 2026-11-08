@@ -23,8 +23,8 @@ import traceback
 
 
 REVISIONS = {
-    "B": "8ef29fd592793fbc9d5af0299fdd7a8607789bac",
-    "H": "4761356749815d283ede41ef956c64b3dbffe048",
+    "B": "4761356749815d283ede41ef956c64b3dbffe048",
+    "H": "4bb3d8e7d11499861ce0655c88841eb23e0f1649",
 }
 FIXTURE = "rust/tests/indexing_throughput.rs"
 FIXTURE_SHA256 = "58b15ac4a0736284bae336b48f6d334bc1de8bcfd3ac52689ab0417ec264ebca"
@@ -422,7 +422,23 @@ def main():
         allowed = sorted(os.sched_getaffinity(0))
         if len(allowed) < 2:
             raise RuntimeError("two distinct allowed CPUs are required")
-        affinity = allowed[:2]
+        mode = os.environ.get("OTZARIA_CPU_PAIR_MODE", "smt")
+        if mode not in ("smt", "distinct-core"):
+            raise RuntimeError("CPU pair mode must be smt or distinct-core")
+        def topology_key(cpu):
+            root = Path(f"/sys/devices/system/cpu/cpu{cpu}/topology")
+            core_id = (root / "core_id").read_text().strip()
+            package_id = (root / "physical_package_id").read_text().strip()
+            return package_id, core_id
+        core_keys = {cpu: topology_key(cpu) for cpu in allowed}
+        pairs = [(a, b) for index, a in enumerate(allowed)
+                 for b in allowed[index + 1:]
+                 if ((core_keys[a] == core_keys[b]) if mode == "smt" else
+                     (core_keys[a][0] == core_keys[b][0]
+                      and core_keys[a][1] != core_keys[b][1]))]
+        if not pairs:
+            raise RuntimeError(f"no {mode} CPU pair exists among {allowed}: {core_keys}")
+        affinity = list(pairs[0])
         overrides = [key for key, value in os.environ.items() if value and
                      (key in {"RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTC_WRAPPER",
                               "RUSTC_WORKSPACE_WRAPPER", "RUSTDOCFLAGS"}
@@ -451,6 +467,7 @@ def main():
             "controller_commit": git(Path(__file__).resolve().parents[1], "rev-parse", "HEAD"),
             "platform": platform.platform(), "uname": list(platform.uname()),
             "allowed_affinity": allowed, "measurement_affinity": affinity,
+            "cpu_pair_mode": mode,
             "selected_cpu_topology": topology,
             "cpu_topology": json.loads(text_command(["lscpu", "--json"])),
             "rustc": rustc, "cargo": cargo, "python": sys.version,

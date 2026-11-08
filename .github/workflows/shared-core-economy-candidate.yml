@@ -1,0 +1,51 @@
+name: Shared core targeted render-reservation diagnostic
+
+on:
+  push:
+    branches: [diag/shared-core-economy-candidate-20261108]
+
+permissions:
+  contents: read
+
+jobs:
+  old-versus-reservation-gate:
+    name: Old vs reservation gate (${{ matrix.cpu_pair_mode }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        cpu_pair_mode: [smt, distinct-core]
+    env:
+      OTZARIA_CPU_PAIR_MODE: ${{ matrix.cpu_pair_mode }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: controller
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          ref: 4761356749815d283ede41ef956c64b3dbffe048
+          path: base
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          ref: 4bb3d8e7d11499861ce0655c88841eb23e0f1649
+          path: head
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - name: Build immutable revisions then run counterbalanced 32-process schedule
+        run: >
+          python3 controller/tool/shared_core_economy_diagnostic.py
+          --base base --head head
+          --out "${{ runner.temp }}/economy-diagnostic"
+          --build-root "${{ runner.temp }}/economy-builds"
+      - name: Preserve logs binaries CPU topology and partial results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reservation-gate-${{ matrix.cpu_pair_mode }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/economy-diagnostic/
+          if-no-files-found: error
+          compression-level: 1
+          retention-days: 14
