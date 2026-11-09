@@ -63,8 +63,19 @@ pub fn production_chunking() -> ChunkerConfig {
     }
 }
 
-/// Every chunking whose vectors this build resolves: [`production_chunking`], and its anchor,
-/// whose sets are the same lines without windows.
+/// Pardes uses the same line/window geometry, with its own cleaner and role text.
+/// This does not change the production recipe that writes the index's chunkKey column.
+pub fn pardes_chunking() -> ChunkerConfig {
+    ChunkerConfig {
+        embedding_text_version: 3,
+        normalization_version: 2,
+        ..production_chunking()
+    }
+}
+
+/// Every recipe currently supported by the application's live resolver. Keep this
+/// closed independently of offline build recipes: registering a plan does not prove
+/// that the interactive resolver can recompute that recipe's keys on a device.
 pub fn keyed_chunkings() -> [ChunkerConfig; 2] {
     let production = production_chunking();
     let anchor = production.anchor();

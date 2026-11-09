@@ -178,13 +178,21 @@ fn release_in(
     epoch: impl FnOnce(&Warehouse) -> EpochChoice,
     alias_threshold: Option<f32>,
 ) -> Release {
+    release_with_chunking(books, epoch, alias_threshold, production_chunking())
+}
+
+fn release_with_chunking(
+    books: &[Book],
+    epoch: impl FnOnce(&Warehouse) -> EpochChoice,
+    alias_threshold: Option<f32>,
+    chunking: otzaria_semantic_search::semantic::chunker::ChunkerConfig,
+) -> Release {
     let root = TempDir::new().unwrap();
     let index = root.path().join("index");
     std::fs::create_dir_all(&index).unwrap();
     add_books(&index, books);
 
     let model_file = mock::write_stub_onnx_package(&root.path().join("model"));
-    let chunking = production_chunking();
     let package = ModelPackage {
         checksum: validate_onnx_package(&model_file)
             .unwrap()
@@ -1268,4 +1276,32 @@ fn wrong_arguments_and_unreadable_inputs_exit_2() {
     let (code, printed) = validate(&["--help"]);
     assert_eq!(code, 0, "{printed}");
     assert!(printed.contains("--min-recall-10"), "{printed}");
+}
+
+/// Full tiny-library path: new Pardes recipe, existing index column, real planner,
+/// assembled/installed vectors, and unchanged coverage/resolution/retrieval gates.
+#[test]
+fn pardes_recipe_passes_full_small_library_pipeline_with_original_column_audit() {
+    let release = release_with_chunking(
+        &books(),
+        |_| EpochChoice::New(CodecSpec::I8SymVec),
+        None,
+        search_engine::semantic_keys::pardes_chunking(),
+    );
+    let out = release.path("pardes-report.json");
+    let args = all_gates(&release, &release.warehouse, &out);
+    let (code, printed) = validate(&as_args(&args));
+    assert_eq!(code, 0, "{printed}");
+    let report = report(&out);
+    assert_eq!(report["passed"], true);
+    let (status, g3) = gate(&report, "G3");
+    assert_eq!(status, "passed");
+    assert_eq!(g3["uncoveredLines"], 0);
+    let (status, g4) = gate(&report, "G4");
+    assert_eq!(status, "passed");
+    assert_eq!(g4["columnChecked"], true);
+    assert_eq!(g4["columnMismatches"], 0);
+    assert_eq!(g4["unresolved"], 0);
+    let (status, _) = gate(&report, "G6");
+    assert_eq!(status, "passed");
 }

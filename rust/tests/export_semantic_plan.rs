@@ -596,3 +596,87 @@ fn the_family_given_chooses_whether_a_long_line_plans_its_windows() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+/// A new family's keys differ from the still-valid index column. Audit the column
+/// under its original recipe, and produce identical Pardes plans with/without it.
+#[test]
+fn pardes_plan_uses_its_recipe_and_still_rejects_a_corrupt_index_column() {
+    use search_engine::semantic_keys::pardes_chunking;
+    let dir = TempDir::new().unwrap();
+    let mut selected = model();
+    let chunking = pardes_chunking();
+    assert_eq!(chunking.identity(), 13334152532150206612);
+    selected.family_id = "test/Pardes107".into();
+    selected.embedding_dim = 384;
+    selected.max_tokens = 512;
+    selected.query_max_tokens = Some(128);
+    selected.embedding_text_version = 3;
+    selected.normalization_version = 2;
+    selected.chunking_identity = chunking.identity();
+    let model_file = dir.path().join("pardes-model.json");
+    std::fs::write(&model_file, serde_json::to_vec(&selected).unwrap()).unwrap();
+    let mut plans = Vec::new();
+    let mut indexed_with_column = None;
+    for without_column in [false, true] {
+        let root = dir.path().join(if without_column {
+            "no-column"
+        } else {
+            "column"
+        });
+        std::fs::create_dir(&root).unwrap();
+        let index = library(&root, without_column);
+        let out = root.join("plan");
+        let output = run_export(&index, &out, &model_file, None);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let plan = Plan::open(&out).unwrap();
+        assert_eq!(plan.manifest.parity.mismatches, 0);
+        assert_eq!(plan.manifest.parity.checked > 0, !without_column);
+        let embedding_texts = String::from_utf8(bytes(&out, EMBED_PLAN_FILE)).unwrap();
+        assert!(!embedding_texts.contains("[PASSAGE]"));
+        assert!(plan.manifest.counts.records > 0);
+        plans.push(out);
+        if !without_column {
+            indexed_with_column = Some(index);
+        }
+    }
+    for name in [
+        RECORDS_FILE,
+        BOOKS_FILE,
+        EMBED_PLAN_FILE,
+        EMBED_MANIFEST_FILE,
+        TOMBSTONES_FILE,
+    ] {
+        assert_eq!(bytes(&plans[0], name), bytes(&plans[1], name), "{name}");
+    }
+    // Still reject a forged zero key; accepting Pardes must not waive G2.
+    let index = indexed_with_column.unwrap();
+    let mut engine = SearchEngine::new(index.to_str().unwrap());
+    engine
+        .add_document(
+            0,
+            "Forged",
+            "Forged1",
+            "/test",
+            "A forged line long enough to require a nonzero chunk key.",
+            0,
+            false,
+            "/books/forged.txt",
+            Some(0),
+            None,
+        )
+        .unwrap();
+    engine.commit().unwrap();
+    drop(engine);
+    let out = dir.path().join("forged-pardes");
+    let output = run_export(&index, &out, &model_file, None);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("parity gate"));
+    let manifest: PlanManifest =
+        serde_json::from_slice(&bytes(&out, "plan-manifest.json")).unwrap();
+    assert_eq!(manifest.parity.mismatches, 1);
+    assert!(Plan::open(&out).is_err());
+}

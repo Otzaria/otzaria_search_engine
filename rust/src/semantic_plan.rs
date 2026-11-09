@@ -27,7 +27,7 @@
 //! cannot be read, stops the plan.
 
 use crate::api::search_engine::{indexed_texts, TextStatus, LINE_TEXT_VERSION};
-use crate::semantic_keys::{keyed_chunking, keyed_chunkings};
+use crate::semantic_keys::{keyed_chunkings, pardes_chunking, production_chunking};
 use anyhow::{Context, Result};
 use otzaria_semantic_search::distribution::ledger::{split, Ledger};
 use otzaria_semantic_search::distribution::plan::{
@@ -59,8 +59,8 @@ pub struct PlanExport<'a> {
     /// The library edition the index holds: its `db_version`.
     pub library_version: u32,
     pub library_release_tag: String,
-    /// The family the vectors are for. Its `chunking_identity` must be one this build keys
-    /// lines under: with long-line windows or without.
+    /// The vector family. Its `chunking_identity` must be registered for offline plans;
+    /// this is independent of the unchanged recipe of the index's chunkKey column.
     pub model: ModelIdentity,
     /// The package the passages are embedded with: one of `model.query_packages`.
     pub passage_package: ModelPackage,
@@ -169,11 +169,7 @@ pub fn export_plan(request: PlanExport<'_>) -> Result<PlanExportReport> {
             for (ordinal, line) in lines.into_iter().enumerate() {
                 if let Some(column) = line.column {
                     parity.checked += 1;
-                    let expected = line
-                        .text
-                        .as_ref()
-                        .map_or(0, |(sha256, _)| column_value(sha256));
-                    if column != expected {
+                    if column != line.expected_column {
                         parity.mismatches += 1;
                     }
                 }
@@ -316,6 +312,15 @@ pub fn validate(
     let columns = SegmentColumns::of(&searcher, chunk_key.is_some())?;
     let books = books_of(&searcher)?;
     let chunking = chunking_of(set.identity().model.chunking_identity)?;
+    // The column belongs to the production recipe, never to another family's keys.
+    // It remains independently audited by plan_book below. For a different recipe,
+    // audit_records resolves using the complete keys recomputed from the actual text.
+    let resolver_chunk_key =
+        if chunking.anchor().identity() == production_chunking().anchor().identity() {
+            chunk_key
+        } else {
+            None
+        };
     let standalone_min_chars = chunking.min_meaningful_chars;
     let chunker = Chunker::new(chunking)?;
     let names: Vec<&String> = books.keys().collect();
@@ -324,7 +329,7 @@ pub fn validate(
         set.identity().store.store_format_version,
     );
     let cache = Mutex::new(ResolverCache::default());
-    let resolver = LiveResolver::new(searcher.clone(), chunk_key, &cache)?;
+    let resolver = LiveResolver::new(searcher.clone(), resolver_chunk_key, &cache)?;
     let cancel = CancellationToken::new();
     let mut validation = Validation {
         column_checked: chunk_key.is_some(),
@@ -362,11 +367,7 @@ pub fn validate(
                         line.coverage.windowed > 0 && line.coverage.windowed < line.coverage.source,
                     );
                     if let Some(column) = line.column {
-                        let expected = line
-                            .text
-                            .as_ref()
-                            .map_or(0, |(sha256, _)| column_value(sha256));
-                        mismatches += u64::from(column != expected);
+                        mismatches += u64::from(column != line.expected_column);
                     }
                     match &line.text {
                         Some((sha256, _)) if !line.pdf => std::iter::once((0, key(sha256)))
@@ -563,6 +564,8 @@ struct PlannedLine {
     pdf: bool,
     /// The `chunkKey` column's value, when the index has a column this build uses.
     column: Option<u64>,
+    /// Expected value under the index column's original recipe, not the vector family's.
+    expected_column: u64,
     coverage: TextSpanCoverage,
 }
 
@@ -739,6 +742,12 @@ fn plan_book(
         .zip(&sections)
         .map(|(text, &section)| LineRef { text, section })
         .collect();
+    // live_chunk_key_field accepts only the unchanged production column recipe.
+    // A new vector recipe must still audit that column against its ORIGINAL text,
+    // while producing independent embedding texts/keys for the selected family.
+    let column_chunker = Chunker::new(production_chunking())?;
+    let same_column_text = chunker.recipe().1 == column_chunker.recipe().1
+        && chunker.recipe().2 == column_chunker.recipe().2;
     Ok((0..book.len())
         .map(|index| {
             let embedded = if pdf[index] {
@@ -755,7 +764,20 @@ fn plan_book(
                 (window.ordinal, sha256, window.text)
             });
             let text = windows.next().map(|(_, sha256, text)| (sha256, text));
+            let expected_column = if stored_keys[index].is_none() || pdf[index] {
+                0
+            } else if same_column_text {
+                text.as_ref().map_or(0, |(sha256, _)| column_value(sha256))
+            } else {
+                column_chunker
+                    .embedded_text(&lines, index)
+                    .map_or(0, |text| {
+                        let digest: [u8; 32] = Sha256::digest(text.as_bytes()).into();
+                        column_value(&digest)
+                    })
+            };
             PlannedLine {
+                expected_column,
                 short: text.is_some() && chunker.borrows_context(&texts[index]),
                 text,
                 windows: windows.collect(),
@@ -769,17 +791,28 @@ fn plan_book(
 
 /// The one of this build's chunkings whose identity a family declares.
 fn chunking_of(identity: u64) -> Result<ChunkerConfig> {
-    keyed_chunking(identity).with_context(|| {
-        let keyed: Vec<String> = keyed_chunkings()
-            .iter()
-            .map(|chunking| chunking.identity().to_string())
-            .collect();
-        format!(
-            "the model's chunking_identity is {identity}, and this build keys lines under \
+    // Offline plan/validation support is separate from live-device resolution support.
+    // The old index column is audited under its own recipe in plan_book.
+    let pardes = pardes_chunking();
+    let supported: Vec<ChunkerConfig> = keyed_chunkings()
+        .into_iter()
+        .chain([pardes.clone(), pardes.anchor()])
+        .collect();
+    supported
+        .iter()
+        .find(|chunking| chunking.identity() == identity)
+        .cloned()
+        .with_context(|| {
+            let keyed: Vec<String> = supported
+                .iter()
+                .map(|chunking| chunking.identity().to_string())
+                .collect();
+            format!(
+                "the model's chunking_identity is {identity}, and this build keys lines under \
              chunking {}",
-            keyed.join(" or ")
-        )
-    })
+                keyed.join(" or ")
+            )
+        })
 }
 
 /// The text each document was indexed from, exactly: a plan keys the index as it was built,
