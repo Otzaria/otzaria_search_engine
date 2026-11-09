@@ -8,12 +8,97 @@ on:
     branches: [refactor]
   pull_request:
   workflow_dispatch:
+  # Runs the Apple job even when no change asked for it, to catch drift.
+  schedule:
+    - cron: "30 2 * * 1"
+
+permissions:
+  contents: read
 
 concurrency:
-  group: native-assets-${{ github.ref }}
+  # The event keeps a scheduled run from cancelling a push run on the same ref.
+  group: native-assets-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # macOS runners are few and shared across the org, so the Apple job runs only
+  # when a change can affect it.
+  changes:
+    name: Detect Apple-relevant changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      apple: ${{ steps.detect.outputs.apple }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          filter: blob:none
+
+      - id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          BEFORE: ${{ github.event.before }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          # Functions return 1 on any error; the caller then answers true.
+          relevant() {
+            local files
+            files=$(git diff --name-only "$@") || return 1
+            if grep -qE '^(rust/|hook/|lib/src/hook/|lib/src/rust/frb_generated[^/]*\.dart$|\.github/workflows/native-assets\.yml$)' <<<"$files"; then
+              echo true
+              return 0
+            fi
+            if grep -qx pubspec.yaml <<<"$files"; then
+              local diff
+              diff=$(git diff -U0 "$@" -- pubspec.yaml) || return 1
+              # A bare version bump changes nothing the hook builds.
+              if awk '/^@@/ { hunk = 1; next } hunk && /^[-+]/ && !/^[-+]version:/ { found = 1 } END { exit !found }' <<<"$diff"; then
+                echo true
+                return 0
+              fi
+            fi
+            echo false
+          }
+          decide() {
+            case "$EVENT" in
+              pull_request)
+                [ -n "$BASE" ] && [ -n "$HEAD" ] || return 1
+                relevant "$BASE...$HEAD"
+                ;;
+              push)
+                if [ -z "${BEFORE//0/}" ]; then
+                  echo true
+                  return 0
+                fi
+                # A merged PR's commit: the PR already ran the Apple job if it needed to.
+                local merged
+                merged=$(gh api "repos/$REPO/commits/$SHA/pulls" \
+                  --jq '.[] | select(.merged_at != null) | .merge_commit_sha') || return 1
+                if grep -qxF "$SHA" <<<"$merged"; then
+                  echo false
+                  return 0
+                fi
+                relevant "$BEFORE" "$SHA"
+                ;;
+              *) echo true ;;
+            esac
+          }
+          if ! apple=$(decide) || [ -z "$apple" ]; then
+            echo "::warning::Could not tell which files changed; running the Apple job"
+            apple=true
+          fi
+          echo "Apple job: $apple"
+          echo "apple=$apple" >> "$GITHUB_OUTPUT"
+
   app:
     name: App on ${{ matrix.platform }}
     runs-on: ${{ matrix.os }}
@@ -27,10 +112,6 @@ jobs:
             os: ubuntu-24.04
           - platform: windows
             os: windows-2022
-          - platform: macos
-            os: macos-15
-          - platform: ios
-            os: macos-15
           - platform: android
             os: ubuntu-24.04
     defaults:
@@ -63,9 +144,12 @@ jobs:
             clang cmake ninja-build pkg-config libgtk-3-dev xvfb
 
       - name: Create an app that depends on the package
+        # Same script as in the apple job below; keep the two in sync.
+        env:
+          PLATFORMS: ${{ matrix.platform }}
         run: |
           set -euo pipefail
-          flutter create --platforms=${{ matrix.platform }} --org org.otzaria probe
+          flutter create --platforms="$PLATFORMS" --org org.otzaria probe
           cd probe
           flutter pub add "otzaria_search_engine:{path: ../otzaria_search_engine}" path_provider
           flutter pub add "dev:integration_test:{sdk: flutter}"
@@ -125,37 +209,6 @@ jobs:
         working-directory: probe
         run: flutter test integration_test -d windows
 
-      - name: Run on the macOS desktop
-        if: matrix.platform == 'macos'
-        working-directory: probe
-        run: flutter test integration_test -d macos
-
-      - name: Run on an iOS simulator
-        if: matrix.platform == 'ios'
-        working-directory: probe
-        timeout-minutes: 75
-        run: |
-          set -euo pipefail
-          # An iPhone on the newest runtime: an old, never-booted one boots for minutes.
-          udid=$(xcrun simctl list devices available -j \
-            | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; v=lambda r: [int(n) for n in r.rsplit(".",1)[-1].split("-")[1:]]; phones={r: [x for x in l if x["name"].startswith("iPhone")] for r,l in d.items() if ".iOS-" in r}; r=max((r for r in phones if phones[r]), key=v); print(phones[r][0]["udid"])')
-          xcrun simctl boot "$udid"
-          # Launching before the boot completes leaves flutter waiting for the VM service.
-          xcrun simctl bootstatus "$udid" -b
-          # Compiles the crate once, so a timed-out attempt below costs only the launch.
-          flutter build ios --simulator --debug -t integration_test/search_test.dart
-          # flutter at times never finds a simulator app's VM service: retry instead of waiting.
-          for attempt in 1 2 3; do
-            if perl -e 'alarm shift; exec @ARGV' 900 flutter test integration_test -d "$udid"; then
-              exit 0
-            fi
-            echo "::warning::Attempt $attempt did not pass"
-            xcrun simctl spawn "$udid" log show --last 15m --style compact \
-              --predicate 'process == "Runner"' | tail -n 60 || true
-            ls -t ~/Library/Logs/DiagnosticReports 2>/dev/null | head -n 5 || true
-          done
-          exit 1
-
       - name: Install the Android emulator with download retries
         if: matrix.platform == 'android'
         timeout-minutes: 10
@@ -210,3 +263,126 @@ jobs:
           script: |
             until adb shell pm path android | grep -q package:; do sleep 2; done
             timeout 900 flutter test integration_test -d emulator-5554 || timeout 900 flutter test integration_test -d emulator-5554
+
+  apple:
+    name: App on Apple (macOS + iOS)
+    needs: changes
+    # Runs as well when the changes job itself failed: an empty answer is not "false".
+    if: ${{ !cancelled() && needs.changes.outputs.apple != 'false' }}
+    # One runner for both platforms: they share the crate's dependency builds.
+    runs-on: macos-15
+    timeout-minutes: 100
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: otzaria_search_engine
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          # The app's Flutter, whose hooks runner ships the library.
+          flutter-version: 3.47.2
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Create an app that depends on the package
+        id: probe
+        env:
+          PLATFORMS: macos,ios
+        run: |
+          set -euo pipefail
+          flutter create --platforms="$PLATFORMS" --org org.otzaria probe
+          cd probe
+          flutter pub add "otzaria_search_engine:{path: ../otzaria_search_engine}" path_provider
+          flutter pub add "dev:integration_test:{sdk: flutter}"
+          mkdir -p integration_test
+          cat > integration_test/search_test.dart <<'EOF'
+          import 'package:flutter_test/flutter_test.dart';
+          import 'package:integration_test/integration_test.dart';
+          import 'package:otzaria_search_engine/otzaria_search_engine.dart';
+          import 'package:path_provider/path_provider.dart';
+
+          void main() {
+            IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+
+            testWidgets('the bundled engine indexes and searches', (_) async {
+              await RustLib.init();
+              final temp = await getTemporaryDirectory();
+              temp.createSync(recursive: true);
+              final dir = temp.createTempSync('probe_index_');
+              final engine = await SearchEngine.newInstance(path: dir.path);
+              await engine.addDocument(
+                ordinal: 0,
+                title: 'Document 1',
+                reference: 'Reference 1',
+                topics: '/probe',
+                text: 'יהודים',
+                segment: BigInt.two,
+                isPdf: false,
+                filePath: '/probe/doc1',
+              );
+              await engine.commit();
+              final results = await engine.search(
+                regexTerms: ['יהודים'],
+                facets: ['/'],
+                limit: 1,
+                offset: 0,
+                slop: 0,
+                maxExpansions: 50,
+                order: ResultsOrder.relevance,
+              );
+              expect(results, hasLength(1));
+              expect(results.single.title, 'Document 1');
+              // A new index's first book, at ordinal 0 (line number 1).
+              expect(results.single.id, (BigInt.one << 32) | BigInt.one);
+              expect(results.single.reference, 'Reference 1');
+              expect(results.single.segment, BigInt.two);
+            });
+          }
+          EOF
+
+      # hooks_runner keeps the hook's shared output under the app's .dart_tool, the
+      # same directory for the macOS and iOS builds; the hook builds into its target.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: otzaria_search_engine/rust -> ../../probe/.dart_tool/hooks_runner/shared/otzaria_search_engine/build/target
+          # Saved from the default branch only, as in rust-quality.yml.
+          save-if: ${{ github.ref == 'refs/heads/refactor' }}
+          key: apple-app
+
+      - name: Run on the macOS desktop
+        working-directory: probe
+        timeout-minutes: 40
+        run: flutter test integration_test -d macos
+
+      - name: Run on an iOS simulator
+        # Also after a macOS failure, so both results show.
+        if: ${{ !cancelled() && steps.probe.outcome == 'success' }}
+        working-directory: probe
+        timeout-minutes: 50
+        run: |
+          set -euo pipefail
+          # An iPhone on the newest runtime: an old, never-booted one boots for minutes.
+          udid=$(xcrun simctl list devices available -j \
+            | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; v=lambda r: [int(n) for n in r.rsplit(".",1)[-1].split("-")[1:]]; phones={r: [x for x in l if x["name"].startswith("iPhone")] for r,l in d.items() if ".iOS-" in r}; r=max((r for r in phones if phones[r]), key=v); print(phones[r][0]["udid"])')
+          xcrun simctl boot "$udid"
+          # Launching before the boot completes leaves flutter waiting for the VM service.
+          xcrun simctl bootstatus "$udid" -b
+          # Compiles the crate once, so an attempt below costs only the launch. `-d` keeps
+          # it to this simulator's arch; without it x86_64 is compiled too.
+          flutter -d "$udid" build ios --simulator --debug -t integration_test/search_test.dart
+          # flutter at times never finds a simulator app's VM service: retry instead of waiting.
+          for attempt in 1 2 3; do
+            if perl -e 'alarm shift; exec @ARGV' 300 flutter test integration_test -d "$udid"; then
+              exit 0
+            fi
+            echo "::warning::Attempt $attempt did not pass"
+            xcrun simctl spawn "$udid" log show --last 15m --style compact \
+              --predicate 'process == "Runner"' | tail -n 60 || true
+            # shellcheck disable=SC2012 # Only names, newest first.
+            ls -t ~/Library/Logs/DiagnosticReports 2>/dev/null | head -n 5 || true
+          done
+          exit 1

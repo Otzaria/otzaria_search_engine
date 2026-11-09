@@ -207,10 +207,12 @@ jobs:
       fail-fast: false
       matrix:
         # Not Linux: `semantic` is `semantic-onnx`, which rust-tests already
-        # compiles there.
-        os:
-          - macos-15
-          - windows-2022
+        # compiles there. macOS on pushes and dispatches only: the org's few
+        # macOS runners queue for hours. Pull requests type-check it in
+        # macos-cross-check, and its writer-shutdown test waits for the push.
+        os: >-
+          ${{ fromJSON(github.event_name == 'pull_request' && '["windows-2022"]'
+          || '["macos-15","windows-2022"]') }}
     steps:
       - uses: actions/checkout@v5
 
@@ -247,13 +249,63 @@ jobs:
         if: matrix.os == 'windows-2022'
         run: cargo test --manifest-path rust/Cargo.toml --locked --lib -- index_directory::tests replace_meta_json_ index_metadata_survives_a_write_that_fails_before_its_rename
 
+  # real-backend-build's macOS compile, from Linux. zig supplies the macOS libc
+  # headers the C in zstd-sys, bundled SQLite and dart-sys builds against;
+  # nothing is linked. Also on pushes, which save its cache.
+  macos-cross-check:
+    name: Real semantic backend (macOS, type-checked on Linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          save-if: ${{ github.ref == 'refs/heads/refactor' }}
+          key: macos-cross-check
+
+      # The global Zig cache only holds C objects the cargo cache already has.
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+          use-cache: false
+
+      # The release's prebuilt binary, pinned by digest like the FRB generator.
+      - name: Install pinned cargo-zigbuild
+        run: |
+          archive="$RUNNER_TEMP/cargo-zigbuild.tar.xz"
+          curl -fSL --retry 5 --retry-all-errors --output "$archive" \
+            "https://github.com/rust-cross/cargo-zigbuild/releases/download/v0.24.0/cargo-zigbuild-x86_64-unknown-linux-musl.tar.xz"
+          echo "52be2cb85ad3875682564a29bac1832b2ab3db68b1c504765c92d5249cc9b96f  $archive" | sha256sum -c -
+          tar -xJf "$archive" -C "$HOME/.cargo/bin" --strip-components=1 \
+            cargo-zigbuild-x86_64-unknown-linux-musl/cargo-zigbuild
+          cargo-zigbuild --version
+
+      # `cargo-zigbuild check`: `cargo zigbuild` is the build command alone.
+      - name: Compile the production semantic backend for macOS
+        run: >
+          cargo-zigbuild check --manifest-path rust/Cargo.toml --locked --lib
+          --features semantic --target aarch64-apple-darwin
+
+      - name: Compile the application's configuration for macOS
+        run: >
+          cargo-zigbuild check --manifest-path rust/Cargo.toml --locked --lib
+          --no-default-features --features semantic,sqlite-host,flutter-bridge
+          --target aarch64-apple-darwin
+
   # rust/tests/semantic_onnx_model.rs on the Meivin INT8 graph, the model the
   # application uses: lines indexed and queried through the public API, text
   # recipe 2 checked against its definition, and an artifact built by the build
   # binary and opened the way the application opens one. Every other job runs
   # the sidecar on its stand-in or on no model at all, so this is the only one
-  # in which real vectors cross this crate. On all three desktop platforms,
-  # since each loads its own build of ONNX Runtime and its own INT8 kernels.
+  # in which real vectors cross this crate. On Linux x64 and arm64, macOS and
+  # Windows, since each loads its own build of ONNX Runtime and its own INT8
+  # kernels. macOS on pushes and dispatches only, as in real-backend-build;
+  # arm64 Linux runs the arm64 kernels on pull requests.
   #
   # The model is gated, so the job runs off the OTZARIA_HF_TOKEN secret on every
   # push and same-repo pull request, and fails rather than skips when the secret
@@ -275,7 +327,8 @@ jobs:
   # ONNX Runtime is Microsoft's 1.28.0 release, the reference runtime, fetched
   # exactly as the sidecar's `onnx-backend` job fetches it: the same archives,
   # digests and library paths, pinned because a re-uploaded asset is a different
-  # runtime. Bump the two together.
+  # runtime. Bump the two together. The linux-aarch64 archive, which that job
+  # does not use, is pinned to the release's own asset digest.
   real-onnx-model:
     name: Real ONNX model (${{ matrix.os }})
     if: >-
@@ -285,20 +338,28 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-24.04
-            ort_archive: onnxruntime-linux-x64-1.28.0.tgz
-            ort_sha256: a3e1b79d7bb1bf09696ce675f49e4064e6c81f6202b8225624fff0e93f8d6407
-            ort_library: onnxruntime-linux-x64-1.28.0/lib/libonnxruntime.so.1.28.0
-          # arm64: there is no macOS x86_64 build of 1.28.0.
-          - os: macos-15
-            ort_archive: onnxruntime-osx-arm64-1.28.0.tgz
-            ort_sha256: 1268b359718099bde2cedb55787f182a130067bc4f31e8c88478c445b850d3d8
-            ort_library: onnxruntime-osx-arm64-1.28.0/lib/libonnxruntime.1.28.0.dylib
-          - os: windows-2022
-            ort_archive: onnxruntime-win-x64-1.28.0.zip
-            ort_sha256: abef733dacbe2f571547a7150b479b5cb9cc0df22f96c24983a42cadb1b4f8bc
-            ort_library: onnxruntime-win-x64-1.28.0/lib/onnxruntime.dll
+        # One JSON list, since only the event decides whether macOS is in it;
+        # macOS is arm64 because there is no macOS x86_64 build of 1.28.0.
+        include: >-
+          ${{ fromJSON(format('[{0}{1}]',
+          '{"os": "ubuntu-24.04",
+          "ort_archive": "onnxruntime-linux-x64-1.28.0.tgz",
+          "ort_sha256": "a3e1b79d7bb1bf09696ce675f49e4064e6c81f6202b8225624fff0e93f8d6407",
+          "ort_library": "onnxruntime-linux-x64-1.28.0/lib/libonnxruntime.so.1.28.0"},
+          {"os": "ubuntu-24.04-arm",
+          "ort_archive": "onnxruntime-linux-aarch64-1.28.0.tgz",
+          "ort_sha256": "e15ff8b5d85afe6c144d97c6fd432254bf76a219daaf17658087d6ecb3e8f0bb",
+          "ort_library": "onnxruntime-linux-aarch64-1.28.0/lib/libonnxruntime.so.1.28.0"},
+          {"os": "windows-2022",
+          "ort_archive": "onnxruntime-win-x64-1.28.0.zip",
+          "ort_sha256": "abef733dacbe2f571547a7150b479b5cb9cc0df22f96c24983a42cadb1b4f8bc",
+          "ort_library": "onnxruntime-win-x64-1.28.0/lib/onnxruntime.dll"}',
+          github.event_name != 'pull_request' && ',
+          {"os": "macos-15",
+          "ort_archive": "onnxruntime-osx-arm64-1.28.0.tgz",
+          "ort_sha256": "1268b359718099bde2cedb55787f182a130067bc4f31e8c88478c445b850d3d8",
+          "ort_library": "onnxruntime-osx-arm64-1.28.0/lib/libonnxruntime.1.28.0.dylib"}'
+          || '')) }}
     steps:
       - uses: actions/checkout@v5
 
@@ -345,7 +406,7 @@ jobs:
       # `set -x`.
       #
       # `--retry` because Hugging Face rate-limits with a 429 that is not a
-      # refusal, and with nothing cached each of the three jobs fetches the
+      # refusal, and with nothing cached each matrix job fetches the
       # graph on every run. curl counts 429 as transient and backs off;
       # `--retry-all-errors` extends that to a connection dropped mid-transfer,
       # and `-f` is what makes the status visible to it at all. Not raised
