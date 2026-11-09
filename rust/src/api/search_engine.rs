@@ -9194,8 +9194,9 @@ impl SearchEngine {
                 }
             }
             anyhow::ensure!(!stop(), "indexing preparation interrupted");
-            let normalized: Vec<Line> =
-                crate::indexing_buffers::preparation_cpu(policy.cpu_threads, || {
+            let normalized: Vec<Line> = crate::indexing_buffers::preparation_cpu(
+                policy.cpu_threads,
+                || {
                     raw_lines
                         .par_iter()
                         .map_init(
@@ -9229,7 +9230,8 @@ impl SearchEngine {
                             },
                         )
                         .collect()
-                })?;
+                },
+            )?;
             drop(raw_lines);
             window.extend(normalized);
             let end = if finished {
