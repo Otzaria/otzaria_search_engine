@@ -49,23 +49,32 @@ jobs:
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           set -uo pipefail
+          # A diff of FILE whose changed lines are at most one old and one new
+          # line matching PATTERN: a bare version bump.
+          version_bump_only() {
+            local file=$1 pattern=$2 diff
+            shift 2
+            diff=$(git diff -U0 "$@" -- "$file") || return 1
+            awk -v p="$pattern" '
+              /^@@/ { hunk = 1; next }
+              hunk && /^[-+]/ { if ($0 ~ p) { if (/^-/) old++; else new++ } else other = 1 }
+              END { exit !(!other && old <= 1 && new <= 1) }' <<<"$diff"
+          }
           # Functions return 1 on any error; the caller then answers true.
           relevant() {
-            local files
+            local files file
             files=$(git diff --name-only "$@") || return 1
-            if grep -qE '^(rust/|hook/|lib/src/hook/|lib/src/rust/frb_generated[^/]*\.dart$|\.github/workflows/native-assets\.yml$)' <<<"$files"; then
-              echo true
-              return 0
-            fi
-            if grep -qx pubspec.yaml <<<"$files"; then
-              local diff
-              diff=$(git diff -U0 "$@" -- pubspec.yaml) || return 1
-              # A bare version bump changes nothing the hook builds.
-              if awk '/^@@/ { hunk = 1; next } hunk && /^[-+]/ && !/^[-+]version:/ { found = 1 } END { exit !found }' <<<"$diff"; then
-                echo true
-                return 0
-              fi
-            fi
+            while IFS= read -r file; do
+              case "$file" in
+                # A bare version bump changes nothing the hook builds.
+                pubspec.yaml)
+                  version_bump_only "$file" '^[-+]version:' "$@" || { echo true; return 0; } ;;
+                rust/Cargo.toml | rust/Cargo.lock)
+                  version_bump_only "$file" '^[-+]version = ' "$@" || { echo true; return 0; } ;;
+                rust/* | hook/* | lib/src/hook/* | lib/src/rust/frb_generated*.dart | .github/workflows/native-assets.yml)
+                  echo true; return 0 ;;
+              esac
+            done <<<"$files"
             echo false
           }
           decide() {
