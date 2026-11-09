@@ -1,5 +1,44 @@
 # Changelog
 
+## 7.1.0 – 2026-11-09
+
+### Added
+
+- **Note provenance in snippets.** Lexical and semantic snippets wrap footnote
+  text in `<otzaria-note>` and footnote markers in `<otzaria-note-marker>`, so
+  hosts can render notes apart from the book body; multiline notes keep their
+  boundaries. The provenance is stored in index schema 11 (see Changed).
+- `searchSmartLexical`, `generateIndexSmartHighlightPattern`,
+  `generateSmartHighlightPattern` and `HighlightMatcher.allowsCrossLine` expose
+  the smart-search lexical semantics to in-book search and highlighting, so
+  they match the general search exactly.
+- `closeIndexWriter` closes the index writer asynchronously, off the UI
+  thread; a writer that reached a terminal close is not reopened.
+- A headless shared Rust core exposes the same engine to non-Flutter hosts.
+
+### Changed
+
+- **Index schema 11.** New and rebuilt indexes are written in schema 11, which
+  adds the stored note-span field. Schema-10 indexes remain readable and
+  writable in place without a rebuild; their snippets simply carry no note
+  tags until the index is rebuilt. Engines before 7.1.0 report
+  `engine_too_old` for a schema-11 index.
+- Smart search normalizes queries without dropping lexical spellings, and the
+  Holy Name alternatives (e.g. יקוק / יהוה) apply inside quotes as well.
+- Indexing bounds its CPU pools and library-preparation admission (economy and
+  normal modes), and reuses the per-book CPU policy across preparation windows.
+- Semantic search consumes `ort`/`ort-sys` 2.0.0-rc.15, pins owned ONNX
+  environments and falls back to lexical search on runtime errors; rollback
+  generations of incompatible models are collected.
+
+### Fixed
+
+- Concurrent cold searches no longer deadlock on the Rayon work gate while
+  highlights are prepared, and term-gate owners keep parallel dictionary scans.
+- Merge I/O is drained before an index is closed or replaced.
+- Negative phrase exclusion probes stay lazy and guarded.
+- Semantic benchmarks work on read-only lexical indexes.
+
 ## 7.0.1 – 2026-11-02
 
 ### Fixed

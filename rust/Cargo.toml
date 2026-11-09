@@ -6,7 +6,7 @@ resolver = "2"
 
 [package]
 name = "search_engine"
-version = "7.0.1"
+version = "7.1.0"
 edition = "2021"
 
 [lib]
