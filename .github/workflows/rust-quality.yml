@@ -285,6 +285,24 @@ jobs:
             cargo-zigbuild-x86_64-unknown-linux-musl/cargo-zigbuild
           cargo-zigbuild --version
 
+      # oslog (via flutter_rust_bridge) compiles a C wrapper around the SDK's
+      # os/log.h, which zig lacks. A check links nothing, so declarations do.
+      - name: Stub the SDK's os/log.h
+        run: |
+          mkdir -p "$RUNNER_TEMP/macos-stubs/os"
+          cat > "$RUNNER_TEMP/macos-stubs/os/log.h" <<'EOF'
+          typedef void *os_log_t;
+          typedef unsigned char os_log_type_t;
+          #define OS_LOG_DEFAULT ((os_log_t)0)
+          #define os_log_with_type(log, type, ...) ((void)(log), (void)(type))
+          #define os_log_debug(log, ...) ((void)(log))
+          #define os_log_info(log, ...) ((void)(log))
+          #define os_log(log, ...) ((void)(log))
+          #define os_log_error(log, ...) ((void)(log))
+          #define os_log_fault(log, ...) ((void)(log))
+          EOF
+          echo "CFLAGS_aarch64_apple_darwin=-I$RUNNER_TEMP/macos-stubs" >> "$GITHUB_ENV"
+
       # `cargo-zigbuild check`: `cargo zigbuild` is the build command alone.
       - name: Compile the production semantic backend for macOS
         run: >
