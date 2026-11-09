@@ -358,16 +358,24 @@ jobs:
         timeout-minutes: 40
         run: flutter test integration_test -d macos
 
-      - name: Run on an iOS simulator
+      - name: Build for (and on schedule or dispatch, run on) an iOS simulator
         # Also after a macOS failure, so both results show.
         if: ${{ !cancelled() && steps.probe.outcome == 'success' }}
         working-directory: probe
         timeout-minutes: 50
+        env:
+          # Running in the simulator is slow and flaky and has caught nothing a
+          # build did not, so pull requests and pushes only build.
+          RUN_SIMULATOR: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
         run: |
           set -euo pipefail
           # An iPhone on the newest runtime: an old, never-booted one boots for minutes.
           udid=$(xcrun simctl list devices available -j \
             | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; v=lambda r: [int(n) for n in r.rsplit(".",1)[-1].split("-")[1:]]; phones={r: [x for x in l if x["name"].startswith("iPhone")] for r,l in d.items() if ".iOS-" in r}; r=max((r for r in phones if phones[r]), key=v); print(phones[r][0]["udid"])')
+          if [ "$RUN_SIMULATOR" != true ]; then
+            flutter -d "$udid" build ios --simulator --debug -t integration_test/search_test.dart
+            exit 0
+          fi
           xcrun simctl boot "$udid"
           # Launching before the boot completes leaves flutter waiting for the VM service.
           xcrun simctl bootstatus "$udid" -b
