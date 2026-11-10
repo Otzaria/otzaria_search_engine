@@ -322,14 +322,15 @@ pub fn validate(
             None
         };
     let standalone_min_chars = chunking.min_meaningful_chars;
-    let chunker = Chunker::new(chunking)?;
+    let chunker = Chunker::new(chunking.clone())?;
     let names: Vec<&String> = books.keys().collect();
     // The set holds this many bytes of a key, and is audited at that width.
     let key_len = otzaria_semantic_search::semantic::oxv::format::key_len(
         set.identity().store.store_format_version,
     );
     let cache = Mutex::new(ResolverCache::default());
-    let resolver = LiveResolver::new(searcher.clone(), resolver_chunk_key, &cache)?;
+    let resolver =
+        LiveResolver::for_chunking(searcher.clone(), resolver_chunk_key, &cache, chunking)?;
     let cancel = CancellationToken::new();
     let mut validation = Validation {
         column_checked: chunk_key.is_some(),
@@ -796,7 +797,7 @@ fn chunking_of(identity: u64) -> Result<ChunkerConfig> {
     let pardes = pardes_chunking();
     let supported: Vec<ChunkerConfig> = keyed_chunkings()
         .into_iter()
-        .chain([pardes.clone(), pardes.anchor()])
+        .chain([pardes.anchor()])
         .collect();
     supported
         .iter()

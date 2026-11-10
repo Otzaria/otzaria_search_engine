@@ -606,7 +606,7 @@ fn pardes_plan_uses_its_recipe_and_still_rejects_a_corrupt_index_column() {
     let mut selected = model();
     let chunking = pardes_chunking();
     assert_eq!(chunking.identity(), 13334152532150206612);
-    selected.family_id = "test/Pardes107".into();
+    selected.family_id = "test/PardesQA491".into();
     selected.embedding_dim = 384;
     selected.max_tokens = 512;
     selected.query_max_tokens = Some(128);

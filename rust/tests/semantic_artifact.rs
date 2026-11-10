@@ -250,6 +250,8 @@ fn mock_model(
         embedding_dim: 64,
         pooling: "in-graph".to_string(),
         max_tokens: 512,
+        // Hash mock has no tokenizer/cap override. The real 128/512 ONNX
+        // role-cap contract is checked separately with the published graph.
         query_max_tokens: None,
         embedding_text_version: chunking.embedding_text_version,
         normalization_version: chunking.normalization_version,
@@ -4782,4 +4784,83 @@ fn compaction_preserves_alias_after_neighbour_tail_changes() {
     );
     assert_eq!(shared[0].1.window, ALIAS_WINDOW);
     assert_eq!(shared[0].1.anchor, Some(aliases[0].anchor));
+}
+
+/// The selected compact Pardes family is a live model, not only an offline plan.
+/// An unchanged index's persisted column belongs to Meivin and must not be read
+/// as a Pardes key; opening the two recipes in one process must not reuse keys.
+#[test]
+fn pardes_live_search_resolves_its_recipe_and_survives_switching_from_meivin() {
+    use search_engine::semantic_keys::pardes_chunking;
+    let clause = "דיני מוקצה בשבת נאמרו בכלים ובחפצים שדרכם להשתמש בהם לצורך גופם או מקומם בבית";
+    let mut books = default_books();
+    books.push(("הלכות", "/הלכה", "/books/pardes-notes.txt", 2,
+        format!("פתיחה ארוכה של מקור ובה מילים נוספות על הלכות אחרות שאינן נוגעות לענין. {clause}. סוף המקור עוסק בדיני תפילה וברכות שאינם קשורים לשאלה הזאת")));
+    let meivin = build_library_under(&books, false, production_chunking());
+    let pardes = build_library_under(&books, false, pardes_chunking());
+    let mut engine = meivin.engine();
+    engine.open_semantic_artifact(meivin.input()).unwrap();
+    let before = semantic_lines(&engine, PROBE_LINE, &[]);
+    assert!(before
+        .iter()
+        .any(|(book, _, ordinal)| book == GENESIS && *ordinal == 3));
+    engine.disable_semantic();
+    let fresh = pardes.vectors.with_file_name("pardes-api-installed");
+    let (segment, manifest, digest) = release(&pardes.package);
+    let installed = engine
+        .install_semantic_vectors(
+            pardes.install_input(&fresh, &segment, &manifest, Some(digest)),
+            &SemanticCancellationToken::new(),
+        )
+        .unwrap();
+    assert_eq!(installed.kind, SemanticVectorsPackageKind::Base);
+    let mut input = pardes.input();
+    input.vectors_dir = dir_string(&fresh);
+    let status = engine.open_semantic_artifact(input).unwrap();
+    assert!(status.available);
+    for facets in [&[][..], &["/מקרא"][..]] {
+        let found = semantic_lines(&engine, PROBE_LINE, facets);
+        assert!(
+            found
+                .iter()
+                .any(|(book, _, ordinal)| book == GENESIS && *ordinal == 3),
+            "Pardes keys must resolve on the Meivin-column index: {found:?}"
+        );
+    }
+    let hit = search(
+        &engine,
+        clause,
+        &["/הלכה"],
+        SemanticRetrievalMode::SemanticOnly,
+    )
+    .results
+    .into_iter()
+    .find(|hit| hit.file_path == "/books/pardes-notes.txt")
+    .expect("Pardes source resolves before highlighting");
+    let marked = engine
+        .semantic_passage_highlights(
+            clause.into(),
+            vec![search_engine::api::search_engine::SemanticHighlightTarget {
+                file_path: hit.file_path,
+                id: hit.id,
+                window: hit.matched_window,
+            }],
+            &SemanticCancellationToken::new(),
+        )
+        .unwrap();
+    assert!(marked[0].is_highlighted);
+    assert!(marked[0].snippet_html.contains("<mark>"));
+    assert!(!marked[0].snippet_html.contains("query:"));
+    assert!(!marked[0].snippet_html.contains("[PASSAGE]"));
+    let coverage = engine
+        .semantic_coverage(
+            fresh.to_string_lossy().into_owned(),
+            &SemanticCancellationToken::new(),
+        )
+        .unwrap();
+    assert_eq!(coverage.covered_lines, coverage.live_keyed_lines);
+    assert_eq!(coverage.ratio, 1.0);
+    engine.disable_semantic();
+    engine.open_semantic_artifact(meivin.input()).unwrap();
+    assert_eq!(semantic_lines(&engine, PROBE_LINE, &[]), before);
 }

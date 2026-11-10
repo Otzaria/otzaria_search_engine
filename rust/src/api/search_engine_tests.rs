@@ -13406,7 +13406,9 @@ mod semantic_verification {
             line(5, &shown_texts[1]),
             line(7, &shown_texts[2]),
         ];
-        let shown = engine.embedded_window_texts(&searcher, &asked).unwrap();
+        let shown = engine
+            .embedded_window_texts(&semantic_keys::production_chunking(), &searcher, &asked)
+            .unwrap();
 
         let max = production_chunking().max_chunk_chars;
         let capped: String = format!("סימן כה  {long}").chars().take(max).collect();
