@@ -70,13 +70,14 @@
 //! kept with the set's view, under the book's postings and its text hash, across generations.
 
 use crate::semantic_keys::{
-    context_window, line_texts, production_chunking, recompute_chunk_keys, recompute_chunk_keys_at,
-    recompute_window_keys_at, KeySpan, WindowKeys,
+    context_window, line_texts, production_chunking, recompute_chunk_keys_at_with,
+    recompute_chunk_keys_with, recompute_window_keys_at_with, KeySpan, WindowKeys,
 };
 use crate::semantic_moves::{Arrival, Known, Postings, SetView};
 use lru::LruCache;
 use otzaria_semantic_search::cancellation::CancellationToken;
 use otzaria_semantic_search::semantic::chunk_key::ChunkKey;
+use otzaria_semantic_search::semantic::chunker::{Chunker, ChunkerConfig};
 use otzaria_semantic_search::semantic::oxv::occurrence::ALIAS_WINDOW;
 use otzaria_semantic_search::semantic::resolve::{
     BookSet, CandidateResolver, LiveKeySource, RecordRef, ResolveError, ResolvedLine, SlotRef,
@@ -426,6 +427,8 @@ pub(crate) struct RecordAudit {
 /// The sidecar's resolver over one searcher of the live index.
 pub(crate) struct LiveResolver<'a> {
     searcher: Searcher,
+    chunker: Chunker,
+    chunking: ChunkerConfig,
     /// [`index_content`] rather than the searcher's generation: a reload that changed nothing
     /// keeps the caches.
     generation: u64,
@@ -482,11 +485,39 @@ fn index_error(reason: impl std::fmt::Display) -> ResolveError {
 impl<'a> LiveResolver<'a> {
     /// A resolver over `searcher`, reading its `chunkKey` column when `chunk_key` names one
     /// this build uses.
+    #[cfg(test)]
     pub(crate) fn new(
         searcher: Searcher,
         chunk_key: Option<Field>,
         cache: &'a Mutex<ResolverCache>,
     ) -> Result<Self, ResolveError> {
+        Self::for_chunking(searcher, chunk_key, cache, production_chunking())
+    }
+
+    /// Resolve the selected model's exact recipe. The persisted column and raw
+    /// line-hash shortcuts belong to Meivin's recipe and cannot key Pardes text.
+    pub(crate) fn for_chunking(
+        searcher: Searcher,
+        chunk_key: Option<Field>,
+        cache: &'a Mutex<ResolverCache>,
+        chunking: ChunkerConfig,
+    ) -> Result<Self, ResolveError> {
+        use std::hash::{Hash, Hasher};
+        // Reading ranges and raw lineHash shortcuts below assume this geometry.
+        // A future recipe with another geometry needs its own implementation.
+        let mut geometry = chunking.clone();
+        geometry.embedding_text_version = production_chunking().embedding_text_version;
+        geometry.normalization_version = production_chunking().normalization_version;
+        if geometry != production_chunking() && geometry != production_chunking().anchor() {
+            return Err(index_error(
+                "live resolver does not support this chunk geometry",
+            ));
+        }
+        let chunk_key = chunk_key
+            .filter(|_| chunking.anchor().identity() == production_chunking().anchor().identity());
+        let chunker = Chunker::new(chunking.clone()).map_err(index_error)?;
+        let mut generation = std::collections::hash_map::DefaultHasher::new();
+        (index_content(&searcher), chunking.identity()).hash(&mut generation);
         let schema = searcher.schema();
         let file_path = schema.get_field("filePath").map_err(index_error)?;
         let chunk_key_name = chunk_key.map(|field| schema.get_field_name(field).to_string());
@@ -509,8 +540,10 @@ impl<'a> LiveResolver<'a> {
             })
             .collect::<Result<_, ResolveError>>()?;
         Ok(Self {
-            generation: index_content(&searcher),
+            generation: generation.finish(),
             searcher,
+            chunker,
+            chunking,
             column: chunk_key.is_some(),
             file_path,
             columns,
@@ -605,10 +638,15 @@ impl<'a> LiveResolver<'a> {
                 return Ok(key);
             }
         }
-        let key = recompute_chunk_keys(&self.searcher, &book.docs, position..position + 1)
-            .map_err(index_error)?
-            .pop()
-            .flatten();
+        let key = recompute_chunk_keys_with(
+            &self.searcher,
+            &book.docs,
+            position..position + 1,
+            &self.chunker,
+        )
+        .map_err(index_error)?
+        .pop()
+        .flatten();
         self.remember_keys([(address, key)]);
         Ok(key)
     }
@@ -658,7 +696,8 @@ impl<'a> LiveResolver<'a> {
         if wanted.is_empty() {
             return Ok(());
         }
-        let read = recompute_window_keys_at(&self.searcher, &wanted).map_err(index_error)?;
+        let read = recompute_window_keys_at_with(&self.searcher, &wanted, &self.chunker)
+            .map_err(index_error)?;
         let mut cache = self
             .library
             .map(|_| self.cache.lock().unwrap_or_else(PoisonError::into_inner));
@@ -824,7 +863,7 @@ impl<'a> LiveResolver<'a> {
             .iter()
             .map(|(book, position)| (book.docs.as_slice(), *position))
             .collect();
-        match recompute_chunk_keys_at(&self.searcher, &lines) {
+        match recompute_chunk_keys_at_with(&self.searcher, &lines, &self.chunker) {
             Ok(keys) => self.remember_keys(
                 lines
                     .iter()
@@ -1272,6 +1311,11 @@ impl<'a> LiveResolver<'a> {
     /// The span of the key the line at `position` of `book` holds, from its window's
     /// texts: at most five documents.
     fn key_span(&self, book: &BookLines, position: usize) -> Result<KeySpan, ResolveError> {
+        // Pardes normalization can erase or join raw words; lineHash-only span
+        // pruning would then reject valid matches. Verify complete keys instead.
+        if self.chunking.normalization_version != production_chunking().normalization_version {
+            return Ok(KeySpan::ANY);
+        }
         let address = book.docs[position];
         let own = self.texts(&[address])?.pop().unwrap_or_default();
         if own.trim().chars().count() >= production_chunking().min_meaningful_chars {
@@ -1412,10 +1456,11 @@ impl<'a> LiveResolver<'a> {
                     return Err(ResolveError::Cancelled);
                 }
                 keys.extend(
-                    recompute_chunk_keys(
+                    recompute_chunk_keys_with(
                         &self.searcher,
                         &book.docs,
                         start..(start + 1024).min(book.docs.len()),
+                        &self.chunker,
                     )
                     .map_err(index_error)?,
                 );
@@ -1750,8 +1795,8 @@ impl<'a> LiveResolver<'a> {
         }
         let start = centre.saturating_sub(RECOMPUTE_REACH);
         let end = (centre + RECOMPUTE_REACH + 1).min(book.docs.len());
-        let keys =
-            recompute_chunk_keys(&self.searcher, &book.docs, start..end).map_err(index_error)?;
+        let keys = recompute_chunk_keys_with(&self.searcher, &book.docs, start..end, &self.chunker)
+            .map_err(index_error)?;
         found.extend(
             keys.iter()
                 .enumerate()
@@ -1977,9 +2022,13 @@ impl LiveResolver<'_> {
                 let Some(lines) = self.book(name)? else {
                     continue;
                 };
-                let book_keys =
-                    recompute_chunk_keys(&self.searcher, &lines.docs, 0..lines.docs.len())
-                        .map_err(index_error)?;
+                let book_keys = recompute_chunk_keys_with(
+                    &self.searcher,
+                    &lines.docs,
+                    0..lines.docs.len(),
+                    &self.chunker,
+                )
+                .map_err(index_error)?;
                 let book = books.entry(name.to_string()).or_default();
                 for key in book_keys.into_iter().flatten() {
                     count(book, key.column_value());
@@ -2489,8 +2538,12 @@ impl LiveResolver<'_> {
                         return Ok(BookArrivals::TooManyWindowOccurrences);
                     }
                     let end = (start + 1024).min(lines.docs.len());
-                    let windows = recompute_window_keys_at(&self.searcher, &lines.docs[start..end])
-                        .map_err(index_error)?;
+                    let windows = recompute_window_keys_at_with(
+                        &self.searcher,
+                        &lines.docs[start..end],
+                        &self.chunker,
+                    )
+                    .map_err(index_error)?;
                     if overflowed() {
                         return Ok(BookArrivals::TooManyWindowOccurrences);
                     }
@@ -3161,6 +3214,7 @@ impl CandidateResolver for LiveResolver<'_> {
 mod tests {
     use super::*;
     use crate::api::search_engine::{live_chunk_key_field, SearchEngine, TextStorage};
+    use crate::semantic_keys::recompute_chunk_keys;
     use otzaria_semantic_search::semantic::resolve::RecordRef;
     use tantivy::{Index, ReloadPolicy};
 
@@ -3371,6 +3425,63 @@ mod tests {
             seg: 0,
             slot: 0,
         }
+    }
+
+    #[test]
+    fn pardes_uses_exact_recipe_for_anchors_windows_and_recipe_isolated_caches() {
+        use crate::semantic_keys::pardes_chunking;
+        use otzaria_semantic_search::semantic::chunk_key::LineRef;
+        let long = long_line("מילה״מצוטטת");
+        let dir = tempfile::TempDir::new().unwrap();
+        let (index, reader) = windowed_index(&dir, std::slice::from_ref(&long));
+        let column = live_chunk_key_field(&index.schema(), dir.path());
+        assert!(column.is_some());
+        let cache = Mutex::default();
+        let library = crate::line_source::query_cache_generation();
+        let mut meivin = LiveResolver::new(reader.searcher(), column, &cache).unwrap();
+        meivin.share_keys(library);
+        let book = meivin.book("/books/long.txt").unwrap().unwrap();
+        let meivin_key = meivin.key_at(&book, 0).unwrap().unwrap();
+        let config = pardes_chunking();
+        let chunker = Chunker::new(config.clone()).unwrap();
+        let text = meivin.texts(&book.docs).unwrap();
+        let windows = chunker.embedded_windows(
+            &[LineRef {
+                text: &text[0],
+                section: 0,
+            }],
+            0,
+        );
+        assert!(windows.len() > 2);
+        let mut pardes =
+            LiveResolver::for_chunking(reader.searcher(), column, &cache, config).unwrap();
+        pardes.share_keys(library);
+        assert!(
+            !pardes.has_column(),
+            "a Meivin column cannot supply Pardes keys"
+        );
+        assert_ne!(meivin.generation_id(), pardes.generation_id());
+        assert_eq!(
+            pardes.key_at(&book, 0).unwrap(),
+            Some(ChunkKey::of(&windows[0].text))
+        );
+        assert_ne!(pardes.key_at(&book, 0).unwrap(), Some(meivin_key));
+        for window in &windows {
+            let hit = window_hit(
+                ChunkKey::of(&window.text),
+                window.ordinal,
+                "/books/long.txt",
+                0,
+            );
+            let found = pardes
+                .resolve(&[hit], None, &CancellationToken::new())
+                .unwrap();
+            assert_eq!(found.len(), 1);
+            assert_eq!(found[0].window, window.ordinal);
+        }
+        let mut again = LiveResolver::new(reader.searcher(), column, &cache).unwrap();
+        again.share_keys(library);
+        assert_eq!(again.key_at(&book, 0).unwrap(), Some(meivin_key));
     }
 
     /// A window hit resolves at or within [`RECOMPUTE_REACH`] of its hint, with its window;

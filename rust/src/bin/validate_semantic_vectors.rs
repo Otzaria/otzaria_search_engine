@@ -833,6 +833,8 @@ mod gates {
 
     /// The query model, loaded as a device loads it: one query at a time.
     fn query_runtime(request: &Retrieval<'_>, family: &ModelIdentity) -> Result<EmbeddingRuntime> {
+        // Match the installed model's cross-platform kernel policy here too:
+        // this direct runtime does not pass through OfficialSemanticIndex::open.
         let mut runtime = EmbeddingRuntime::with_deployment(
             EmbeddingConfig {
                 model_path: request.model.to_path_buf(),
@@ -843,7 +845,9 @@ mod gates {
             },
             EmbeddingDeployment {
                 onnx_runtime: request.onnx_runtime.clone(),
-            },
+                ..Default::default()
+            }
+            .for_text_recipe(family.embedding_text_version),
         );
         runtime
             .load()

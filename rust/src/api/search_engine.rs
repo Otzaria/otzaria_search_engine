@@ -1808,8 +1808,8 @@ fn parse_model_identity(json: &str) -> Result<ModelIdentity, SemanticError> {
     })
 }
 
-/// Refuses vectors whose chunking this build cannot resolve: only the compiled-in one, with
-/// long-line windows or without them (the column's), is accepted.
+/// Refuses vectors whose chunking this build cannot resolve. Registered Pardes
+/// keys are recomputed from live text; Meivin may use the persisted key column.
 #[cfg(feature = "semantic-integration")]
 fn ensure_keyed_chunking(
     model: &ModelIdentity,
@@ -2391,6 +2391,8 @@ struct OpenSession {
     onnx_runtime: Option<PathBuf>,
     /// The vector set an opened artifact serves; `None` for a session built on this device.
     vectors_dir: Option<PathBuf>,
+    /// The exact recipe whose keys the installed set records.
+    chunking: otzaria_semantic_search::semantic::chunker::ChunkerConfig,
 }
 
 #[cfg(feature = "semantic-integration")]
@@ -2801,8 +2803,12 @@ type EmbeddedLine<'a> = (DocAddress, &'a str, u64, &'a DisplayText, u8);
 /// Window `window` of a long line, spaces collapsed, with `…` where the line goes on before
 /// and after it; `None` for the first window and for one the line does not embed.
 #[cfg(feature = "semantic-integration")]
-fn long_line_window_text(text: &DisplayText, window: u8) -> Option<DisplayText> {
-    let (span, length) = semantic_keys::window_span(text, window)?;
+fn long_line_window_text(
+    text: &DisplayText,
+    window: u8,
+    chunker: &otzaria_semantic_search::semantic::chunker::Chunker,
+) -> Option<DisplayText> {
+    let (span, length) = semantic_keys::window_span_with(text, window, chunker)?;
     let trimmed = text.trimmed();
     let start = trimmed
         .char_indices()
@@ -5607,10 +5613,11 @@ impl SearchEngine {
             .vector_set_info()
             .and_then(|info| self.semantic_set_view(&vectors_dir, info.generation))
             .context("the vector set has no view")?;
-        let mut resolver = crate::semantic_resolver::LiveResolver::new(
+        let mut resolver = crate::semantic_resolver::LiveResolver::for_chunking(
             self.index_reader.searcher(),
             self.chunk_key_field,
             &self.semantic_resolver,
+            open.chunking.clone(),
         )
         .map_err(|error| anyhow::anyhow!("{error}"))?;
         let cancel = SearchCancellation::default();
@@ -5886,6 +5893,7 @@ impl SearchEngine {
                 // it to `OTZARIA_ONNX_RUNTIME` and then the file beside the graph.
                 deployment: EmbeddingDeployment {
                     onnx_runtime: requested.onnx_runtime.clone(),
+                    ..Default::default()
                 },
                 ..SemanticConfig::default()
             };
@@ -6059,6 +6067,7 @@ impl SearchEngine {
                 // set the wrong one.
                 deployment: EmbeddingDeployment {
                     onnx_runtime: key.onnx_runtime.clone(),
+                    ..Default::default()
                 },
                 scan_threads,
             })
@@ -6203,6 +6212,13 @@ impl SearchEngine {
                 vectors_dir: match &active.source {
                     SemanticSource::Artifact(opened) => Some(opened.key.vectors_dir.clone()),
                     SemanticSource::SelfBuilt(_) => None,
+                },
+                chunking: match &active.source {
+                    SemanticSource::Artifact(opened) => {
+                        semantic_keys::keyed_chunking(opened.key.model.chunking_identity)
+                            .expect("artifact recipe was checked before opening")
+                    }
+                    SemanticSource::SelfBuilt(_) => semantic_keys::production_chunking(),
                 },
             })
     }
@@ -6461,13 +6477,23 @@ impl SearchEngine {
                 compaction_policy(policy.unwrap_or_else(SemanticCompactionPolicy::defaults))?;
             // As an install holds it, and for as long.
             let _work = VectorSetWork::take(&vectors_dir, "compacting the vectors")?;
-            let resolver = LiveResolver::new(
+            let chunking = segment_set::info(&vectors_dir)
+                .map_err(|err| failed(&err))?
+                .and_then(|info| {
+                    semantic_keys::keyed_chunking(info.identity.model.chunking_identity)
+                });
+            let resolver = LiveResolver::for_chunking(
                 self.index_reader.searcher(),
                 self.chunk_key_field,
                 &self.semantic_resolver,
+                chunking
+                    .clone()
+                    .unwrap_or_else(semantic_keys::production_chunking),
             )
             .map_err(|err| failed(&err.into()))?;
-            let live = live_library_version.and_then(|version| LiveKeys::new(&resolver, version));
+            let live = chunking.and_then(|_| {
+                live_library_version.and_then(|version| LiveKeys::new(&resolver, version))
+            });
             let report = waiting_for_set_lock(&cancellation.flag, SET_LOCK_WAIT, || {
                 segment_set::compact(
                     &vectors_dir,
@@ -6656,10 +6682,13 @@ impl SearchEngine {
             }
             keys.sort_unstable();
             keys.dedup();
-            let coverage = LiveResolver::new(
+            ensure_keyed_chunking(&info.identity.model, &|err| err.to_string())?;
+            let coverage = LiveResolver::for_chunking(
                 self.index_reader.searcher(),
                 self.chunk_key_field,
                 &self.semantic_resolver,
+                semantic_keys::keyed_chunking(info.identity.model.chunking_identity)
+                    .expect("checked recipe"),
             )
             .and_then(|resolver| resolver.coverage(&keys, cancel))
             .map_err(|err| failed(&err.into()))?;
@@ -7272,7 +7301,8 @@ impl SearchEngine {
                     (address, book, id, text, window)
                 })
                 .collect();
-            let windows = self.embedded_window_texts(&session.searcher, &page_lines)?;
+            let windows =
+                self.embedded_window_texts(&open.chunking, &session.searcher, &page_lines)?;
             let mut page_texts = page_texts.into_iter().zip(windows);
             // Same budget the lexical API's default highlight uses, so both
             // paths bound the display string identically.
@@ -7563,7 +7593,7 @@ impl SearchEngine {
                 ))
             })
             .collect();
-        let windows = self.embedded_window_texts(&searcher, &lines)?;
+        let windows = self.embedded_window_texts(&open.chunking, &searcher, &lines)?;
         for ((text, _), window) in texts.iter_mut().zip(windows) {
             if let Some(window) = window {
                 *text = window;
@@ -7768,10 +7798,11 @@ impl SearchEngine {
                 format!("the index could not be read to resolve semantic results: {err}"),
             )
         };
-        let mut resolver = crate::semantic_resolver::LiveResolver::new(
+        let mut resolver = crate::semantic_resolver::LiveResolver::for_chunking(
             searcher.clone(),
             self.chunk_key_field,
             &self.semantic_resolver,
+            open.chunking.clone(),
         )
         .map_err(unreadable)?;
         resolver.share_keys(session.state.library_generation);
@@ -10531,11 +10562,13 @@ impl SearchEngine {
     #[cfg(feature = "semantic-integration")]
     fn embedded_window_texts(
         &self,
+        chunking: &otzaria_semantic_search::semantic::chunker::ChunkerConfig,
         searcher: &Searcher,
         lines: &[EmbeddedLine<'_>],
     ) -> Result<Vec<Option<DisplayText>>> {
         use otzaria_semantic_search::semantic::oxv::occurrence::ALIAS_WINDOW;
-        let chunking = semantic_keys::production_chunking();
+        let chunking = chunking.clone();
+        let chunker = otzaria_semantic_search::semantic::chunker::Chunker::new(chunking.clone())?;
         let short: Vec<usize> = (0..lines.len())
             .filter(|&at| {
                 let length = lines[at].3.trim().chars().count();
@@ -10546,15 +10579,16 @@ impl SearchEngine {
             .collect();
         let mut out: Vec<Option<DisplayText>> = lines
             .iter()
-            .map(|&(_, _, _, text, window)| long_line_window_text(text, window))
+            .map(|&(_, _, _, text, window)| long_line_window_text(text, window, &chunker))
             .collect();
         if short.is_empty() {
             return Ok(out);
         }
-        let resolver = crate::semantic_resolver::LiveResolver::new(
+        let resolver = crate::semantic_resolver::LiveResolver::for_chunking(
             searcher.clone(),
             self.chunk_key_field,
             &self.semantic_resolver,
+            chunking.clone(),
         )
         .map_err(|error| anyhow::anyhow!("{error}"))?;
         let asked: Vec<(&str, u64, DocAddress)> = short

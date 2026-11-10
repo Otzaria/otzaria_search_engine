@@ -63,12 +63,23 @@ pub fn production_chunking() -> ChunkerConfig {
     }
 }
 
-/// Every chunking whose vectors this build resolves: [`production_chunking`], and its anchor,
-/// whose sets are the same lines without windows.
-pub fn keyed_chunkings() -> [ChunkerConfig; 2] {
+/// Pardes uses the same line/window geometry, with its own cleaner and role text.
+/// This does not change the production recipe that writes the index's chunkKey column.
+pub fn pardes_chunking() -> ChunkerConfig {
+    ChunkerConfig {
+        embedding_text_version: 3,
+        normalization_version: 2,
+        ..production_chunking()
+    }
+}
+
+/// Every recipe currently supported by the application's live resolver. Keep this
+/// closed independently of offline build recipes: registering a plan does not prove
+/// that the interactive resolver can recompute that recipe's keys on a device.
+pub fn keyed_chunkings() -> [ChunkerConfig; 3] {
     let production = production_chunking();
     let anchor = production.anchor();
-    [production, anchor]
+    [production, anchor, pardes_chunking()]
 }
 
 /// The one of [`keyed_chunkings`] whose identity is `identity`.
@@ -225,6 +236,17 @@ pub fn recompute_chunk_keys(
     book: &[DocAddress],
     lines: std::ops::Range<usize>,
 ) -> Result<Vec<Option<ChunkKey>>> {
+    recompute_chunk_keys_with(searcher, book, lines, &PRODUCTION_CHUNKER)
+}
+
+/// Recompute under an already validated model chunker sharing the production
+/// line/window geometry. The live resolver checks that geometry at construction.
+pub fn recompute_chunk_keys_with(
+    searcher: &Searcher,
+    book: &[DocAddress],
+    lines: std::ops::Range<usize>,
+    chunker: &Chunker,
+) -> Result<Vec<Option<ChunkKey>>> {
     anyhow::ensure!(
         lines.start < lines.end && lines.end <= book.len(),
         "lines {lines:?} are not in a book of {} line(s)",
@@ -255,7 +277,7 @@ pub fn recompute_chunk_keys(
                 text: &text,
                 section: 0,
             }];
-            return Ok(vec![PRODUCTION_CHUNKER
+            return Ok(vec![chunker
                 .embedded_text(&alone, 0)
                 .map(|text| ChunkKey::of(&text))]);
         }
@@ -307,7 +329,7 @@ pub fn recompute_chunk_keys(
             if pdf[index] {
                 return None;
             }
-            PRODUCTION_CHUNKER
+            chunker
                 .embedded_text(&window, index)
                 .map(|text| ChunkKey::of(&text))
         })
@@ -350,10 +372,19 @@ pub(crate) fn line_texts(searcher: &Searcher, addresses: &[DocAddress]) -> Resul
 
 /// [`recompute_chunk_key`] for each `(book, position)` of `lines`, every document read once
 /// and every library row in one transaction per pass. `None` where that call would fail.
-#[cfg(feature = "semantic-integration")]
+#[cfg(all(test, feature = "semantic-integration"))]
 pub(crate) fn recompute_chunk_keys_at(
     searcher: &Searcher,
     lines: &[(&[DocAddress], usize)],
+) -> Result<Vec<Option<Option<ChunkKey>>>> {
+    recompute_chunk_keys_at_with(searcher, lines, &PRODUCTION_CHUNKER)
+}
+
+#[cfg(feature = "semantic-integration")]
+pub(crate) fn recompute_chunk_keys_at_with(
+    searcher: &Searcher,
+    lines: &[(&[DocAddress], usize)],
+    chunker: &Chunker,
 ) -> Result<Vec<Option<Option<ChunkKey>>>> {
     struct Read {
         pdf: bool,
@@ -441,7 +472,7 @@ pub(crate) fn recompute_chunk_keys_at(
             if !short(&read, &book[at]) {
                 let alone = [LineRef { text, section: 0 }];
                 return Some(
-                    PRODUCTION_CHUNKER
+                    chunker
                         .embedded_text(&alone, 0)
                         .map(|text| ChunkKey::of(&text)),
                 );
@@ -458,7 +489,7 @@ pub(crate) fn recompute_chunk_keys_at(
                 })
                 .collect::<Option<Vec<_>>>()?;
             Some(
-                PRODUCTION_CHUNKER
+                chunker
                     .embedded_text(&window, at - start)
                     .map(|text| ChunkKey::of(&text)),
             )
@@ -468,13 +499,18 @@ pub(crate) fn recompute_chunk_keys_at(
 
 /// Each window past the first a stored line embeds, with its key: only a line longer than the
 /// cap has any, and it is keyed from its own text alone.
-#[cfg(feature = "semantic-integration")]
+#[cfg(all(test, feature = "semantic-integration"))]
 pub(crate) fn window_keys(text: &str) -> Vec<(u8, ChunkKey)> {
+    window_keys_with(text, &PRODUCTION_CHUNKER)
+}
+
+#[cfg(feature = "semantic-integration")]
+pub(crate) fn window_keys_with(text: &str, chunker: &Chunker) -> Vec<(u8, ChunkKey)> {
     if text.trim().chars().count() <= production_chunking().max_chunk_chars {
         return Vec::new();
     }
     let alone = [LineRef { text, section: 0 }];
-    PRODUCTION_CHUNKER
+    chunker
         .embedded_windows(&alone, 0)
         .into_iter()
         .skip(1)
@@ -484,8 +520,17 @@ pub(crate) fn window_keys(text: &str) -> Vec<(u8, ChunkKey)> {
 
 /// Where window `window` of a line is in `text.trim()`, in characters, with the length of
 /// that trimmed text; `None` for the first window, and for one the line does not embed.
-#[cfg(feature = "semantic-integration")]
+#[cfg(all(test, feature = "semantic-integration"))]
 pub(crate) fn window_span(text: &str, window: u8) -> Option<(std::ops::Range<usize>, usize)> {
+    window_span_with(text, window, &PRODUCTION_CHUNKER)
+}
+
+#[cfg(feature = "semantic-integration")]
+pub(crate) fn window_span_with(
+    text: &str,
+    window: u8,
+    chunker: &Chunker,
+) -> Option<(std::ops::Range<usize>, usize)> {
     if window == 0 {
         return None;
     }
@@ -494,7 +539,7 @@ pub(crate) fn window_span(text: &str, window: u8) -> Option<(std::ops::Range<usi
         return None;
     }
     let alone = [LineRef { text, section: 0 }];
-    PRODUCTION_CHUNKER
+    chunker
         .embedded_windows(&alone, 0)
         .into_iter()
         .find(|found| found.ordinal == window)
@@ -507,10 +552,19 @@ pub(crate) type WindowKeys = std::sync::Arc<[(u8, ChunkKey)]>;
 
 /// [`window_keys`] of the line at each of `addresses`, each document read once; `None` for a
 /// line whose text cannot be read now, and nothing for a PDF's.
-#[cfg(feature = "semantic-integration")]
+#[cfg(all(test, feature = "semantic-integration"))]
 pub(crate) fn recompute_window_keys_at(
     searcher: &Searcher,
     addresses: &[DocAddress],
+) -> Result<Vec<Option<WindowKeys>>> {
+    recompute_window_keys_at_with(searcher, addresses, &PRODUCTION_CHUNKER)
+}
+
+#[cfg(feature = "semantic-integration")]
+pub(crate) fn recompute_window_keys_at_with(
+    searcher: &Searcher,
+    addresses: &[DocAddress],
+    chunker: &Chunker,
 ) -> Result<Vec<Option<WindowKeys>>> {
     let is_pdf_field = searcher.schema().get_field("isPdf")?;
     let documents = addresses
@@ -537,7 +591,9 @@ pub(crate) fn recompute_window_keys_at(
                 .unwrap_or(false);
             match line.status {
                 _ if pdf => Some(std::sync::Arc::from([])),
-                TextStatus::Ok | TextStatus::Stale => Some(window_keys(&line.text).into()),
+                TextStatus::Ok | TextStatus::Stale => {
+                    Some(window_keys_with(&line.text, chunker).into())
+                }
                 TextStatus::Unavailable => None,
             }
         })
@@ -811,7 +867,11 @@ mod tests {
         );
         assert_eq!(
             keyed_chunkings().map(|chunking| chunking.identity()),
-            [WINDOWS_CHUNKING_IDENTITY, PUBLISHED_CHUNKING_IDENTITY]
+            [
+                WINDOWS_CHUNKING_IDENTITY,
+                PUBLISHED_CHUNKING_IDENTITY,
+                pardes_chunking().identity()
+            ]
         );
         assert_eq!(
             keyed_chunking(PUBLISHED_CHUNKING_IDENTITY),
