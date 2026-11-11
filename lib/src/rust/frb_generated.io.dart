@@ -672,6 +672,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SemanticFusionStrategy dco_decode_semantic_fusion_strategy(dynamic raw);
 
   @protected
+  SemanticGenerationRetireReport dco_decode_semantic_generation_retire_report(
+    dynamic raw,
+  );
+
+  @protected
   SemanticGroupingMode dco_decode_semantic_grouping_mode(dynamic raw);
 
   @protected
@@ -1522,6 +1527,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SemanticFusionStrategy sse_decode_semantic_fusion_strategy(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticGenerationRetireReport sse_decode_semantic_generation_retire_report(
     SseDeserializer deserializer,
   );
 
@@ -2588,6 +2598,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_semantic_fusion_strategy(
     SemanticFusionStrategy self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_generation_retire_report(
+    SemanticGenerationRetireReport self,
     SseSerializer serializer,
   );
 

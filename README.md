@@ -477,7 +477,8 @@ The application's installation, and what each input names:
 
 The vector set is a folder of its own beside `index/`, which installing creates
 and keeps: `CURRENT` and `PREVIOUS` name its live generation and the one before
-it, `segments/` holds the vectors, and `incoming/` is where a download can be
+it — kept as a fallback until `retirePreviousSemanticGeneration` gives it up
+once the live generation has opened without falling back — `segments/` holds the vectors, and `incoming/` is where a download can be
 left for an install to move in rather than copy — moved when the install
 succeeds, left where it is when it fails, and on Windows copied when it is
 read-only — and where an install expands a compressed one, into a file of its
