@@ -18165,8 +18165,12 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// Under the set's lock, as an install: the live generation is opened first, and only
   /// then is the fallback's pointer removed and the garbage collected. A crash at any point
   /// leaves the live generation as it was, so the set opens. With no fallback it changes
-  /// nothing and reports `retired` `false`. An open session on the same set keeps serving;
-  /// one that serves the fallback moves onto the live generation.
+  /// nothing and reports `retired` `false`. An open session on the live generation keeps
+  /// serving, and its open result pages stay valid; one that serves the fallback moves onto
+  /// the live generation, and its pages are dropped.
+  ///
+  /// When that move fails, this returns its error although the fallback is already gone:
+  /// the live generation opened under the lock, so opening the vectors again serves it.
   ///
   /// Refusals: `ArtifactCorrupt` when the live generation does not open — the fallback is
   /// then all the set serves, and it is kept; `ArtifactMissing` when nothing is installed;
