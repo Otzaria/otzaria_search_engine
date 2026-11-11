@@ -4940,12 +4940,35 @@ fn the_previous_generation_is_retired_once_the_live_one_opens() {
             .unwrap()
             .recovered_from_previous
     );
+    let continued = |engine: &SearchEngine| {
+        search_page(
+            engine,
+            PROBE_LINE,
+            1,
+            1,
+            SemanticRetrievalMode::SemanticOnly,
+            None,
+        )
+        .session_restarted
+    };
+    search_page(
+        &engine,
+        PROBE_LINE,
+        1,
+        0,
+        SemanticRetrievalMode::SemanticOnly,
+        None,
+    );
     let report = engine
         .retire_previous_semantic_generation(dir.clone())
         .unwrap();
     assert_eq!(
         (report.generation, report.retired, report.retired_generation),
         (second.generation, true, Some(first.generation))
+    );
+    assert!(
+        !continued(&engine),
+        "a session on the live generation keeps its pages"
     );
     assert!(report.bytes_freed > 0);
     assert!(!previous.exists() && !first_generation.exists());
@@ -4959,5 +4982,62 @@ fn the_previous_generation_is_retired_once_the_live_one_opens() {
             .retire_previous_semantic_generation(dir)
             .unwrap()
             .retired
+    );
+}
+
+/// A session that opened the fallback, while the live generation did not open, moves onto
+/// the live generation when the fallback is retired, and its pages are computed again.
+#[test]
+fn retiring_the_generation_a_session_serves_moves_it_onto_the_live_one() {
+    let library = build_library();
+    let engine = library.engine();
+    let token = SemanticCancellationToken::new();
+    let vectors = library.package.with_file_name("fresh");
+    let dir = dir_string(&vectors);
+    let (segment, manifest, digest) = release(&library.package);
+    let input = || library.install_input(&vectors, &segment, &manifest, Some(digest.clone()));
+    let first = engine.install_semantic_vectors(input(), &token).unwrap();
+    let second = engine.install_semantic_vectors(input(), &token).unwrap();
+
+    let current = vectors.join("CURRENT");
+    let pointer = std::fs::read(&current).unwrap();
+    std::fs::write(&current, b"damaged").unwrap();
+    engine
+        .open_semantic_artifact(SemanticArtifactInput {
+            vectors_dir: dir.clone(),
+            ..library.input()
+        })
+        .unwrap();
+    std::fs::write(&current, pointer).unwrap();
+    search_page(
+        &engine,
+        PROBE_LINE,
+        1,
+        0,
+        SemanticRetrievalMode::SemanticOnly,
+        None,
+    );
+
+    let report = engine.retire_previous_semantic_generation(dir).unwrap();
+    assert_eq!(
+        (report.generation, report.retired_generation),
+        (second.generation, Some(first.generation))
+    );
+    assert_eq!(engine.semantic_status().state, SemanticState::Ready);
+    assert!(
+        search_page(
+            &engine,
+            PROBE_LINE,
+            1,
+            1,
+            SemanticRetrievalMode::SemanticOnly,
+            None
+        )
+        .session_restarted,
+        "pages of the retired generation are not continued"
+    );
+    assert_eq!(
+        semantic_lines(&engine, PROBE_LINE, &[]).first(),
+        Some(&(GENESIS.to_string(), PROBE_LINE.to_string(), 3))
     );
 }

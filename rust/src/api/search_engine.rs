@@ -942,7 +942,7 @@ pub struct SemanticCoverage {
 /// | `OnnxRuntimeUnusable` | there is a runtime library, and it cannot be used: not loadable, not ONNX Runtime, older than 1.17, refused earlier in this process, or a different one already loaded | replace it with a supported ONNX Runtime; for the last two, restart the process | `open_semantic_artifact`, `semantic_index_books` |
 /// | `BackendNotInBuild` | this build has no embedding backend for the model: an ONNX graph on Android or iOS, or in a build without the ONNX backend | use a build that has the ONNX backend; no file fixes it | `open_semantic_artifact`, `semantic_index_books` |
 /// | `SessionConflict` | another semantic session is open, or this one with different inputs | `disable_semantic` first, if replacing it is intended | `configure_semantic`, `open_semantic_artifact` |
-/// | `ReadOnlySession` | a call that builds vectors, on an opened artifact, which is read-only | nothing: the device does not build the library's vectors | `semantic_index_books`, `semantic_index_diff`, `remove_semantic_books`, `reset_semantic_index` |
+/// | `ReadOnlySession` | a call that builds vectors, on an opened artifact, which is read-only; or a call that changes the vector set, on an index opened read-only | nothing: the device does not build the library's vectors | `semantic_index_books`, `semantic_index_diff`, `remove_semantic_books`, `reset_semantic_index`, `compact_semantic_vectors`, `retire_previous_semantic_generation` |
 /// | `ReindexRequired` | a session built on this device holds vectors built under another configuration | `reset_semantic_index`, and index again (development) | `semantic_index_books` |
 /// | `QueryFailed` | the semantic half of one search failed, and its lexical results were served; the sidecar reports why as text only, so this is not split further | show the results; [`SearchEngine::semantic_status`] says whether the session still serves | search fallback |
 /// | `Cancelled` | the search was abandoned through its [`SemanticCancellationToken`]: not a failure, and it was not answered with lexical results instead | nothing: drop it, since the query that cancelled it is the one that matters; a cancelled install, compaction, verification or count left the set as it was | `search_semantic`, and the calls that install, compact, verify or count a vector set |
@@ -6550,8 +6550,12 @@ impl SearchEngine {
     /// Under the set's lock, as an install: the live generation is opened first, and only
     /// then is the fallback's pointer removed and the garbage collected. A crash at any point
     /// leaves the live generation as it was, so the set opens. With no fallback it changes
-    /// nothing and reports `retired` `false`. An open session on the same set keeps serving;
-    /// one that serves the fallback moves onto the live generation.
+    /// nothing and reports `retired` `false`. An open session on the live generation keeps
+    /// serving, and its open result pages stay valid; one that serves the fallback moves onto
+    /// the live generation, and its pages are dropped.
+    ///
+    /// When that move fails, this returns its error although the fallback is already gone:
+    /// the live generation opened under the lock, so opening the vectors again serves it.
     ///
     /// Refusals: `ArtifactCorrupt` when the live generation does not open — the fallback is
     /// then all the set serves, and it is kept; `ArtifactMissing` when nothing is installed;
@@ -6589,8 +6593,13 @@ impl SearchEngine {
                         doing,
                     )
                 })?;
-            if report.retired {
-                // A session that served the fallback moves; no page it computed is served.
+            // Only a session that served the fallback moves; one on the live generation keeps
+            // its view and the pages it computed.
+            if report.retired
+                && self
+                    .open_vectors_generation(&vectors_dir)
+                    .is_some_and(|generation| generation != report.generation)
+            {
                 let _sessions = crate::semantic_session::InvalidateOnDrop(&self.semantic_sessions);
                 self.reload_open_vectors(&vectors_dir)?;
             }
@@ -6792,6 +6801,24 @@ impl SearchEngine {
         {
             let _ = (vectors_dir, cancellation);
             Err(Self::semantic_not_in_build())
+        }
+    }
+
+    /// The generation the open session serves of the set at `vectors_dir`, if one does.
+    #[cfg(feature = "semantic-integration")]
+    fn open_vectors_generation(&self, vectors_dir: &Path) -> Option<u64> {
+        let active = self
+            .semantic_runtime
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        match active.as_ref() {
+            Some(ConfiguredSemantic {
+                coordinator,
+                source: SemanticSource::Artifact(opened),
+            }) if same_directory(&opened.key.vectors_dir, vectors_dir) => {
+                coordinator.vector_set_info().map(|info| info.generation)
+            }
+            _ => None,
         }
     }
 
