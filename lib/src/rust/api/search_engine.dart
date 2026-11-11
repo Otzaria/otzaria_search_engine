@@ -1230,6 +1230,27 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// `&self` for the same reason as [`Self::semantic_index_books`].
   Future<SemanticResetResult> resetSemanticIndex();
 
+  /// Give up the generation the set at `vectors_dir` keeps as a fallback beside the live
+  /// one, and remove what only it kept. After a base that is a whole second set on disk,
+  /// kept until the next install; call this once the live generation has opened without
+  /// falling back ([`SemanticVectorsInfo::recovered_from_previous`] `false`), such as after
+  /// an install and a successful [`Self::open_semantic_artifact`].
+  ///
+  /// Under the set's lock, as an install: the live generation is opened first, and only
+  /// then is the fallback's pointer removed and the garbage collected. A crash at any point
+  /// leaves the live generation as it was, so the set opens. With no fallback it changes
+  /// nothing and reports `retired` `false`. An open session on the same set keeps serving;
+  /// one that serves the fallback moves onto the live generation.
+  ///
+  /// Refusals: `ArtifactCorrupt` when the live generation does not open — the fallback is
+  /// then all the set serves, and it is kept; `ArtifactMissing` when nothing is installed;
+  /// `VectorsBusy` about `vectors_dir` while an install or a compaction of the set runs,
+  /// waiting for the set's lock as an install does; `ReadOnlySession` on a read-only index.
+  /// Nothing is changed by any of them.
+  Future<SemanticGenerationRetireReport> retirePreviousSemanticGeneration({
+    required String vectorsDir,
+  });
+
   /// Discard all pending writes since the last commit.
   Future<void> rollback();
 
@@ -3296,8 +3317,8 @@ class SemanticError implements FrbException {
 /// | --- | --- | --- | --- |
 /// | `NotConfigured` | no semantic session is open: none was opened, or `disable_semantic` closed it | open the vectors; lexical search is unaffected | status, search fallback |
 /// | `FeatureNotInBuild` | this library was built without semantic support | hide semantic search; no file or setting changes it | status, search fallback |
-/// | `ArtifactMissing` | there is no vector set at `vectors_dir`: no directory, or nothing ever installed in it (no `CURRENT` or `PREVIOUS`) | download and install the vectors | `open_semantic_artifact`, `verify_semantic_vectors`, `semantic_coverage` |
-/// | `ArtifactCorrupt` | the vectors are damaged: a set whose pointers, metadata or segments do not open or fail their checksums, or a release whose segment is not the one its manifest describes | install the release again, which repairs the set, downloading it again if it is gone; on a FAT or exFAT drive on Windows, close the session first | `open_semantic_artifact`, installing, verifying, `semantic_vectors_info` |
+/// | `ArtifactMissing` | there is no vector set at `vectors_dir`: no directory, or nothing ever installed in it (no `CURRENT` or `PREVIOUS`) | download and install the vectors | `open_semantic_artifact`, `verify_semantic_vectors`, `semantic_coverage`, `retire_previous_semantic_generation` |
+/// | `ArtifactCorrupt` | the vectors are damaged: a set whose pointers, metadata or segments do not open or fail their checksums, or a release whose segment is not the one its manifest describes | install the release again, which repairs the set, downloading it again if it is gone; on a FAT or exFAT drive on Windows, close the session first | `open_semantic_artifact`, installing, verifying, `semantic_vectors_info`, `retire_previous_semantic_generation` (the live generation does not open, and the one before it is kept) |
 /// | `ArtifactIncompatible` | sound vectors built for something else: lines made by another line recipe, another model or chunking, a store format this build does not read, or a delta that does not follow the installed set; `field` names the first field that disagreed. With `field` `segment_id`, installing: the release is a version the set has installed, published again with other bytes — a sound release, and a sound set, which keeps what it serves | install the vectors built for this application and this model; for `segment_id`, do not download it again, which is refused the same way: keep the set, or install the release into a new, empty `vectors_dir` and open that | `open_semantic_artifact`, installing |
 /// | `ArtifactNotPublished` | self-consistent, but the release's manifest is not the one published for it | download the official release again | installing |
 /// | `InsufficientDiskSpace` | installing or compacting vectors needs more free space than the device has | free space, and try again | installing, compacting |
@@ -3315,7 +3336,7 @@ class SemanticError implements FrbException {
 /// | `Cancelled` | the search was abandoned through its [`SemanticCancellationToken`]: not a failure, and it was not answered with lexical results instead | nothing: drop it, since the query that cancelled it is the one that matters; a cancelled install, compaction, verification or count left the set as it was | `search_semantic`, and the calls that install, compact, verify or count a vector set |
 /// | `InvalidInput` | an input the call cannot take: an empty `model_quantization` or `onnx_runtime_path`, a `model_identity_json` that is not an identity, a pooling or text recipe no backend serves, a token cap out of range, a ranking option or a compaction threshold out of its range; `field` names it when it is known | fix the call: a programming error, not a state of the device | `configure_semantic`, `open_semantic_artifact`, `search_semantic`, `compact_semantic_vectors` |
 /// | `Internal` | anything else: an I/O error, a fault inside the engine or the lexical index, a failure the sidecar reports only as text | report it, with the message | any call; status, for a session built on this device |
-/// | `VectorsBusy` | another install or compaction of the same vector set is running, in this process or another (`field` is `vectors_dir`); nothing was read or changed, and an open session keeps serving. Verifying: an install replaced bytes the check had read while it read them, and nothing was condemned | try again once it has finished; never `disable_semantic` for it | installing, compacting, verifying |
+/// | `VectorsBusy` | another install or compaction of the same vector set is running, in this process or another (`field` is `vectors_dir`); nothing was read or changed, and an open session keeps serving. Verifying: an install replaced bytes the check had read while it read them, and nothing was condemned | try again once it has finished; never `disable_semantic` for it | installing, compacting, verifying, `retire_previous_semantic_generation` |
 enum SemanticErrorKind {
   /// No semantic session is open.
   notConfigured,
@@ -3400,6 +3421,47 @@ enum SemanticFusionStrategy {
 
   /// By weight, with BM25 min-max normalized when its scores run high.
   adaptive,
+}
+
+/// What [`SearchEngine::retire_previous_semantic_generation`] did.
+class SemanticGenerationRetireReport {
+  /// The live generation, which opened and stays.
+  final BigInt generation;
+
+  /// Whether the fallback generation was given up. `false` when there was none: nothing
+  /// changed.
+  final bool retired;
+
+  /// The generation given up; `None` when there was none, or its pointer did not read.
+  final BigInt? retiredGeneration;
+
+  /// What was removed from the set's segments and generations. A file a reader still
+  /// maps on a FAT or exFAT drive stays for a later install or open, and is not counted.
+  final BigInt bytesFreed;
+
+  const SemanticGenerationRetireReport({
+    required this.generation,
+    required this.retired,
+    this.retiredGeneration,
+    required this.bytesFreed,
+  });
+
+  @override
+  int get hashCode =>
+      generation.hashCode ^
+      retired.hashCode ^
+      retiredGeneration.hashCode ^
+      bytesFreed.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticGenerationRetireReport &&
+          runtimeType == other.runtimeType &&
+          generation == other.generation &&
+          retired == other.retired &&
+          retiredGeneration == other.retiredGeneration &&
+          bytesFreed == other.bytesFreed;
 }
 
 enum SemanticGroupingMode { sameSection, identicalText }
