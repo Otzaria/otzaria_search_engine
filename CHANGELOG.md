@@ -1,5 +1,22 @@
 # Changelog
 
+## 7.2.0 – 2026-11-14
+
+### Added
+
+- **Compact Pardes models in live semantic search.** An installed Pardes
+  (QA491, compact single-graph INT8) vector set is now accepted: the live
+  resolver selects the installed model's chunking recipe, recomputes Pardes
+  anchor/window keys from the source text, and keeps its caches apart from
+  Meivin. Snippets and passage highlights keep the original display offsets.
+  Meivin models and the persisted lexical key column are unchanged.
+
+### Changed
+
+- The semantic sidecar is pinned to the revision with the compact INT8 runtime
+  and the Pardes-only cross-platform quantization kernel policy; the standalone
+  query runtime applies the same policy.
+
 ## 7.1.0 – 2026-11-09
 
 ### Added
