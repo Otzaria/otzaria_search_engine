@@ -3529,6 +3529,81 @@ fn coverage_counts_the_live_lines_the_set_holds() {
     );
 }
 
+/// The covered books are those with a line whose text the set holds, a copy of a covered
+/// book among them, the same from the column and recomputed without it.
+#[test]
+fn covered_books_are_the_books_with_a_line_the_set_holds() {
+    const ANOTHER: &str = "/books/another.txt";
+    const COPY: &str = "/books/genesis-copy.txt";
+    for without_column in [false, true] {
+        let library = build_library_of(&default_books(), without_column);
+        let mut engine = library.engine();
+        let token = SemanticCancellationToken::new();
+        let vectors = dir_string(&library.vectors);
+        add_books(
+            &mut engine,
+            &[
+                (
+                    "ספר נוסף",
+                    "/אחר",
+                    ANOTHER,
+                    2,
+                    "שורה שלא הייתה בספרייה כשהווקטורים נבנו ממנה".to_string(),
+                ),
+                ("העתק בראשית", "/אישי", COPY, 3, GENESIS_TEXT.to_string()),
+            ],
+        );
+        let covered = engine
+            .semantic_covered_books(vectors.clone(), &token)
+            .unwrap();
+        assert_eq!(
+            covered.file_paths,
+            [BERACHOT, COPY, GENESIS].map(str::to_string),
+            "without column: {without_column}"
+        );
+        let info = engine.semantic_vectors_info(vectors.clone()).unwrap();
+        assert_eq!(
+            (covered.generation, covered.vectors_library_version),
+            (info.generation, LIBRARY_VERSION),
+            "without column: {without_column}"
+        );
+        let coverage = engine.semantic_coverage(vectors.clone(), &token).unwrap();
+        assert_eq!(
+            (coverage.books_live, coverage.books_covered),
+            (4, 3),
+            "without column: {without_column}"
+        );
+        let again = engine
+            .semantic_covered_books(vectors.clone(), &token)
+            .unwrap();
+        assert_eq!(
+            (again.file_paths, again.set_key),
+            (covered.file_paths, covered.set_key)
+        );
+
+        let cancelled = SemanticCancellationToken::new();
+        cancelled.cancel();
+        let error = engine
+            .semantic_covered_books(vectors, &cancelled)
+            .err()
+            .expect("a cancelled listing");
+        assert_eq!(error.kind, SemanticErrorKind::Cancelled);
+    }
+    let library = build_library();
+    let missing = library
+        .engine()
+        .semantic_covered_books(
+            dir_string(&library.vectors.join("absent")),
+            &SemanticCancellationToken::new(),
+        )
+        .err()
+        .expect("nothing installed");
+    assert_eq!(
+        (missing.kind, missing.field.as_deref()),
+        (SemanticErrorKind::ArtifactMissing, Some("vectors_dir"))
+    );
+}
+
 /// A set built from the index finds every record at its hint and covers every keyed line;
 /// after a line is inserted above, the records below it are counted as moved.
 #[test]
@@ -4549,6 +4624,51 @@ fn a_release_declaring_a_mixed_store_is_refused_by_its_store_field() {
             "{codec:?}: nothing is installed"
         );
     }
+}
+
+/// A delta appended to the set by another tool covers the books it brings, and changes the
+/// set key a cached answer is kept under.
+#[test]
+fn an_appended_delta_changes_the_covered_books_and_the_set_key() {
+    const ADDED: &str = "/books/added.txt";
+    let mut pipeline = Pipeline::new(ReleaseCodec::I8SymVec);
+    let base = pipeline.release(LIBRARY_VERSION, &default_books());
+    let mut books = default_books();
+    books.push((
+        "ספר שנוסף",
+        "/אחר",
+        ADDED,
+        2,
+        "שורה שנוספה לספרייה במהדורה הבאה שלה".to_string(),
+    ));
+    let delta = pipeline.release(LIBRARY_VERSION + 1, &books);
+    let engine = SearchEngine::new(pipeline.index(LIBRARY_VERSION + 1).to_str().unwrap());
+    // Another tool, on another index, installs into the set this engine reads.
+    let other = SearchEngine::new(pipeline.index(LIBRARY_VERSION).to_str().unwrap());
+    let vectors = pipeline.root.path().join("vectors");
+    let token = SemanticCancellationToken::new();
+    other
+        .install_semantic_vectors(pipeline.install_input(&vectors, &base), &token)
+        .unwrap();
+    let before = engine
+        .semantic_covered_books(dir_string(&vectors), &token)
+        .unwrap();
+    assert_eq!(before.file_paths, [BERACHOT, GENESIS].map(str::to_string));
+    assert_eq!(before.vectors_library_version, LIBRARY_VERSION);
+
+    other
+        .install_semantic_vectors(pipeline.install_input(&vectors, &delta), &token)
+        .unwrap();
+    let after = engine
+        .semantic_covered_books(dir_string(&vectors), &token)
+        .unwrap();
+    assert_eq!(
+        after.file_paths,
+        [ADDED, BERACHOT, GENESIS].map(str::to_string)
+    );
+    assert_eq!(after.vectors_library_version, LIBRARY_VERSION + 1);
+    assert!(after.generation > before.generation);
+    assert_ne!(after.set_key, before.set_key);
 }
 
 #[test]

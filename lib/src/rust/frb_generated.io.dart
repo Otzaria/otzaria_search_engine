@@ -660,6 +660,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SemanticCoverage dco_decode_semantic_coverage(dynamic raw);
 
   @protected
+  SemanticCoveredBooks dco_decode_semantic_covered_books(dynamic raw);
+
+  @protected
   SemanticError dco_decode_semantic_error(dynamic raw);
 
   @protected
@@ -1511,6 +1514,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SemanticCoverage sse_decode_semantic_coverage(SseDeserializer deserializer);
+
+  @protected
+  SemanticCoveredBooks sse_decode_semantic_covered_books(
+    SseDeserializer deserializer,
+  );
 
   @protected
   SemanticError sse_decode_semantic_error(SseDeserializer deserializer);
@@ -2577,6 +2585,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_semantic_coverage(
     SemanticCoverage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_covered_books(
+    SemanticCoveredBooks self,
     SseSerializer serializer,
   );
 

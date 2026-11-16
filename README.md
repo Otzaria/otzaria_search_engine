@@ -252,6 +252,7 @@ Keeping the set, all on `SearchEngine` and all cheap except where noted:
 | `compactSemanticVectors` | merges the set into one segment when its policy (`SemanticCompactionPolicy`, the sidecar's defaults) asks, or when forced; given the open index's library version, moves every record onto the line that holds its text now. Needs about the set's size free |
 | `verifySemanticVectors` | reads every block of every segment against its checksum, the check opening leaves out; a damaged segment is marked and refused from then on. Reads the whole set |
 | `semanticCoverage` | the live lines the recipe embeds, and how many the set holds a vector for. One pass over the `chunkKey` column, or, without it, a read of the whole store |
+| `semanticCoveredBooks` | the `filePath` of every book with a line the set holds a vector for, a copy of a covered book's text included, and `setKey` to cache the answer by. The same pass as `semanticCoverage`: call it off the UI thread |
 
 `SemanticStatus` reports the open set's `vectorsLibraryVersion`,
 `vectorSegments` and `needsCompaction`.
@@ -287,7 +288,7 @@ On the application's path:
 
 | kind | reported by | means, and what to do |
 | --- | --- | --- |
-| `artifactMissing` | `openSemanticArtifact`, `verifySemanticVectors`, `semanticCoverage` | nothing installed at `vectorsDir`: download and install the vectors |
+| `artifactMissing` | `openSemanticArtifact`, `verifySemanticVectors`, `semanticCoverage`, `semanticCoveredBooks` | nothing installed at `vectorsDir`: download and install the vectors |
 | `artifactCorrupt` | opening, installing, verifying | a damaged set (its pointers, metadata or a segment), or a release whose segment is not the one its manifest describes: install the release again, which repairs the set, downloading it again if it is gone. On a FAT or exFAT drive on Windows, close the session first: a mapped segment cannot be replaced there |
 | `artifactNotPublished` | `installSemanticVectors` | not the release whose manifest digest was published: download the official one |
 | `artifactIncompatible` | opening, installing | built for something else; `field` names the first field that disagreed: `text.*` for another line recipe, `model.*` for another model or chunking, `store.*` for another store format, `delta.*` for a delta that does not follow the set. Install the vectors built for this application. With `field` `segment_id`, installing: a version the set has installed, published again with other bytes; the set is sound and keeps serving it. Do not download it again: keep the set, or install the release into a new, empty `vectorsDir` |
@@ -301,7 +302,7 @@ On the application's path:
 | `readOnlySession` | the calls that build vectors | refused on an opened set; nothing to fix |
 | `notConfigured`, `featureNotInBuild` | `state`, `fallbackKind` | no session is open, or the build has no semantic support |
 | `queryFailed` | `fallbackKind` | the semantic half of that one search failed; its lexical results were served |
-| `cancelled` | `searchSemantic`, and the calls that install, compact, verify or count | its `SemanticCancellationToken` was cancelled (see "Cancelling a search"): nothing failed, and nothing changed |
+| `cancelled` | `searchSemantic`, and the calls that install, compact, verify, count or list covered books | its `SemanticCancellationToken` was cancelled (see "Cancelling a search"): nothing failed, and nothing changed |
 | `invalidInput` | `openSemanticArtifact`, `configureSemantic`, `searchSemantic`, `compactSemanticVectors` | a value the call cannot take, a ranking option or a compaction threshold out of its range among them: fix the call |
 | `internal` | any call | a fault, including the lexical index failing under `searchSemantic`: report `message` |
 
