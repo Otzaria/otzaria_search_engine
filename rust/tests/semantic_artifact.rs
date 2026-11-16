@@ -4305,16 +4305,14 @@ fn releases_of_either_store_install_in_order_serve_and_compact() {
 }
 
 /// A short line that shares a neighbour's vector in a format-3 set is found through that
-/// vector: in its book, as window 255 and scored the alias penalty below the line whose
-/// vector it shares; in a book it was copied into since, under that book's filter; and it
-/// counts as covered.
+/// vector, and where the line whose vector it shares is shown, it is left out rather than
+/// shown twice: in its book, and in a book it was copied into since, under that book's
+/// filter. It counts as covered.
 #[test]
 fn a_short_line_sharing_a_neighbours_vector_is_found_through_it() {
     use otzaria_semantic_search::semantic::chunk_key::LineRef;
     use otzaria_semantic_search::semantic::chunker::Chunker;
-    use otzaria_semantic_search::semantic::oxv::occurrence::ALIAS_WINDOW;
     use otzaria_semantic_search::semantic::recipe::PASSAGE_PREFIX;
-    use search_engine::api::search_engine::SemanticHighlightTarget;
     const SHORT: &str = "/books/short.txt";
     const COPY: &str = "/books/copy.txt";
     let lines: Vec<String> = [
@@ -4389,55 +4387,35 @@ fn a_short_line_sharing_a_neighbours_vector_is_found_through_it() {
         response.results
     };
 
-    let results = found(&[]);
-    let short = results
-        .iter()
-        .find(|hit| (hit.file_path.as_str(), hit.segment) == (SHORT, 3))
-        .expect("the short line comes back through the vector it shares");
-    assert_eq!(short.matched_window, ALIAS_WINDOW);
-    assert_eq!(
-        short.snippet_html, lines[3],
-        "an alias has no matched window and is shown as the whole short line"
-    );
-    let highlighted = engine
-        .semantic_passage_highlights(
-            lines[3].clone(),
-            vec![SemanticHighlightTarget {
-                file_path: SHORT.to_string(),
-                id: short.id,
-                window: ALIAS_WINDOW,
-            }],
-            &token,
-        )
-        .unwrap();
-    assert!(!highlighted[0].is_highlighted, "{highlighted:?}");
-    assert!(
-        highlighted[0].snippet_html.is_empty(),
-        "a short alias has no partial-window highlight to paint: {highlighted:?}"
-    );
     let values = search_engine::semantic_keys::column_values(&refs);
-    let shared = results
+    let owner = values
         .iter()
-        .find(|hit| {
-            hit.file_path == SHORT
-                && hit.matched_window == 0
-                && values[hit.segment as usize] == aliases[0].key.column_value()
-        })
-        .expect("the line whose vector it shares");
-    let penalty = shared.semantic_score.unwrap() - short.semantic_score.unwrap();
-    assert!((penalty - 0.04).abs() < 1e-3, "{penalty}");
-
-    let copied = found(&["/העתק"]);
-    assert!(
-        copied.iter().any(
-            |hit| (hit.file_path.as_str(), hit.segment, hit.matched_window)
-                == (COPY, 2, ALIAS_WINDOW)
-        ),
-        "the copy of the short line is reached under its book's filter: {:?}",
-        copied
-            .iter()
-            .map(|hit| (&hit.file_path, hit.segment, hit.matched_window))
-            .collect::<Vec<_>>()
+        .position(|&value| value == aliases[0].key.column_value())
+        .expect("the line whose vector it shares") as u64;
+    // Whether the owner's line is a row, and whether the short line is.
+    let rows = |results: &[search_engine::api::search_engine::SemanticSearchResult],
+                book: &str,
+                owner: u64,
+                short: u64| {
+        let at = |segment, window: Option<u8>| {
+            results.iter().any(|hit| {
+                hit.file_path == book
+                    && hit.segment == segment
+                    && window.is_none_or(|window| hit.matched_window == window)
+            })
+        };
+        (at(owner, Some(0)), at(short, None))
+    };
+    assert_eq!(
+        rows(&found(&[]), SHORT, owner, 3),
+        (true, false),
+        "the line whose vector it shares stands for the short line"
+    );
+    // The copy lacks the book's first line: each of its lines is one before.
+    assert_eq!(
+        rows(&found(&["/העתק"]), COPY, owner - 1, 2),
+        (true, false),
+        "and so does its copy, under the copy's book filter"
     );
 
     let coverage = engine
@@ -4475,21 +4453,16 @@ fn a_short_line_sharing_a_neighbours_vector_is_found_through_it() {
     }
     kept.dedup();
     assert_eq!(kept, [(3, aliases[0].anchor)], "the alias row is kept");
-    let short = found(&[])
-        .into_iter()
-        .find(|hit| (hit.file_path.as_str(), hit.segment) == (SHORT, 3))
-        .expect("the short line is still found through the vector it shares");
-    assert_eq!(short.matched_window, ALIAS_WINDOW);
+    assert_eq!(rows(&found(&[]), SHORT, owner, 3), (true, false));
 }
 
 /// A short line whose vector is the line after it, copied with its context into another
-/// book: under that book's filter the copy of the short line comes back as the alias, and
-/// the line after it as itself — the record of the shared text, which comes first among the
-/// hit's records, does not take the short line's place for the line next to it.
+/// book: under that book's filter the line after it comes back as itself, and stands for
+/// the short line — the record of the shared text, which comes first among the hit's
+/// records, does not take the short line's place for the line next to it.
 #[test]
 fn a_copied_short_line_is_not_taken_by_the_line_whose_vector_it_shares() {
     use otzaria_semantic_search::semantic::chunk_key::LineRef;
-    use otzaria_semantic_search::semantic::oxv::occurrence::ALIAS_WINDOW;
     const SHORT: &str = "/books/short.txt";
     const COPY: &str = "/books/copy.txt";
     // The lines before the short one are short too, and the long line after it holds most of
@@ -4577,7 +4550,7 @@ fn a_copied_short_line_is_not_taken_by_the_line_whose_vector_it_shares() {
         .map(|hit| (hit.segment, hit.matched_window))
         .collect();
     copied.sort_unstable();
-    assert_eq!(copied, [(2, ALIAS_WINDOW), (3, 0)]);
+    assert_eq!(copied, [(3, 0)]);
 }
 
 /// A release that declares a store no build writes — format 3 in the anchor codec, or the
@@ -4821,6 +4794,8 @@ fn releases_with_previous_line_text_recipes_are_refused_before_installation() {
     }
 }
 
+/// A short line repeated with its context: in each block the line whose vector it shares
+/// stands for it, and every page agrees on the list and its total.
 #[test]
 fn repeated_alias_in_public_search() {
     use otzaria_semantic_search::semantic::chunk_key::LineRef;
@@ -4900,18 +4875,60 @@ fn repeated_alias_in_public_search() {
         "{:?}",
         response.fallback_reason
     );
-    let mut found: Vec<_> = response
+    let values = search_engine::semantic_keys::column_values(&refs);
+    let owner = values
+        .iter()
+        .position(|&value| value == aliases[0].key.column_value())
+        .unwrap() as u64;
+    for (owner, short) in [(owner, 3), (owner + 6, 9)] {
+        assert!(
+            response.results.iter().any(|hit| hit.file_path == BOOK
+                && hit.segment == owner
+                && hit.matched_window == 0),
+            "the line whose vector it shares at {owner}"
+        );
+        assert!(
+            !response
+                .results
+                .iter()
+                .any(|hit| hit.file_path == BOOK && hit.segment == short),
+            "stands for the short line at {short}"
+        );
+    }
+    assert!(response
         .results
         .iter()
-        .filter(|hit| hit.file_path == BOOK && hit.matched_window == ALIAS_WINDOW)
-        .map(|hit| hit.segment)
-        .collect();
-    found.sort_unstable();
-    assert_eq!(
-        found,
-        [3, 9],
-        "both repeated short lines should be displayed"
-    );
+        .all(|hit| hit.matched_window != ALIAS_WINDOW));
+
+    // Left out before paging: pages of one line make up the same list, under the same total.
+    let page = |offset: u32| {
+        engine
+            .search_semantic(
+                query.to_string(),
+                vec![],
+                1,
+                offset,
+                SemanticLexicalMode::Exact,
+                0,
+                SemanticRetrievalMode::SemanticOnly,
+                None,
+                false,
+                false,
+                None,
+                &token,
+            )
+            .unwrap()
+    };
+    let key = |hit: &search_engine::api::search_engine::SemanticSearchResult| {
+        (hit.file_path.clone(), hit.segment, hit.matched_window)
+    };
+    let mut paged = Vec::new();
+    for offset in 0..response.results.len() as u32 + 1 {
+        let page = page(offset);
+        assert_eq!(page.total_count, response.total_count, "offset {offset}");
+        paged.extend(page.results.iter().map(key));
+    }
+    assert_eq!(paged, response.results.iter().map(key).collect::<Vec<_>>());
 }
 
 #[test]
@@ -4919,6 +4936,7 @@ fn compaction_preserves_alias_after_neighbour_tail_changes() {
     use otzaria_semantic_search::semantic::chunk_key::{ChunkKey, LineRef};
     use otzaria_semantic_search::semantic::chunker::Chunker;
     use otzaria_semantic_search::semantic::oxv::occurrence::ALIAS_WINDOW;
+    use search_engine::api::search_engine::SemanticHighlightTarget;
     const BOOK: &str = "/books/short.txt";
     let before = "תורה ".repeat(94).trim().to_string();
     let mut words = vec!["תורה"; 101];
@@ -4989,7 +5007,7 @@ fn compaction_preserves_alias_after_neighbour_tail_changes() {
             scan_threads: None,
         })
         .unwrap();
-    let has_short = || {
+    let short = || {
         engine
             .search_semantic(
                 after.clone(),
@@ -5007,14 +5025,32 @@ fn compaction_preserves_alias_after_neighbour_tail_changes() {
             )
             .unwrap()
             .results
-            .iter()
-            .any(|hit| {
+            .into_iter()
+            .find(|hit| {
                 hit.file_path == BOOK && hit.segment == 1 && hit.matched_window == ALIAS_WINDOW
             })
     };
+    // Its neighbour no longer holds the vector, so nothing stands for the short line.
+    let found = short().expect("the unchanged short line is found before compaction");
+    assert_eq!(
+        found.snippet_html, lines[1],
+        "an alias has no matched window and is shown as the whole short line"
+    );
+    let highlighted = engine
+        .semantic_passage_highlights(
+            lines[1].clone(),
+            vec![SemanticHighlightTarget {
+                file_path: BOOK.to_string(),
+                id: found.id,
+                window: ALIAS_WINDOW,
+            }],
+            &token,
+        )
+        .unwrap();
+    assert!(!highlighted[0].is_highlighted, "{highlighted:?}");
     assert!(
-        has_short(),
-        "the unchanged short line is found before compaction"
+        highlighted[0].snippet_html.is_empty(),
+        "a short alias has no partial-window highlight to paint: {highlighted:?}"
     );
     let result = engine
         .compact_semantic_vectors(
@@ -5028,7 +5064,10 @@ fn compaction_preserves_alias_after_neighbour_tail_changes() {
         )
         .unwrap();
     assert!(result.compacted, "{}", result.reason);
-    assert!(has_short(), "compaction must preserve the still-live alias");
+    assert!(
+        short().is_some(),
+        "compaction must preserve the still-live alias"
+    );
     let set = otzaria_semantic_search::semantic::segment_set::SegmentSet::open(&vectors).unwrap();
     let mut records = Vec::new();
     set.book_occurrences(BOOK, &mut records);
