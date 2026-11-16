@@ -6880,8 +6880,11 @@ impl SearchEngine {
             )
             .with_field("vectors_dir"));
         }
-        // A reader: no lock or recovery, so an install or a compaction never waits for it.
-        let set = SegmentSet::open_without_recovery(&vectors_dir).map_err(|err| failed(&err))?;
+        // A reader: no lock or recovery, so an install or a compaction never waits for it. An
+        // install's garbage collection can remove the generation mid-open: open once more.
+        let set = SegmentSet::open_without_recovery(&vectors_dir)
+            .or_else(|_| SegmentSet::open_without_recovery(&vectors_dir))
+            .map_err(|err| failed(&err))?;
         let info = set.info().clone();
         let mut keys = Vec::new();
         for (seg, segment) in set.segments().iter().enumerate() {
@@ -6912,6 +6915,8 @@ impl SearchEngine {
         keys.extend(aliases);
         keys.sort_unstable();
         keys.dedup();
+        // Unmapped before the pass over the index, which needs only the keys.
+        drop(set);
         ensure_keyed_chunking(&info.identity.model, &|err| err.to_string())?;
         let coverage = LiveResolver::for_chunking(
             self.index_reader.searcher(),
