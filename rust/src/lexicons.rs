@@ -158,7 +158,9 @@ fn gloss_translation_words(gloss: &str) -> Vec<String> {
                 continue;
             }
             let normalized = normalize_entry_word(word);
-            if !normalized.is_empty() && !out.contains(&normalized) {
+            // פריט בלי אות אחת (למשל "*" שמסמן ערך חסר בקובץ) אינו תרגום, ואסור
+            // שיוזרק כהרחבה לשאילתה ויתפוס מקום מתוך תקרת ההרחבות.
+            if normalized.chars().any(char::is_alphabetic) && !out.contains(&normalized) {
                 out.push(normalized);
             }
         }
@@ -306,6 +308,28 @@ mod tests {
         // "על שוכריהם" — ביאור רב-מילי, לא תרגום ברמת מילה.
         assert!(lex.expansions("אאגורייהו", 16).is_empty());
         assert!(lex.expansions("שוכריהם", 16).is_empty());
+    }
+
+    #[test]
+    fn glosses_without_a_letter_are_not_translations() {
+        // "*" ו-"(סימן)" הם ערכי מילוי בקובצי המילון: אין בהם תרגום, והם
+        // לא נכנסים כהרחבה בשום כיוון (גם לא מילה אמיתית לצד מילוי).
+        let lex = lexicon_from(
+            r#"{
+                "מילון שיח ישראל": [
+                    { "אל''ף": "*" },
+                    { "ביט''ל": "(סימן)" },
+                    { "אבגד": "*, אמת" },
+                    { "הדבר": "* *** נכון" }
+                ]
+            }"#,
+        );
+        assert!(lex.expansions("*", 16).is_empty());
+        assert!(lex.expansions("אל''ף", 16).is_empty());
+        assert!(lex.expansions("ביט''ל", 16).is_empty());
+        assert_eq!(lex.expansions("אבגד", 16), vec!["אמת"]);
+        assert_eq!(lex.expansions("אמת", 16), vec!["אבגד"]);
+        assert_eq!(lex.expansions("הדבר", 16), vec!["נכון"]);
     }
 
     #[test]
