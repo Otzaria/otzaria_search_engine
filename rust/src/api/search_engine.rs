@@ -3366,6 +3366,9 @@ const FUZZY_BOOST_EXACT: Score = 1000.0;
 /// (see `hebrew_query::match_tier`). Only the order matters; a document's
 /// clauses sum, so each tier outweighs every lower one combined.
 const ADVANCED_TIER_BOOSTS: [Score; 4] = [1000.0, 100.0, 10.0, 1.0];
+/// A relevance-ordered advanced phrase: added to the phrase score when its
+/// words occur as typed, so such a match outranks every expanded one.
+const ADVANCED_EXACT_PHRASE_BOOST: Score = 1000.0;
 const FUZZY_BOOST_EXACT_REL: Score = 1.0;
 const FUZZY_BOOST_LEXICAL: Score = 30.0;
 const FUZZY_BOOST_FUZZY: Score = 1.0;
@@ -12847,7 +12850,7 @@ impl SearchEngine {
         scope: &SearchScope,
         match_mode: &WordMatch,
         cross_line: bool,
-        ranking_roots: Option<&[String]>,
+        ranking_roots: Option<&[Vec<String>]>,
     ) -> Result<(Box<dyn Query>, bool)> {
         // Resolved up front: the same facet filter both narrows the section
         // pre-pass (fewer candidate sections to intersect) and gates the
@@ -12865,7 +12868,7 @@ impl SearchEngine {
         // nothing and reports none.
         let (main_query, truncated): (Box<dyn Query>, bool) = match regex_terms.len() {
             0 => (Box::new(EmptyQuery), false),
-            1 => match ranking_roots {
+            1 => match ranking_roots.and_then(|roots| roots.first()) {
                 Some(roots) => self.ranked_term_query(
                     regex_terms[0].branches(),
                     typo_tokens,
@@ -12895,14 +12898,30 @@ impl SearchEngine {
                     facets_query.as_deref(),
                     match_mode,
                 )?,
-                (SearchScope::WordDistance, WordMatch::All) => self.phrase_query_with_degrade(
-                    &regex_terms,
-                    proximity,
-                    text_field,
-                    max_expansions,
-                    cross_line,
-                    facets_query.as_deref(),
-                )?,
+                (SearchScope::WordDistance, WordMatch::All) => {
+                    let (phrase, truncated) = self.phrase_query_with_degrade(
+                        &regex_terms,
+                        proximity,
+                        text_field,
+                        max_expansions,
+                        cross_line,
+                        facets_query.as_deref(),
+                    )?;
+                    let ranked = match ranking_roots {
+                        Some(roots) => self.with_exact_phrase_boost(
+                            phrase,
+                            &regex_terms,
+                            roots,
+                            proximity,
+                            text_field,
+                            max_expansions,
+                            cross_line,
+                            facets_query.as_deref(),
+                        )?,
+                        None => phrase,
+                    };
+                    (ranked, truncated)
+                }
             },
         };
 
@@ -12917,6 +12936,67 @@ impl SearchEngine {
             ])),
             truncated,
         ))
+    }
+
+    /// Ranks the occurrences of the typed words themselves (or their
+    /// alternatives) above those the expansion options added, under the same
+    /// order and gap rules — see [`ADVANCED_EXACT_PHRASE_BOOST`]. A phrase with
+    /// no expansions is returned as is.
+    #[allow(clippy::too_many_arguments)]
+    fn with_exact_phrase_boost(
+        &self,
+        phrase: Box<dyn Query>,
+        regex_terms: &[hebrew_query::WordPattern],
+        roots: &[Vec<String>],
+        proximity: &Proximity,
+        text_field: Field,
+        max_expansions: u32,
+        cross_line: bool,
+        facets_query: Option<&dyn Query>,
+    ) -> Result<Box<dyn Query>> {
+        let exact: Vec<hebrew_query::WordPattern> = roots
+            .iter()
+            .map(|word_roots| {
+                let mut branches: Vec<String> = Vec::new();
+                for root in word_roots.iter().filter(|r| !r.trim().is_empty()) {
+                    let branch = hebrew_query::escape_regex(root);
+                    if !branches.contains(&branch) {
+                        branches.push(branch);
+                    }
+                }
+                match branches.len() {
+                    1 => hebrew_query::WordPattern::Literal(branches.remove(0)),
+                    _ => hebrew_query::WordPattern::Alternation(branches),
+                }
+            })
+            .collect();
+        if exact.len() != regex_terms.len()
+            || exact.iter().any(|p| p.branches().is_empty())
+            || exact
+                .iter()
+                .zip(regex_terms)
+                .all(|(e, r)| e.joined() == r.joined())
+        {
+            return Ok(phrase);
+        }
+        let (exact_phrase, _) = self.phrase_query_with_degrade(
+            &exact,
+            proximity,
+            text_field,
+            max_expansions,
+            cross_line,
+            facets_query,
+        )?;
+        Ok(Box::new(BooleanQuery::new(vec![
+            (Occur::Must, phrase),
+            (
+                Occur::Should,
+                Box::new(ConstScoreQuery::new(
+                    exact_phrase,
+                    ADVANCED_EXACT_PHRASE_BOOST,
+                )),
+            ),
+        ])))
     }
 
     /// The ordered-phrase path (`WordDistance` + all words), with graceful
@@ -14634,7 +14714,8 @@ impl SearchEngine {
     }
 
     /// [`Self::build_advanced_query`]; `rank` (a relevance-ordered search)
-    /// scores a single word's matches in tiers — see [`ADVANCED_TIER_BOOSTS`].
+    /// scores a single word's matches in tiers — see [`ADVANCED_TIER_BOOSTS`] —
+    /// and a phrase's typed-form occurrences first.
     #[allow(clippy::too_many_arguments)]
     fn build_advanced_query_ranked(
         &self,
@@ -14729,30 +14810,33 @@ impl SearchEngine {
             cross_line,
         )?;
         // Tiers compare mark-free text, so the vocalized field stays unranked.
-        let ranking_roots: Option<Vec<String>> = (rank && !voc_mode.any())
-            .then(|| {
-                let word = source_words.first()?;
-                let ignore_quotes =
-                    hebrew_query::word_flags_at(&source_words, 0, search_options).ignore_quotes;
-                let roots = std::iter::once(word.clone())
-                    .chain(
-                        alternative_words
-                            .get(&0)
-                            .into_iter()
-                            .flatten()
-                            .map(|a| hebrew_query::normalize_for_index(a)),
-                    )
-                    .map(|r| {
-                        if ignore_quotes {
-                            hebrew_query::strip_quote_chars(&r)
-                        } else {
-                            r
-                        }
-                    })
-                    .collect();
-                Some(roots)
-            })
-            .flatten();
+        // One root list per query word: the typed form and its alternatives.
+        let ranking_roots: Option<Vec<Vec<String>>> = (rank && !voc_mode.any()).then(|| {
+            source_words
+                .iter()
+                .enumerate()
+                .map(|(i, word)| {
+                    let ignore_quotes =
+                        hebrew_query::word_flags_at(&source_words, i, search_options).ignore_quotes;
+                    std::iter::once(word.clone())
+                        .chain(
+                            alternative_words
+                                .get(&(i as u32))
+                                .into_iter()
+                                .flatten()
+                                .map(|a| hebrew_query::normalize_for_index(a)),
+                        )
+                        .map(|r| {
+                            if ignore_quotes {
+                                hebrew_query::strip_quote_chars(&r)
+                            } else {
+                                r
+                            }
+                        })
+                        .collect()
+                })
+                .collect()
+        });
         let (main_query, main_truncated) = self.build_query_from_patterns(
             prepared.regex_terms,
             &source_words,

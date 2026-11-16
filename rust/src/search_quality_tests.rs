@@ -268,6 +268,23 @@ fn relevance_ranks_exact_then_affixed_then_spelling_then_typo() {
     assert_eq!(relevance, [3, 2, 1, 0]);
 }
 
+/// Otzaria/otzaria#3385: in a phrase, the typed words outrank the forms the
+/// options added (בע"ד → באד־ by a typo plus a partial word), in order only.
+#[test]
+fn relevance_ranks_typed_phrase_before_expanded_phrase() {
+    let (engine, _dir) = engine_with(&[
+        "ע\"א נאמן באדם",
+        "ע\"א נאמן בע\"ד ועוד כמה מילים בשורה",
+        "בע\"ד נאמן ע\"א",
+    ]);
+    let flags = ["התעלם מגרשיים", "שגיאות כתיב", "חלק ממילה"];
+    let query = "ע\"א נאמן בע\"ד";
+    let catalogue = advanced_ids(&engine, query, &flags, ResultsOrder::Catalogue);
+    let relevance = advanced_ids(&engine, query, &flags, ResultsOrder::Relevance);
+    assert_eq!(catalogue, [0, 1]);
+    assert_eq!(relevance, [1, 0]);
+}
+
 fn word_options(query: &str, per_word: &[&[&str]]) -> HashMap<String, HashMap<String, bool>> {
     hebrew_query::split_query_words(&hebrew_query::normalize_for_index(query))
         .iter()
@@ -520,4 +537,226 @@ fn phrase_typo_scan_cap_keeps_the_exact_match() {
         ),
         [0]
     );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ranked_ids(
+    engine: &SearchEngine,
+    query: &str,
+    negative: &str,
+    distance: u32,
+    alternatives: HashMap<u32, Vec<String>>,
+    options: HashMap<String, HashMap<String, bool>>,
+    order: ResultsOrder,
+    any_order: bool,
+) -> Vec<u64> {
+    engine
+        .search_advanced(
+            query.to_string(),
+            negative.to_string(),
+            Vec::new(),
+            100,
+            0,
+            distance,
+            0,
+            HashMap::new(),
+            HashMap::new(),
+            alternatives,
+            HashMap::new(),
+            options,
+            HashMap::new(),
+            order,
+            false,
+            false,
+            SearchScope::WordDistance,
+            SearchScope::WordDistance,
+            None,
+            None,
+            None,
+            Some(any_order),
+            None,
+        )
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect()
+}
+
+const PHRASE_FLAGS: [&str; 3] = ["התעלם מגרשיים", "שגיאות כתיב", "חלק ממילה"];
+
+/// An exact occurrence outside the allowed gap earns no boost.
+#[test]
+fn typed_phrase_boost_respects_the_gap() {
+    let (engine, _dir) = engine_with(&[
+        "ע\"א נאמן באדם",
+        "ע\"א נאמן בע\"ד ועוד כמה מילים בשורה הזאת",
+        "ע\"א נאמן באדם ע\"א נאמן מילה בע\"ד ועוד מילים",
+    ]);
+    let q = "ע\"א נאמן בע\"ד";
+    let rel = ranked_ids(
+        &engine,
+        q,
+        "",
+        0,
+        HashMap::new(),
+        options(q, &PHRASE_FLAGS),
+        ResultsOrder::Relevance,
+        false,
+    );
+    assert_eq!(rel, [1, 0, 2]);
+}
+
+#[test]
+fn typed_phrase_boost_any_order() {
+    let (engine, _dir) = engine_with(&[
+        "באדם נאמן ע\"א",
+        "בע\"ד נאמן ע\"א ועוד כמה מילים בשורה הזאת",
+    ]);
+    let q = "ע\"א נאמן בע\"ד";
+    let o = options(q, &PHRASE_FLAGS);
+    assert_eq!(
+        ranked_ids(
+            &engine,
+            q,
+            "",
+            0,
+            HashMap::new(),
+            o.clone(),
+            ResultsOrder::Catalogue,
+            true
+        ),
+        [0, 1]
+    );
+    assert_eq!(
+        ranked_ids(
+            &engine,
+            q,
+            "",
+            0,
+            HashMap::new(),
+            o,
+            ResultsOrder::Relevance,
+            true
+        ),
+        [1, 0]
+    );
+}
+
+#[test]
+fn typed_phrase_boost_counts_user_alternatives() {
+    let (engine, _dir) =
+        engine_with(&["ע\"א נאמן באדם", "ע\"א נאמן תובע ועוד כמה מילים בשורה הזאת"]);
+    let q = "ע\"א נאמן בע\"ד";
+    let alts = HashMap::from([(2u32, vec!["תובע".to_string()])]);
+    let o = options(q, &PHRASE_FLAGS);
+    assert_eq!(
+        ranked_ids(
+            &engine,
+            q,
+            "",
+            0,
+            alts.clone(),
+            o.clone(),
+            ResultsOrder::Catalogue,
+            false
+        ),
+        [0, 1]
+    );
+    assert_eq!(
+        ranked_ids(&engine, q, "", 0, alts, o, ResultsOrder::Relevance, false),
+        [1, 0]
+    );
+}
+
+/// Without "התעלם מגרשיים" the typed form keeps its quotes.
+#[test]
+fn typed_phrase_boost_keeps_quotes_when_not_ignored() {
+    let (engine, _dir) = engine_with(&[
+        "ע\"א נאמן לבע\"ד",
+        "ע\"א נאמן בע\"ד ועוד כמה מילים בשורה הזאת",
+        "ע\"א נאמן בעד ועוד כמה מילים בשורה הזאת",
+    ]);
+    let q = "ע\"א נאמן בע\"ד";
+    let o = options(q, &["חלק ממילה"]);
+    let cat = ranked_ids(
+        &engine,
+        q,
+        "",
+        0,
+        HashMap::new(),
+        o.clone(),
+        ResultsOrder::Catalogue,
+        false,
+    );
+    let rel = ranked_ids(
+        &engine,
+        q,
+        "",
+        0,
+        HashMap::new(),
+        o,
+        ResultsOrder::Relevance,
+        false,
+    );
+    assert_eq!(rel[0], 1);
+    assert_eq!(sorted(rel), sorted(cat));
+}
+
+#[test]
+fn typed_phrase_boost_survives_the_negative_query() {
+    let (engine, _dir) = engine_with(&[
+        "ע\"א נאמן באדם",
+        "ע\"א נאמן בע\"ד ועוד כמה מילים בשורה הזאת",
+        "ע\"א נאמן בע\"ד אסור",
+    ]);
+    let q = "ע\"א נאמן בע\"ד";
+    let rel = ranked_ids(
+        &engine,
+        q,
+        "אסור",
+        0,
+        HashMap::new(),
+        options(q, &PHRASE_FLAGS),
+        ResultsOrder::Relevance,
+        false,
+    );
+    assert_eq!(rel, [1, 0]);
+}
+
+/// A phrase with nothing to expand builds the very same query in both orders.
+#[test]
+fn plain_phrase_builds_no_exact_subquery() {
+    let (engine, _dir) = engine_with(&["ע\"א נאמן בע\"ד"]);
+    let voc = VocalizedFlags::new(false, false);
+    let build = |opts: &HashMap<String, HashMap<String, bool>>,
+                 alts: &HashMap<u32, Vec<String>>,
+                 rank: bool| {
+        let (query, ..) = engine
+            .build_advanced_query_ranked(
+                "ע\"א נאמן בע\"ד",
+                0,
+                &HashMap::new(),
+                false,
+                alts,
+                opts,
+                Vec::new(),
+                &voc,
+                &SearchScope::WordDistance,
+                &WordMatch::All,
+                true,
+                rank,
+            )
+            .unwrap();
+        format!("{query:?}")
+    };
+    let none: HashMap<String, HashMap<String, bool>> = HashMap::new();
+    let no_alts: HashMap<u32, Vec<String>> = HashMap::new();
+    let quotes = options("ע\"א נאמן בע\"ד", &["התעלם מגרשיים"]);
+    let alts = HashMap::from([(1u32, vec!["מהימן".to_string()])]);
+    assert_eq!(build(&none, &no_alts, true), build(&none, &no_alts, false));
+    assert_eq!(
+        build(&quotes, &no_alts, true),
+        build(&quotes, &no_alts, false)
+    );
+    assert_eq!(build(&none, &alts, true), build(&none, &alts, false));
 }
