@@ -472,18 +472,25 @@ bytes the check had read, while it read them, is not damage: nothing is
 condemned, and the call throws `vectorsBusy`, to verify again once the install
 has finished. A cancelled verification records nothing. `semanticCoverage` counts the open index's live lines the
 recipe embeds and those the set holds a vector for: one pass over the `chunkKey`
-column, or, on an index without it, a read of the whole store.
+column, or, on an index without it, a read of the whole store. Only live vectors of
+the generation the set serves count: a vector a later delta deleted covers nothing,
+as a search returns nothing from it.
 `semanticCoveredBooks` makes the same pass, at the same cost, and returns the
 `filePath` of every book with a live line the set holds a vector for (`filePaths`,
 sorted and distinct). Vectors are keyed by text, not by book, so a personal book
 or an attached library's copy of a covered book's text is covered too. Call it
-off the UI thread and cache the answer: `setKey` (opaque, compare for equality)
-changes exactly when the segments the set serves change — any install of a base
+off the UI thread and cache the answer. `setKey` (opaque, compare for equality)
+changes exactly when the vectors the set serves change: any install of a base
 or a delta, by this engine or another tool, a compaction, a fallback to
-`PREVIOUS` — and the answer also depends on the lexical index, so recompute when
-either changed. `generation` and `vectorsLibraryVersion` are reported too, but
-are no cache key: a fallback goes back to an older generation, and a directory
-emptied and installed again numbers its generations from the start.
+`PREVIOUS`. The answer also depends on the lexical index, and the engine returns
+no key for the index's state: recompute whenever the application changed the
+index (a book added, removed or reindexed), as well as when `setKey` changed.
+`recoveredFromPrevious` is true when `CURRENT`'s generation did not open and the
+answer is for `PREVIOUS`'s, as `semanticVectorsInfo` reports it; for instance, a
+generation another tool wrote was damaged. `generation` and
+`vectorsLibraryVersion` are reported too, but are no cache key: a fallback goes
+back to an older generation, and a directory emptied and installed again numbers
+its generations from the start.
 
 `openSemanticArtifact` opens the vector set read-only and serves
 `searchSemantic` from it, hydrating every result from this index. It compares

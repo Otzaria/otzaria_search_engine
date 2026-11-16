@@ -10509,11 +10509,13 @@ impl SseDecode for crate::api::search_engine::SemanticCoveredBooks {
         let mut var_setKey = <String>::sse_decode(deserializer);
         let mut var_generation = <u64>::sse_decode(deserializer);
         let mut var_vectorsLibraryVersion = <u32>::sse_decode(deserializer);
+        let mut var_recoveredFromPrevious = <bool>::sse_decode(deserializer);
         return crate::api::search_engine::SemanticCoveredBooks {
             file_paths: var_filePaths,
             set_key: var_setKey,
             generation: var_generation,
             vectors_library_version: var_vectorsLibraryVersion,
+            recovered_from_previous: var_recoveredFromPrevious,
         };
     }
 }
@@ -12620,6 +12622,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticCovere
             self.set_key.into_into_dart().into_dart(),
             self.generation.into_into_dart().into_dart(),
             self.vectors_library_version.into_into_dart().into_dart(),
+            self.recovered_from_previous.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -14892,6 +14895,7 @@ impl SseEncode for crate::api::search_engine::SemanticCoveredBooks {
         <String>::sse_encode(self.set_key, serializer);
         <u64>::sse_encode(self.generation, serializer);
         <u32>::sse_encode(self.vectors_library_version, serializer);
+        <bool>::sse_encode(self.recovered_from_previous, serializer);
     }
 }
 

@@ -915,13 +915,17 @@ pub struct SemanticCoveredBooks {
     /// for, sorted and distinct. A book whose lines copy a covered book's text is covered too:
     /// vectors are keyed by text, not by book.
     pub file_paths: Vec<String>,
-    /// What the answer depends on in the set: its identity digest and the checksum of each
-    /// segment of the generation it serves. Opaque; compare it for equality only. It changes
-    /// whenever the segments served change — an install of a base or a delta, by this engine
-    /// or any other tool through the set's generations, a compaction, a fallback to
-    /// `PREVIOUS` — and not otherwise: retiring the `PREVIOUS` generation keeps it, and so
-    /// does installing the same releases into an emptied directory. With the state of the
-    /// lexical index, which the answer depends on too, it is the key to cache the answer by.
+    /// What the answer depends on in the set: its identity digest, and the checksum and dead
+    /// slots of each segment of the generation it serves. Opaque; compare it for equality
+    /// only. It changes whenever the vectors served change — an install of a base or a delta,
+    /// by this engine or any other tool through the set's generations, a compaction, a
+    /// fallback to `PREVIOUS` — and not otherwise: retiring the `PREVIOUS` generation keeps
+    /// it, and so does installing the same releases into an emptied directory.
+    ///
+    /// It says nothing of the lexical index, and the answer depends on that too: a book
+    /// added, removed or reindexed can change it with the set unchanged. The engine returns
+    /// no key for the index's state, so the application recomputes after it changes the
+    /// index, as well as when this key changes.
     pub set_key: String,
     /// The set's live generation. Every install and compaction numbers a new one past those
     /// on disk, but a fallback goes back to an older one, and a directory deleted and
@@ -929,6 +933,10 @@ pub struct SemanticCoveredBooks {
     pub generation: u64,
     /// The library version the set stands at.
     pub vectors_library_version: u32,
+    /// The live generation (`CURRENT`) did not open, and the one before it (`PREVIOUS`) is
+    /// what the answer is for, as [`SemanticVectorsInfo::recovered_from_previous`] says:
+    /// for instance, a generation another tool wrote was damaged.
+    pub recovered_from_previous: bool,
 }
 
 /// What stopped the semantic path, as a value an application can switch on to choose a
@@ -6741,10 +6749,9 @@ impl SearchEngine {
     /// column, one pass over it; on an index without the column, every book's keys are
     /// recomputed from its stored text, which reads the whole store. Cancellable.
     ///
-    /// A line is covered when any slot of the set holds its text's key, including a slot a
-    /// later delta deleted, or an alias shares a neighbour's vector with it; a release
-    /// deletes only texts no line of its library holds, so that counts a line of an index
-    /// older than the set at most.
+    /// A line is covered when a live slot of the generation the set serves holds its text's
+    /// key, or an alias shares a live neighbour's vector with it: a slot a later delta
+    /// deleted covers nothing, as a search returns nothing from it.
     pub fn semantic_coverage(
         &self,
         vectors_dir: String,
@@ -6814,14 +6821,14 @@ impl SearchEngine {
             let (info, coverage) = self.coverage_of_set(vectors_dir, cancellation)?;
             let mut set_key = info.identity_digest.clone();
             for segment in &info.segments {
-                set_key.push(':');
-                set_key.push_str(&segment.sha256);
+                set_key.push_str(&format!(":{}/{}", segment.sha256, segment.slots_dead));
             }
             Ok(SemanticCoveredBooks {
                 file_paths: coverage.covered_books,
                 set_key,
                 generation: info.generation,
                 vectors_library_version: info.library_version,
+                recovered_from_previous: info.recovered_from_previous,
             })
         }
 
@@ -6846,8 +6853,7 @@ impl SearchEngine {
         SemanticError,
     > {
         use crate::semantic_resolver::LiveResolver;
-        use otzaria_semantic_search::semantic::oxv::reader::Segment;
-        use otzaria_semantic_search::semantic::segment_set;
+        use otzaria_semantic_search::semantic::segment_set::{self, SegmentSet};
         let vectors_dir = PathBuf::from(&vectors_dir);
         let cancel = &cancellation.flag;
         let failed = |err: &SemanticSearchError| {
@@ -6861,7 +6867,10 @@ impl SearchEngine {
                 "counting the coverage",
             )
         };
-        let Some(info) = segment_set::info(&vectors_dir).map_err(|err| failed(&err))? else {
+        if segment_set::info(&vectors_dir)
+            .map_err(|err| failed(&err))?
+            .is_none()
+        {
             return Err(SemanticError::new(
                 SemanticErrorKind::ArtifactMissing,
                 format!(
@@ -6870,26 +6879,37 @@ impl SearchEngine {
                 ),
             )
             .with_field("vectors_dir"));
-        };
+        }
+        // A reader: no lock or recovery, so an install or a compaction never waits for it.
+        let set = SegmentSet::open_without_recovery(&vectors_dir).map_err(|err| failed(&err))?;
+        let info = set.info().clone();
         let mut keys = Vec::new();
-        for segment in &info.segments {
+        for (seg, segment) in set.segments().iter().enumerate() {
             if cancel.is_cancelled() {
                 return Err(failed(&SemanticSearchError::Cancelled));
             }
-            // Where the set keeps its segments, as the sidecar lays it out.
-            let path = vectors_dir
-                .join("segments")
-                .join(format!("{}.oxv", segment.id));
-            let opened = Segment::open(&path).map_err(|err| failed(&err.into()))?;
-            keys.extend((0..opened.slot_count()).map(|slot| opened.key(slot).column_value()));
-            // A short line that shares a neighbour's vector is covered by it.
             keys.extend(
-                opened
+                (0..segment.slot_count())
+                    .filter(|&slot| set.is_live(seg as u16, slot))
+                    .map(|slot| segment.key(slot).column_value()),
+            );
+        }
+        keys.sort_unstable();
+        keys.dedup();
+        // A short line that shares a live neighbour's vector is covered by it; `anchor` is
+        // the short line's own key.
+        let mut aliases = Vec::new();
+        for segment in set.segments() {
+            aliases.extend(
+                segment
                     .occurrences()
-                    .filter(|row| row.is_alias())
+                    .filter(|row| {
+                        row.is_alias() && keys.binary_search(&row.key.column_value()).is_ok()
+                    })
                     .map(|row| row.anchor.column_value()),
             );
         }
+        keys.extend(aliases);
         keys.sort_unstable();
         keys.dedup();
         ensure_keyed_chunking(&info.identity.model, &|err| err.to_string())?;

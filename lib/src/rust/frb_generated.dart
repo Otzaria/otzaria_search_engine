@@ -11206,13 +11206,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SemanticCoveredBooks dco_decode_semantic_covered_books(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
     return SemanticCoveredBooks(
       filePaths: dco_decode_list_String(arr[0]),
       setKey: dco_decode_String(arr[1]),
       generation: dco_decode_u_64(arr[2]),
       vectorsLibraryVersion: dco_decode_u_32(arr[3]),
+      recoveredFromPrevious: dco_decode_bool(arr[4]),
     );
   }
 
@@ -13725,11 +13726,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_setKey = sse_decode_String(deserializer);
     var var_generation = sse_decode_u_64(deserializer);
     var var_vectorsLibraryVersion = sse_decode_u_32(deserializer);
+    var var_recoveredFromPrevious = sse_decode_bool(deserializer);
     return SemanticCoveredBooks(
       filePaths: var_filePaths,
       setKey: var_setKey,
       generation: var_generation,
       vectorsLibraryVersion: var_vectorsLibraryVersion,
+      recoveredFromPrevious: var_recoveredFromPrevious,
     );
   }
 
@@ -16273,6 +16276,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.setKey, serializer);
     sse_encode_u_64(self.generation, serializer);
     sse_encode_u_32(self.vectorsLibraryVersion, serializer);
+    sse_encode_bool(self.recoveredFromPrevious, serializer);
   }
 
   @protected
@@ -18955,10 +18959,9 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// column, one pass over it; on an index without the column, every book's keys are
   /// recomputed from its stored text, which reads the whole store. Cancellable.
   ///
-  /// A line is covered when any slot of the set holds its text's key, including a slot a
-  /// later delta deleted, or an alias shares a neighbour's vector with it; a release
-  /// deletes only texts no line of its library holds, so that counts a line of an index
-  /// older than the set at most.
+  /// A line is covered when a live slot of the generation the set serves holds its text's
+  /// key, or an alias shares a live neighbour's vector with it: a slot a later delta
+  /// deleted covers nothing, as a search returns nothing from it.
   Future<SemanticCoverage> semanticCoverage({
     required String vectorsDir,
     required SemanticCancellationToken cancellation,

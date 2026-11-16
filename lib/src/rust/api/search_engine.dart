@@ -1644,10 +1644,9 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// column, one pass over it; on an index without the column, every book's keys are
   /// recomputed from its stored text, which reads the whole store. Cancellable.
   ///
-  /// A line is covered when any slot of the set holds its text's key, including a slot a
-  /// later delta deleted, or an alias shares a neighbour's vector with it; a release
-  /// deletes only texts no line of its library holds, so that counts a line of an index
-  /// older than the set at most.
+  /// A line is covered when a live slot of the generation the set serves holds its text's
+  /// key, or an alias shares a live neighbour's vector with it: a slot a later delta
+  /// deleted covers nothing, as a search returns nothing from it.
   Future<SemanticCoverage> semanticCoverage({
     required String vectorsDir,
     required SemanticCancellationToken cancellation,
@@ -3277,13 +3276,17 @@ class SemanticCoveredBooks {
   /// vectors are keyed by text, not by book.
   final List<String> filePaths;
 
-  /// What the answer depends on in the set: its identity digest and the checksum of each
-  /// segment of the generation it serves. Opaque; compare it for equality only. It changes
-  /// whenever the segments served change — an install of a base or a delta, by this engine
-  /// or any other tool through the set's generations, a compaction, a fallback to
-  /// `PREVIOUS` — and not otherwise: retiring the `PREVIOUS` generation keeps it, and so
-  /// does installing the same releases into an emptied directory. With the state of the
-  /// lexical index, which the answer depends on too, it is the key to cache the answer by.
+  /// What the answer depends on in the set: its identity digest, and the checksum and dead
+  /// slots of each segment of the generation it serves. Opaque; compare it for equality
+  /// only. It changes whenever the vectors served change — an install of a base or a delta,
+  /// by this engine or any other tool through the set's generations, a compaction, a
+  /// fallback to `PREVIOUS` — and not otherwise: retiring the `PREVIOUS` generation keeps
+  /// it, and so does installing the same releases into an emptied directory.
+  ///
+  /// It says nothing of the lexical index, and the answer depends on that too: a book
+  /// added, removed or reindexed can change it with the set unchanged. The engine returns
+  /// no key for the index's state, so the application recomputes after it changes the
+  /// index, as well as when this key changes.
   final String setKey;
 
   /// The set's live generation. Every install and compaction numbers a new one past those
@@ -3294,11 +3297,17 @@ class SemanticCoveredBooks {
   /// The library version the set stands at.
   final int vectorsLibraryVersion;
 
+  /// The live generation (`CURRENT`) did not open, and the one before it (`PREVIOUS`) is
+  /// what the answer is for, as [`SemanticVectorsInfo::recovered_from_previous`] says:
+  /// for instance, a generation another tool wrote was damaged.
+  final bool recoveredFromPrevious;
+
   const SemanticCoveredBooks({
     required this.filePaths,
     required this.setKey,
     required this.generation,
     required this.vectorsLibraryVersion,
+    required this.recoveredFromPrevious,
   });
 
   @override
@@ -3306,7 +3315,8 @@ class SemanticCoveredBooks {
       filePaths.hashCode ^
       setKey.hashCode ^
       generation.hashCode ^
-      vectorsLibraryVersion.hashCode;
+      vectorsLibraryVersion.hashCode ^
+      recoveredFromPrevious.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -3316,7 +3326,8 @@ class SemanticCoveredBooks {
           filePaths == other.filePaths &&
           setKey == other.setKey &&
           generation == other.generation &&
-          vectorsLibraryVersion == other.vectorsLibraryVersion;
+          vectorsLibraryVersion == other.vectorsLibraryVersion &&
+          recoveredFromPrevious == other.recoveredFromPrevious;
 }
 
 /// A semantic call that failed. Dart receives it as a thrown `SemanticError`, an
