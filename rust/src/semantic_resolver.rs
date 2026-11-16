@@ -2745,9 +2745,10 @@ const ALIAS_REACH: u64 = 2;
 
 /// Leaves out each alias row whose owner — a first-window row of the same hit and book, at
 /// most [`ALIAS_REACH`] lines away — is a row too: it would only repeat the owner's match.
-fn drop_listed_owners_aliases(lines: &mut Vec<ResolvedLine>) {
+/// Returns the lines left out, by book and id.
+fn drop_listed_owners_aliases(lines: &mut Vec<ResolvedLine>) -> Vec<(String, u64)> {
     if !lines.iter().any(|line| line.window == ALIAS_WINDOW) {
-        return;
+        return Vec::new();
     }
     let owners: HashSet<(u32, &str, u64)> = lines
         .iter()
@@ -2769,8 +2770,15 @@ fn drop_listed_owners_aliases(lines: &mut Vec<ResolvedLine>) {
                 })
         })
         .collect();
+    let dropped = lines
+        .iter()
+        .zip(&keep)
+        .filter(|(_, keep)| !**keep)
+        .map(|(line, _)| (line.file_path.clone(), line.line_id))
+        .collect();
     let mut keep = keep.into_iter();
     lines.retain(|_| keep.next().unwrap_or(true));
+    dropped
 }
 
 /// Whether `compiled` filters admit a book, by the sidecar's own book test: every book
@@ -3240,11 +3248,15 @@ impl CandidateResolver for LiveResolver<'_> {
                 }
         };
         // Before the line dedupe: a short line hidden here may still stand by another hit.
-        drop_listed_owners_aliases(&mut lines);
+        let dropped = drop_listed_owners_aliases(&mut lines);
         lines.sort_by(|a, b| score(b).total_cmp(&score(a)));
         let mut seen = HashSet::new();
         lines.retain(|line| seen.insert((line.file_path.clone(), line.line_id)));
         let mut described = self.records.lock().unwrap_or_else(PoisonError::into_inner);
+        // A line left out keeps no record: a lexical hit on it would read the alias window.
+        for key in dropped.iter().filter(|key| !seen.contains(*key)) {
+            described.remove(key);
+        }
         for line in &lines {
             if let Some(record) = described.get_mut(&(line.file_path.clone(), line.line_id)) {
                 record.window = line.window;
@@ -3789,8 +3801,9 @@ mod tests {
 
     /// A short line that shares its neighbour's vector is an alias record of the neighbour's
     /// hit: found at its hint by its own key, found where an insertion moved it, and not
-    /// found once its text, and so its key, changed. Its owner's row stands for it, and a
-    /// compaction re-anchors it as an alias of its own key.
+    /// found once its text, and so its key, changed. It comes back as window 255, and a
+    /// compaction re-anchors it as an alias of its own key. The hit holds the alias record
+    /// alone: with its owner's, the owner's row stands for it.
     #[test]
     fn an_alias_resolves_the_short_line_by_its_own_key() {
         let neighbour = "שורה ארוכה דיה לעמוד לבדה בספר".to_string();
@@ -3808,8 +3821,7 @@ mod tests {
         let (key, anchor) = (key_in(&base, 2).narrowed(), key_in(&base, 3).narrowed());
         let hit = || {
             let mut hit = window_hit(key, 0, "/books/long.txt", 2);
-            hit.records
-                .push(occurrence("/books/long.txt", 3, ALIAS_WINDOW, anchor));
+            hit.records = vec![occurrence("/books/long.txt", 3, ALIAS_WINDOW, anchor)];
             hit
         };
         let mut moved = vec!["שורת פתיחה חדשה ארוכה למדי".to_string(); 3];
@@ -3817,8 +3829,8 @@ mod tests {
         let mut changed = base.clone();
         changed[3] = "קצרה אחרת".to_string();
         for (lines, expected) in [
-            (&base, vec![(2, 0)]),
-            (&moved, vec![(5, 0)]),
+            (&base, vec![(3, ALIAS_WINDOW)]),
+            (&moved, vec![(6, ALIAS_WINDOW)]),
             (&changed, vec![]),
         ] {
             let dir = tempfile::TempDir::new().unwrap();
@@ -3833,7 +3845,6 @@ mod tests {
                 let mut found: Vec<(u64, u8)> = found
                     .iter()
                     .map(|line| (line.segment, line.window))
-                    .filter(|&(_, window)| window == ALIAS_WINDOW || !expected.is_empty())
                     .collect();
                 found.sort_unstable();
                 assert_eq!(found, expected, "column: {}", column.is_some());
@@ -3852,7 +3863,7 @@ mod tests {
                             .iter()
                             .map(|record| (record.hint, record.window, record.anchor))
                             .collect::<Vec<_>>(),
-                        [(expected[0].0 as u32 + 1, ALIAS_WINDOW, Some(anchor))]
+                        [(expected[0].0 as u32, ALIAS_WINDOW, Some(anchor))]
                     );
                 }
             }
@@ -4109,6 +4120,15 @@ mod tests {
                 "column: {}",
                 column.is_some()
             );
+            // The lines left out keep no record for a lexical hit on them to read.
+            let mut recorded: Vec<_> = resolver.records().into_keys().collect();
+            recorded.sort_unstable();
+            let mut listed: Vec<_> = found
+                .iter()
+                .map(|line| (line.file_path.clone(), line.line_id))
+                .collect();
+            listed.sort_unstable();
+            assert_eq!(recorded, listed, "column: {}", column.is_some());
         }
     }
 
@@ -4146,7 +4166,10 @@ mod tests {
             line(0, "/a", 30, 0),
         ];
         // Before the line dedupe: a short line hidden here may still stand by another hit.
-        drop_listed_owners_aliases(&mut lines);
+        assert_eq!(
+            drop_listed_owners_aliases(&mut lines),
+            [("/a".to_string(), 20), ("/a".to_string(), 31)]
+        );
         assert_eq!(
             rows(&lines),
             rows(&[

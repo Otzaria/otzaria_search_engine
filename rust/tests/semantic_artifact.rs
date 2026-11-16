@@ -4936,7 +4936,7 @@ fn compaction_preserves_alias_after_neighbour_tail_changes() {
     use otzaria_semantic_search::semantic::chunk_key::{ChunkKey, LineRef};
     use otzaria_semantic_search::semantic::chunker::Chunker;
     use otzaria_semantic_search::semantic::oxv::occurrence::ALIAS_WINDOW;
-    use search_engine::api::search_engine::SemanticHighlightTarget;
+    use search_engine::api::search_engine::{SemanticHighlightTarget, SemanticRankingOptions};
     const BOOK: &str = "/books/short.txt";
     let before = "תורה ".repeat(94).trim().to_string();
     let mut words = vec!["תורה"; 101];
@@ -5007,7 +5007,7 @@ fn compaction_preserves_alias_after_neighbour_tail_changes() {
             scan_threads: None,
         })
         .unwrap();
-    let short = || {
+    let short_under = |alias_penalty: f64| {
         engine
             .search_semantic(
                 after.clone(),
@@ -5020,7 +5020,10 @@ fn compaction_preserves_alias_after_neighbour_tail_changes() {
                 None,
                 false,
                 false,
-                None,
+                Some(SemanticRankingOptions {
+                    alias_penalty,
+                    ..SemanticRankingOptions::defaults()
+                }),
                 &token,
             )
             .unwrap()
@@ -5030,8 +5033,15 @@ fn compaction_preserves_alias_after_neighbour_tail_changes() {
                 hit.file_path == BOOK && hit.segment == 1 && hit.matched_window == ALIAS_WINDOW
             })
     };
+    let short = || short_under(SemanticRankingOptions::defaults().alias_penalty);
     // Its neighbour no longer holds the vector, so nothing stands for the short line.
     let found = short().expect("the unchanged short line is found before compaction");
+    let unpenalized = short_under(0.0).expect("found without the alias penalty too");
+    let penalty = unpenalized.semantic_score.unwrap() - found.semantic_score.unwrap();
+    assert!(
+        (penalty - SemanticRankingOptions::defaults().alias_penalty as f32).abs() < 1e-3,
+        "the alias is scored the alias penalty below its vector's score: {penalty}"
+    );
     assert_eq!(
         found.snippet_html, lines[1],
         "an alias has no matched window and is shown as the whole short line"
