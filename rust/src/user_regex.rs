@@ -1242,8 +1242,9 @@ impl LinePlan {
     pub(crate) fn find_lines(&self, text: &str) -> Vec<(u32, u32)> {
         let mut out = Vec::new();
         let mut offset = 0u32;
+        let mut view = LineView::default();
         for line in text.split('\n') {
-            let view = LineView::of(line, true);
+            view.fill(line, true);
             out.extend(self.find(&view.text).iter().map(|range| {
                 let (start, end) = view.source_range(range);
                 (offset + start, offset + end)
@@ -1352,6 +1353,7 @@ pub(crate) struct LineView {
 }
 
 impl LineView {
+    #[cfg(test)]
     pub(crate) fn of(source: &str, map: bool) -> Self {
         let mut view = LineView::default();
         view.fill(source, map);
@@ -2821,7 +2823,11 @@ fn hydrate(
     let mut out = Vec::with_capacity(hits.len());
     for ((hit, (_, document)), text) in hits.iter().zip(&documents).zip(texts) {
         let ranges = plan.find_lines(&text.text);
-        let snippet = paint_snippet(&text.text, &ranges, page);
+        let is_pdf = document
+            .get_first(is_pdf_f)
+            .and_then(|v| v.as_bool())
+            .unwrap_or_default();
+        let snippet = paint_snippet(&text.text, &ranges, page, is_pdf);
         out.push((
             SearchResult {
                 title: str_field(document, title_f),
@@ -2853,18 +2859,86 @@ fn hydrate(
 
 /// At most `max_chars` of `text` around its first match, HTML-escaped, every match inside
 /// wrapped in the highlight tags. `ranges` are UTF-16 offsets into `text`.
-fn paint_snippet(text: &str, ranges: &[(u32, u32)], page: &Page) -> String {
-    let units: Vec<u16> = text.encode_utf16().collect();
+/// Joins the windows of a long PDF page's snippet.
+const PAGE_SNIPPET_GAP: &str = " … ";
+/// Windows of one page's snippet.
+const PAGE_SNIPPET_MAX_WINDOWS: usize = 8;
+/// UTF-16 units shown on each side of a match, at least.
+const PAGE_SNIPPET_MIN_CONTEXT: usize = 24;
+
+/// The snippet of a line around its first match, `ranges` painted. A PDF page's layout
+/// lines read as one paragraph, and when its matches lie further apart than one snippet,
+/// each of the first [`PAGE_SNIPPET_MAX_WINDOWS`] gets a window of its own.
+fn paint_snippet(text: &str, ranges: &[(u32, u32)], page: &Page, is_pdf: bool) -> String {
+    let mut units: Vec<u16> = text.encode_utf16().collect();
     let max = (page.max_chars.max(1) as usize).min(units.len().max(1));
-    let first = ranges.first().map_or(0, |r| r.0 as usize);
-    let mut start = first.saturating_sub(max / 4);
-    if start > 0 {
-        // Start on a word.
-        if let Some(space) = units[..start].iter().rposition(|&u| u == u16::from(b' ')) {
-            start = space + 1;
+    if is_pdf {
+        for unit in units.iter_mut().filter(|u| **u == u16::from(b'\n')) {
+            *unit = u16::from(b' ');
+        }
+        if let (Some(first), Some(last)) = (ranges.first(), ranges.last()) {
+            if ranges.len() > 1 && (last.1 - first.0) as usize > max - max / 4 {
+                return paint_windows(&units, ranges, page, max);
+            }
         }
     }
+    let first = ranges.first().map_or(0, |r| r.0 as usize);
+    let start = word_start(&units, first.saturating_sub(max / 4));
     let end = (start + max).min(units.len());
+    paint_units(&units, start, end, ranges, page)
+}
+
+/// One window around each of the first matches, joined by [`PAGE_SNIPPET_GAP`].
+fn paint_windows(units: &[u16], ranges: &[(u32, u32)], page: &Page, max: usize) -> String {
+    let shown = &ranges[..ranges.len().min(PAGE_SNIPPET_MAX_WINDOWS)];
+    let context = (max / (2 * shown.len())).max(PAGE_SNIPPET_MIN_CONTEXT);
+    let mut windows: Vec<(usize, usize)> = Vec::new();
+    for &(s, e) in shown {
+        let (s, e) = (s as usize, e as usize);
+        let from = word_start(units, s.saturating_sub(context));
+        let to = word_end(units, e, (e + context).min(units.len()));
+        match windows.last_mut() {
+            Some(last) if from <= last.1 => last.1 = last.1.max(to),
+            _ => windows.push((from, to)),
+        }
+    }
+    windows
+        .iter()
+        .map(|&(from, to)| paint_units(units, from, to, ranges, page))
+        .collect::<Vec<_>>()
+        .join(PAGE_SNIPPET_GAP)
+}
+
+/// `at`, moved back to the start of its word.
+fn word_start(units: &[u16], at: usize) -> usize {
+    if at == 0 {
+        return 0;
+    }
+    units[..at]
+        .iter()
+        .rposition(|&u| u == u16::from(b' '))
+        .map_or(at, |space| space + 1)
+}
+
+/// `at`, moved back to the end of a word within `from..at`.
+fn word_end(units: &[u16], from: usize, at: usize) -> usize {
+    if at >= units.len() {
+        return units.len();
+    }
+    units[from..at]
+        .iter()
+        .rposition(|&u| u == u16::from(b' '))
+        .map_or(at, |space| from + space)
+}
+
+/// `units[start..end]` as HTML, the parts of `ranges` inside it painted.
+fn paint_units(
+    units: &[u16],
+    start: usize,
+    end: usize,
+    ranges: &[(u32, u32)],
+    page: &Page,
+) -> String {
     let decode = |a: usize, b: usize| String::from_utf16_lossy(&units[a.min(b)..b]);
     let mut out = String::new();
     let mut at = start;

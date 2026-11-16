@@ -3919,6 +3919,33 @@ fn layout_lines_as_spaces(mut text: DisplayText) -> DisplayText {
     text
 }
 
+/// `text` cut at its layout lines (`line_starts`), and between words, into pieces of at
+/// most `budget` bytes, each a whole snippet fragment.
+fn snippet_pieces(text: &str, line_starts: &[usize], budget: usize) -> Vec<(usize, usize)> {
+    let budget = budget.max(1);
+    let ends = line_starts.iter().skip(1).map(|&next| next - 1);
+    let mut pieces = Vec::new();
+    for (&line_start, line_end) in line_starts.iter().zip(ends.chain([text.len()])) {
+        let mut start = line_start;
+        while line_end - start > budget {
+            let mut limit = start + budget;
+            while !text.is_char_boundary(limit) {
+                limit -= 1;
+            }
+            let end = match text[start..limit].rfind(char::is_whitespace) {
+                Some(space) if space > 0 => start + space,
+                // A word longer than a fragment is cut where the fragment ends.
+                _ if limit > start => limit,
+                _ => start + text[start..].chars().next().map_or(1, char::len_utf8),
+            };
+            pieces.push((start, end));
+            start = end;
+        }
+        pieces.push((start, line_end));
+    }
+    pieces
+}
+
 /// Joins the windows of a long PDF page's snippet.
 const PAGE_SNIPPET_GAP: &str = " … ";
 /// Windows of one page's snippet, one per distinct matched word.
@@ -17206,14 +17233,35 @@ impl SearchEngine {
         (!ranges.is_empty()).then_some(ranges)
     }
 
-    /// `fragment` as HTML with `ranges` painted.
+    /// Every token of `text` some word of `phrase`, or of an alternative, can fill.
+    fn query_word_ranges(
+        searcher: &Searcher,
+        text: &str,
+        phrase: &PhraseHighlight,
+    ) -> Option<Vec<(usize, usize)>> {
+        let mut analyzer = searcher.index().tokenizers().get(phrase.analyzer)?;
+        let mut ranges = Vec::new();
+        let mut stream = analyzer.token_stream(text);
+        while let Some(token) = stream.next() {
+            let word = token.text.as_str();
+            if phrase
+                .variants()
+                .any(|variant| variant.per_word_terms.iter().any(|set| set.contains(word)))
+            {
+                ranges.push((token.offset_from, token.offset_to));
+            }
+        }
+        Some(ranges)
+    }
+
     /// The snippet of a PDF page longer than the snippet budget: a window around each
     /// word that matched, joined by [`PAGE_SNIPPET_GAP`]. The words of a page match far
     /// apart, and the app highlights the page by the words its snippet paints, so every
     /// one must be in it. `None` when the page fits the budget or nothing matched.
     ///
-    /// The words come from the phrase's first complete occurrence, else from the query's
-    /// terms on each layout line (`line_starts`), one window for each distinct word.
+    /// The words come from the phrase's first complete occurrence, else from every
+    /// occurrence of the query's words: a window for each distinct word, then for
+    /// further occurrences, [`PAGE_SNIPPET_MAX_WINDOWS`] in all.
     fn pdf_page_snippet_html(
         searcher: &Searcher,
         snippet_generator: &SnippetGenerator,
@@ -17246,21 +17294,32 @@ impl SearchEngine {
         let (mut shown, painted) = match occurrence {
             Some(found) => found,
             None if phrase.is_none_or(|pf| pf.allow_term_fallback) => {
-                let mut painted = Vec::new();
-                let mut words = HashSet::new();
-                let mut shown = Vec::new();
-                let ends = line_starts.iter().skip(1).map(|&next| next - 1);
-                for (&start, end) in line_starts.iter().zip(ends.chain([text.len()])) {
-                    let snippet = snippet_generator.snippet(&text[start..end]);
-                    let fragment = start + snippet.fragment_range().start;
-                    for range in snippet.highlighted() {
-                        let range = (fragment + range.start, fragment + range.end);
-                        painted.push(range);
-                        if words.insert(&text[range.0..range.1]) {
-                            shown.push(range);
+                let mut painted = match phrase {
+                    Some(pf) => Self::query_word_ranges(searcher, text, pf)?,
+                    None => {
+                        // Each piece fits one fragment, which then paints every term in it.
+                        let mut painted = Vec::new();
+                        for (start, end) in snippet_pieces(text, line_starts, budget) {
+                            let snippet = snippet_generator.snippet(&text[start..end]);
+                            let fragment = start + snippet.fragment_range().start;
+                            painted.extend(
+                                snippet
+                                    .highlighted()
+                                    .iter()
+                                    .map(|r| (fragment + r.start, fragment + r.end)),
+                            );
                         }
+                        painted
                     }
-                }
+                };
+                painted.sort_unstable();
+                painted.dedup();
+                let mut words = HashSet::new();
+                let shown = painted
+                    .iter()
+                    .copied()
+                    .filter(|&(s, e)| words.insert(&text[s..e]))
+                    .collect();
                 (shown, painted)
             }
             None => return None,
@@ -17268,8 +17327,17 @@ impl SearchEngine {
         if shown.is_empty() {
             return None;
         }
-        shown.sort_unstable();
+        // Every distinct word first, then further occurrences while windows remain.
         shown.truncate(PAGE_SNIPPET_MAX_WINDOWS);
+        for range in &painted {
+            if shown.len() >= PAGE_SNIPPET_MAX_WINDOWS {
+                break;
+            }
+            if !shown.contains(range) {
+                shown.push(*range);
+            }
+        }
+        shown.sort_unstable();
         let context = (budget / (2 * shown.len())).max(PAGE_SNIPPET_MIN_CONTEXT);
         let mut windows: Vec<(usize, usize)> = Vec::new();
         for &(start, end) in &shown {
@@ -17301,6 +17369,7 @@ impl SearchEngine {
         Some(html.join(PAGE_SNIPPET_GAP))
     }
 
+    /// `fragment` as HTML with `ranges` painted.
     fn paint_ranges(
         fragment: &str,
         mut ranges: Vec<(usize, usize)>,

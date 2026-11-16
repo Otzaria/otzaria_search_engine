@@ -620,3 +620,19 @@ fn a_pdf_indexed_by_lines_beside_one_indexed_by_pages() {
         ["/b/book.pdf"]
     );
 }
+
+#[test]
+fn a_page_of_one_long_line_shows_every_matched_word() {
+    // An OCR page without layout lines.
+    let filler = "שורה של מילוי בלבד בעמוד הזה ".repeat(60);
+    let page = format!("ויאמר משה אל העם {filler}וראו את ישועת יהוה");
+    let (e, _dir) = pdf_engine(&[&[page.as_str()]]);
+    let same_paragraph = Search {
+        same_paragraph: true,
+        ..Search::default()
+    };
+    let results = advanced(&e, "משה ישועת", &same_paragraph);
+    assert_eq!(pages(&results), [(0, false)]);
+    assert_painted(&results[0], &["משה", "ישועת"]);
+    assert!(results[0].text.contains(" … "), "{}", results[0].text);
+}

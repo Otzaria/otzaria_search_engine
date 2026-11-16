@@ -2679,3 +2679,62 @@ fn line_anchors_and_spans_hold_within_each_line_of_a_pdf_page() {
         "אל תיראו"
     );
 }
+
+fn pdf_engine(dir: &Path, page: &str) -> SearchEngine {
+    let mut engine = SearchEngine::new(dir.to_str().unwrap());
+    engine
+        .add_pdf_book_placed(
+            "ספר".into(),
+            "/t".into(),
+            "/b/page.pdf".into(),
+            0,
+            0,
+            vec![PdfPageInput {
+                reference: "עמוד 1".into(),
+                text: page.into(),
+                page_index: 0,
+            }],
+            None,
+        )
+        .unwrap();
+    engine.commit().unwrap();
+    engine
+}
+
+#[test]
+fn a_pdf_page_s_regex_snippet_reads_as_one_paragraph() {
+    let dir = TempDir::new().unwrap();
+    let engine = pdf_engine(dir.path(), "ויאמר משה אל העם\nאל תיראו התיצבו");
+    let found = events(&engine, "/התיצבו$/", &[], &Arc::new(AtomicBool::new(false)));
+    let hits = results(&found);
+    assert_eq!(hits.len(), 1);
+    let text = &hits[0].text;
+    assert!(!text.contains('\n'), "{text}");
+    assert!(
+        text.contains("אל תיראו <font color=red>התיצבו</font>"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_long_pdf_page_s_regex_snippet_shows_each_match() {
+    let dir = TempDir::new().unwrap();
+    let filler = "שורה של מילוי בלבד בעמוד הזה\n".repeat(100);
+    let page = format!("ויאמר משה אל העם\n{filler}ויען משה ויאמר\nאל תיראו התיצבו");
+    let engine = pdf_engine(dir.path(), &page);
+    for pattern in ["/משה/", "/^ויען משה/", "/משה (אל|ויאמר)/"] {
+        let found = events(&engine, pattern, &[], &Arc::new(AtomicBool::new(false)));
+        let hits = results(&found);
+        assert_eq!(hits.len(), 1, "{pattern}");
+        let text = &hits[0].text;
+        let painted = text.matches("<font color=red>").count();
+        // A sequence paints each of its words.
+        let expected = match pattern {
+            "/^ויען משה/" => 1,
+            "/משה (אל|ויאמר)/" => 4,
+            _ => 2,
+        };
+        assert_eq!(painted, expected, "{pattern}: {text}");
+        assert!(!text.contains('\n'), "{text}");
+    }
+}
