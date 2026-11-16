@@ -3903,6 +3903,40 @@ pub fn compute_content_fingerprint_bytes(text: Vec<u8>) -> u64 {
     content_fingerprint(&text)
 }
 
+/// A PDF page's layout lines shown as one paragraph. A space is one byte, as `\n` is,
+/// so every offset into the text still holds.
+fn layout_lines_as_spaces(mut text: DisplayText) -> DisplayText {
+    if text.text.contains('\n') {
+        text.text = text.text.replace('\n', " ");
+    }
+    text
+}
+
+/// A PDF's `textHash`: its raw page texts and page indexes. Only a PDF indexed one
+/// document per page has one, so 0 marks a PDF to index again.
+fn pdf_pages_fingerprint(pages: &[PdfPageText<'_>]) -> u64 {
+    let mut fnv = Fnv::new();
+    for page in pages {
+        fnv.feed(&page.page_index.to_le_bytes());
+        fnv.feed_field(page.text.as_bytes());
+    }
+    fnv.finish()
+}
+
+/// [`pdf_pages_fingerprint`] of the pages a test gives [`SearchEngine::add_pdf_book`].
+#[cfg(test)]
+pub(crate) fn pdf_pages_fingerprint_for_tests(pages: &[PdfPageInput]) -> u64 {
+    let pages: Vec<PdfPageText<'_>> = pages
+        .iter()
+        .map(|page| PdfPageText {
+            reference: Cow::Borrowed(&page.reference),
+            text: Cow::Borrowed(&page.text),
+            page_index: page.page_index,
+        })
+        .collect();
+    pdf_pages_fingerprint(&pages)
+}
+
 fn content_fingerprint(text: &str) -> u64 {
     let mut fnv = Fnv::new();
     fnv.feed(text.as_bytes());
@@ -9645,10 +9679,13 @@ impl SearchEngine {
     /// ([`normalize_pdf_text_for_indexing`]) and dropped when the garbage
     /// heuristic ([`is_probably_garbage_pdf_text`]) flags it — exactly the
     /// per-line logic of [`normalize_pdf_texts_for_indexing`]. One document is
-    /// added per surviving line, with `segment` = the page's `page_index` and
-    /// ids composed like [`Self::add_text_book`]'s. PDFs record their
-    /// `metadataHash` and no content fingerprint (`contentHash` = 0, their text is
-    /// not in the library DB).
+    /// added per page with a surviving line: its lines joined by `\n`, so every
+    /// search mode — proximity, any order, same paragraph, at least N — matches
+    /// across the page's layout lines (#5237). `segment` = the page's
+    /// `page_index`; ids are composed like [`Self::add_text_book`]'s. PDFs record
+    /// their `metadataHash`, no content fingerprint (`contentHash` = 0, their text
+    /// is not in the library DB), and as `textHash` [`pdf_pages_fingerprint`]: a
+    /// PDF an older engine indexed line by line has `textHash` 0.
     ///
     /// Returns the number of documents added; 0 means the PDF yielded no
     /// usable text (scanned/garbage) — the caller falls back to a sidecar or
@@ -9707,6 +9744,7 @@ impl SearchEngine {
         let extra_facets = extra_facets.unwrap_or_default();
         let stamps = Stamps {
             metadata: metadata_fingerprint(&title, &topics, extra_facets.clone()),
+            text: pdf_pages_fingerprint(&pages),
             ..Stamps::default()
         };
         let topics_facet = Facet::from_text(&topics)?;
@@ -9726,51 +9764,53 @@ impl SearchEngine {
         // Normalize on the bounded indexing pool, then enqueue sequentially.
         use rayon::prelude::*;
         let prepare_started = Instant::now();
-        let lines: Vec<(usize, &str)> = pages
-            .iter()
-            .enumerate()
-            .flat_map(|(page_idx, page)| page.text.split('\n').map(move |line| (page_idx, line)))
-            .collect();
-        type Prepared = (usize, String, bool, Option<cross_line::LineEdges>);
+        // A page is one document: a PDF line is where the layout wrapped, not where a
+        // sentence ended (#5237). Its surviving lines are joined by `\n`, a separator to
+        // the tokenizer, so positions run on from line to line.
+        type Prepared = (usize, String, u64, Option<cross_line::LineEdges>);
         let prepared: Vec<Prepared> =
             crate::indexing_buffers::preparation_cpu(preparation_threads, || {
-                lines
+                pages
                     .par_iter()
+                    .enumerate()
                     .map_init(
                         || edge_analyzer.clone(),
-                        |analyzer, (page_idx, raw_line)| {
-                            let normalized =
-                                hebrew_query::normalize_pdf_text_for_indexing(raw_line);
-                            let is_garbage =
-                                hebrew_query::is_probably_garbage_pdf_text(&normalized);
-                            let edges = (!is_garbage)
-                                .then(|| cross_line::line_edges(analyzer, &normalized))
-                                .flatten();
-                            (*page_idx, normalized, is_garbage, edges)
+                        |analyzer, (page_idx, page)| {
+                            let mut text = String::with_capacity(page.text.len());
+                            let mut garbage = 0u64;
+                            for raw_line in page.text.split('\n') {
+                                let normalized =
+                                    hebrew_query::normalize_pdf_text_for_indexing(raw_line);
+                                if hebrew_query::is_probably_garbage_pdf_text(&normalized) {
+                                    garbage += 1;
+                                    continue;
+                                }
+                                if !text.is_empty() {
+                                    text.push('\n');
+                                }
+                                text.push_str(&normalized);
+                            }
+                            let edges = cross_line::line_edges(analyzer, &text);
+                            (page_idx, text, garbage, edges)
                         },
                     )
                     .collect()
             })?;
         let prepare_time = prepare_started.elapsed();
-        // A dropped line sits between its neighbours' consecutive ids: no
-        // phrase may continue across it.
-        let garbage: Vec<bool> = prepared.iter().map(|p| p.2).collect();
+        let garbage_lines: u64 = prepared.iter().map(|page| page.2).sum();
+        let mut prepared = prepared;
+        prepared.retain(|(_, text, _, _)| !text.is_empty());
 
         let enqueue_started = Instant::now();
         let mut ordinal: u64 = 0;
-        let mut garbage_lines: u64 = 0;
-        for (line, (page_idx, normalized, is_garbage, edges)) in prepared.into_iter().enumerate() {
-            if is_garbage {
-                garbage_lines += 1;
-                continue;
-            }
-            let page = &pages[page_idx];
+        for (i, (page_idx, text, _, edges)) in prepared.iter().enumerate() {
+            let page = &pages[*page_idx];
             let id = id_base + ordinal + 1;
-            let line_hash = line_dedup_hash(&normalized);
+            let line_hash = line_dedup_hash(text);
             let mut document = doc!(
                 title_f        => title.as_str(),
                 reference_f    => page.reference.as_ref(),
-                text_f         => normalized.as_str(),
+                text_f         => text.as_str(),
                 id_f           => id,
                 is_pdf_f       => true,
                 file_path_f    => file_path.as_str(),
@@ -9785,23 +9825,28 @@ impl SearchEngine {
             if let Some(stored) = segment_to_store(id, u64::from(page.page_index)) {
                 document.add_u64(segment_f, stored);
             }
-            // A PDF's lines are not the library's text, so no vector is built from them.
+            // A PDF's pages are not the library's text, so no vector is built from them.
             set_chunk_key(&mut document, chunk_key_f, 0);
             for facet in &extra_facet_values {
                 document.add_facet(topics_f, facet.clone());
             }
-            if let Some(edges) = &edges {
-                let can_start = line == 0 || !garbage[line - 1];
-                let can_end = !garbage.get(line + 1).copied().unwrap_or(false);
+            // A phrase continues onto the next page only when no page between them
+            // lost its text.
+            if let Some(edges) = edges {
+                let follows = |a: usize, b: usize| pages[b].page_index == pages[a].page_index + 1;
+                let can_start = i == 0 || follows(prepared[i - 1].0, *page_idx);
+                let can_end = prepared
+                    .get(i + 1)
+                    .is_none_or(|next| follows(*page_idx, next.0));
                 edge_fields.add(&mut document, edges, can_start, can_end);
             }
-            add_stored_text(&mut document, stored_fields, &normalized, None);
+            add_stored_text(&mut document, stored_fields, text, None);
             writer.add_document(document)?;
             ordinal += 1;
         }
         let enqueue_time = enqueue_started.elapsed();
         info!(
-            "add_pdf_book '{title}': {ordinal} docs from {page_count} pages \
+            "add_pdf_book '{title}': {ordinal} page docs from {page_count} pages \
              ({garbage_lines} garbage lines), {text_bytes} bytes in {:?} \
              (prepare {prepare_time:?}, enqueue {enqueue_time:?})",
             started.elapsed()
@@ -17354,6 +17399,7 @@ impl SearchEngine {
                         }
                         _ => (hit_text.display_notes(vocalized_field), None),
                     };
+                    let text = layout_lines_as_spaces(text);
                     let cross_line_html = match (next_lines.get(slot), phrase) {
                         (Some(Some(next)), Some(pf)) => {
                             Self::cross_line_snippet_html(searcher, &text, next, pf, hl)
@@ -17513,7 +17559,7 @@ impl SearchEngine {
             Self::resolve_hit_texts(schema, searcher, &next_documents, HitRendering::Plain)?;
         for (slot, text) in slots.into_iter().zip(next_texts) {
             if text.status == TextStatus::Ok {
-                out[slot] = Some(text.display_notes(false));
+                out[slot] = Some(layout_lines_as_spaces(text.display_notes(false)));
             }
         }
         Ok(out)

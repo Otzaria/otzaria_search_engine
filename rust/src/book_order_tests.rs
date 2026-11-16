@@ -419,16 +419,18 @@ fn every_write_path_records_the_book_s_stamps() {
             Some(12),
         )
         .unwrap();
+    let scan = vec![PdfPageInput {
+        reference: "עמוד 1".to_string(),
+        text: "שורה של ממש בעמוד".to_string(),
+        page_index: 0,
+    }];
+    let scan_hash = pdf_pages_fingerprint_for_tests(&scan);
     engine
         .add_pdf_book(
             "סרוק".to_string(),
             "/pdf".to_string(),
             "scan.pdf".to_string(),
-            vec![PdfPageInput {
-                reference: "עמוד 1".to_string(),
-                text: "שורה של ממש בעמוד".to_string(),
-                page_index: 0,
-            }],
+            scan,
             facets(),
         )
         .unwrap();
@@ -514,7 +516,8 @@ fn every_write_path_records_the_book_s_stamps() {
         3,
         1,
         0,
-        0,
+        // A PDF indexed page by page; 0 for one indexed line by line.
+        scan_hash,
         metadata("סרוק", "/pdf", facets()),
         0,
     );

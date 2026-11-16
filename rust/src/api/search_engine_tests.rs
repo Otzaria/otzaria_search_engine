@@ -2723,7 +2723,8 @@ fn add_pdf_book_bytes_matches_documents_stamps_and_search() {
             facets,
         )
         .unwrap();
-    assert_eq!(actual, 3);
+    // One document per page with text: pages 3 and `u32::MAX`.
+    assert_eq!(actual, 2);
     assert_eq!(actual, expected);
     original.commit().unwrap();
     packed.commit().unwrap();
