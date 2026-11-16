@@ -1229,6 +1229,30 @@ impl LinePlan {
             })
     }
 
+    /// Whether a line of `text` matches. A PDF page holds its layout lines split by
+    /// `\n`: `^`, `$` and `.*` hold within each, as on a text book's lines.
+    pub(crate) fn matches_lines(&self, view: &mut LineView, text: &str) -> bool {
+        text.split('\n').any(|line| {
+            view.fill(line, false);
+            self.is_match(&view.text)
+        })
+    }
+
+    /// [`Self::find`] on each line of `text`, as UTF-16 ranges of `text`.
+    pub(crate) fn find_lines(&self, text: &str) -> Vec<(u32, u32)> {
+        let mut out = Vec::new();
+        let mut offset = 0u32;
+        for line in text.split('\n') {
+            let view = LineView::of(line, true);
+            out.extend(self.find(&view.text).iter().map(|range| {
+                let (start, end) = view.source_range(range);
+                (offset + start, offset + end)
+            }));
+            offset += line.encode_utf16().count() as u32 + 1;
+        }
+        out
+    }
+
     pub(crate) fn is_match(&self, view: &str) -> bool {
         Self::windows(self.edges(view)).any(|w| {
             let part = &view[w];
@@ -1484,24 +1508,21 @@ impl DisplayMatcher {
     pub(crate) fn find(&self, data: &str) -> Vec<Match> {
         match self {
             DisplayMatcher::Terms(matcher) => matcher.find_matches(data, &[]),
-            DisplayMatcher::Line(plan) => {
-                let view = LineView::of(data, true);
-                plan.find(&view.text)
-                    .iter()
-                    .map(|range| {
-                        let (start, end) = view.source_range(range);
-                        let (start, end) = (start as usize, end as usize);
-                        Match {
-                            start,
-                            end,
-                            word_ranges: vec![Range {
-                                start: 0,
-                                end: end - start,
-                            }],
-                        }
-                    })
-                    .collect()
-            }
+            DisplayMatcher::Line(plan) => plan
+                .find_lines(data)
+                .into_iter()
+                .map(|(start, end)| {
+                    let (start, end) = (start as usize, end as usize);
+                    Match {
+                        start,
+                        end,
+                        word_ranges: vec![Range {
+                            start: 0,
+                            end: end - start,
+                        }],
+                    }
+                })
+                .collect(),
         }
     }
 }
@@ -2311,8 +2332,7 @@ fn verify_candidates(
                 state.unavailable = true;
                 continue;
             }
-            view.fill(&text.text, false);
-            if plan.is_match(&view.text) {
+            if plan.matches_lines(&mut view, &text.text) {
                 let book = str_field(document, file_path_f);
                 hits.push((book, LineHit { id, address }));
             }
@@ -2745,8 +2765,7 @@ fn scan_stored_book(
                     scan.unavailable = true;
                     continue;
                 }
-                view.fill(&text.text, false);
-                if plan.is_match(&view.text) {
+                if plan.matches_lines(&mut view, &text.text) {
                     scan.hits.push(LineHit { id, address });
                 }
             }
@@ -2801,12 +2820,7 @@ fn hydrate(
     let texts = indexed_texts(ctx.searcher, &documents)?;
     let mut out = Vec::with_capacity(hits.len());
     for ((hit, (_, document)), text) in hits.iter().zip(&documents).zip(texts) {
-        let view = LineView::of(&text.text, true);
-        let ranges: Vec<(u32, u32)> = plan
-            .find(&view.text)
-            .iter()
-            .map(|r| view.source_range(r))
-            .collect();
+        let ranges = plan.find_lines(&text.text);
         let snippet = paint_snippet(&text.text, &ranges, page);
         out.push((
             SearchResult {

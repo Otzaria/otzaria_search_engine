@@ -3903,6 +3903,13 @@ pub fn compute_content_fingerprint_bytes(text: Vec<u8>) -> u64 {
     content_fingerprint(&text)
 }
 
+/// Where each layout line of a PDF page starts, in bytes.
+fn layout_line_starts(text: &str) -> Vec<usize> {
+    std::iter::once(0)
+        .chain(text.match_indices('\n').map(|(at, _)| at + 1))
+        .collect()
+}
+
 /// A PDF page's layout lines shown as one paragraph. A space is one byte, as `\n` is,
 /// so every offset into the text still holds.
 fn layout_lines_as_spaces(mut text: DisplayText) -> DisplayText {
@@ -3910,6 +3917,35 @@ fn layout_lines_as_spaces(mut text: DisplayText) -> DisplayText {
         text.text = text.text.replace('\n', " ");
     }
     text
+}
+
+/// Joins the windows of a long PDF page's snippet.
+const PAGE_SNIPPET_GAP: &str = " … ";
+/// Windows of one page's snippet, one per distinct matched word.
+const PAGE_SNIPPET_MAX_WINDOWS: usize = 8;
+/// Characters shown on each side of a matched word, at least.
+const PAGE_SNIPPET_MIN_CONTEXT: usize = 24;
+
+/// Where a window `chars` characters before `at` starts: at a word's start.
+fn word_start_before(text: &str, at: usize, chars: usize) -> usize {
+    let Some((from, _)) = text[..at].char_indices().rev().nth(chars) else {
+        return 0;
+    };
+    text[from..at]
+        .char_indices()
+        .find(|(_, c)| c.is_whitespace())
+        .map_or(from, |(space, c)| from + space + c.len_utf8())
+}
+
+/// Where a window `chars` characters after `at` ends: at a word's end.
+fn word_end_after(text: &str, at: usize, chars: usize) -> usize {
+    let Some((to, _)) = text[at..].char_indices().nth(chars) else {
+        return text.len();
+    };
+    let to = at + to;
+    text[at..to]
+        .rfind(char::is_whitespace)
+        .map_or(to, |space| at + space)
 }
 
 /// A PDF's `textHash`: its raw page texts and page indexes. Only a PDF indexed one
@@ -9833,7 +9869,9 @@ impl SearchEngine {
             // A phrase continues onto the next page only when no page between them
             // lost its text.
             if let Some(edges) = edges {
-                let follows = |a: usize, b: usize| pages[b].page_index == pages[a].page_index + 1;
+                let follows = |a: usize, b: usize| {
+                    pages[a].page_index.checked_add(1) == Some(pages[b].page_index)
+                };
                 let can_start = i == 0 || follows(prepared[i - 1].0, *page_idx);
                 let can_end = prepared
                     .get(i + 1)
@@ -10639,7 +10677,8 @@ impl SearchEngine {
     /// checks that must not be invalidated by adding/removing other books.
     ///
     /// A value of 0 means "unverifiable", same semantics as
-    /// [`Self::get_book_fingerprints`].
+    /// [`Self::get_book_fingerprints`]. A PDF's value fingerprints its pages instead,
+    /// and is 0 for one an older engine indexed line by line (see [`Self::add_pdf_book`]).
     pub fn get_book_text_fingerprints(&self) -> Result<HashMap<String, u64>> {
         let searcher = self.index_reader.searcher();
         Ok(searcher.search(
@@ -10657,8 +10696,8 @@ impl SearchEngine {
     /// matching live documents only.
     ///
     /// `0` means "unverifiable", exactly as in the map form: the book has no
-    /// document in the index, was indexed without a text fingerprint (PDF), or
-    /// its live documents disagree (a partial reindex).
+    /// document in the index, was indexed without a text fingerprint (a PDF indexed
+    /// line by line), or its live documents disagree (a partial reindex).
     pub fn get_book_text_fingerprint(&self, file_path: String) -> Result<u64> {
         let file_path_f = self.schema.get_field("filePath")?;
         let query = TermQuery::new(
@@ -17168,6 +17207,100 @@ impl SearchEngine {
     }
 
     /// `fragment` as HTML with `ranges` painted.
+    /// The snippet of a PDF page longer than the snippet budget: a window around each
+    /// word that matched, joined by [`PAGE_SNIPPET_GAP`]. The words of a page match far
+    /// apart, and the app highlights the page by the words its snippet paints, so every
+    /// one must be in it. `None` when the page fits the budget or nothing matched.
+    ///
+    /// The words come from the phrase's first complete occurrence, else from the query's
+    /// terms on each layout line (`line_starts`), one window for each distinct word.
+    fn pdf_page_snippet_html(
+        searcher: &Searcher,
+        snippet_generator: &SnippetGenerator,
+        text: &DisplayText,
+        line_starts: &[usize],
+        hl: &HighlightConfig,
+        phrase: Option<&PhraseHighlight>,
+    ) -> Option<String> {
+        let budget = hl.max_chars as usize;
+        if text.chars().count() <= budget {
+            return None;
+        }
+        let occurrence = phrase.and_then(|pf| {
+            pf.variants().find_map(|variant| {
+                let ranges = Self::phrase_occurrences(searcher, text, variant)?;
+                let first = ranges[..variant.per_word_terms.len()].to_vec();
+                let mut painted = ranges;
+                for other in pf.variants() {
+                    if !std::ptr::eq(other, variant) {
+                        painted.extend(
+                            Self::phrase_occurrences(searcher, text, other)
+                                .into_iter()
+                                .flatten(),
+                        );
+                    }
+                }
+                Some((first, painted))
+            })
+        });
+        let (mut shown, painted) = match occurrence {
+            Some(found) => found,
+            None if phrase.is_none_or(|pf| pf.allow_term_fallback) => {
+                let mut painted = Vec::new();
+                let mut words = HashSet::new();
+                let mut shown = Vec::new();
+                let ends = line_starts.iter().skip(1).map(|&next| next - 1);
+                for (&start, end) in line_starts.iter().zip(ends.chain([text.len()])) {
+                    let snippet = snippet_generator.snippet(&text[start..end]);
+                    let fragment = start + snippet.fragment_range().start;
+                    for range in snippet.highlighted() {
+                        let range = (fragment + range.start, fragment + range.end);
+                        painted.push(range);
+                        if words.insert(&text[range.0..range.1]) {
+                            shown.push(range);
+                        }
+                    }
+                }
+                (shown, painted)
+            }
+            None => return None,
+        };
+        if shown.is_empty() {
+            return None;
+        }
+        shown.sort_unstable();
+        shown.truncate(PAGE_SNIPPET_MAX_WINDOWS);
+        let context = (budget / (2 * shown.len())).max(PAGE_SNIPPET_MIN_CONTEXT);
+        let mut windows: Vec<(usize, usize)> = Vec::new();
+        for &(start, end) in &shown {
+            let window = (
+                word_start_before(text, start, context),
+                word_end_after(text, end, context),
+            );
+            match windows.last_mut() {
+                Some(last) if window.0 <= last.1 => last.1 = last.1.max(window.1),
+                _ => windows.push(window),
+            }
+        }
+        let html: Vec<String> = windows
+            .iter()
+            .map(|&(from, to)| {
+                let ranges = painted
+                    .iter()
+                    .filter(|&&(s, e)| s >= from && e <= to)
+                    .map(|&(s, e)| (s - from, e - from))
+                    .collect();
+                text.annotate(
+                    Self::paint_ranges(&text[from..to], ranges, hl),
+                    from,
+                    &hl.highlight_prefix,
+                    &hl.highlight_postfix,
+                )
+            })
+            .collect();
+        Some(html.join(PAGE_SNIPPET_GAP))
+    }
+
     fn paint_ranges(
         fragment: &str,
         mut ranges: Vec<(usize, usize)>,
@@ -17399,7 +17532,14 @@ impl SearchEngine {
                         }
                         _ => (hit_text.display_notes(vocalized_field), None),
                     };
-                    let text = layout_lines_as_spaces(text);
+                    // A PDF page's layout lines read as one paragraph; their starts pick
+                    // the page's snippet windows.
+                    let (text, line_starts) = if is_pdf {
+                        let starts = layout_line_starts(&text);
+                        (layout_lines_as_spaces(text), starts)
+                    } else {
+                        (text, Vec::new())
+                    };
                     let cross_line_html = match (next_lines.get(slot), phrase) {
                         (Some(Some(next)), Some(pf)) => {
                             Self::cross_line_snippet_html(searcher, &text, next, pf, hl)
@@ -17410,33 +17550,54 @@ impl SearchEngine {
                     let result_text = match (text_status, cross_line_html) {
                         (TextStatus::Ok, Some(html)) => html,
                         (TextStatus::Ok, None) => {
-                            match Self::snippet_html(searcher, snippet_generator, &text, hl, phrase)
-                            {
-                                Some((offset, html)) => {
-                                    let html = text.annotate(
-                                        html,
-                                        offset,
-                                        &hl.highlight_prefix,
-                                        &hl.highlight_postfix,
-                                    );
-                                    shown_vocalized
-                                        .as_ref()
-                                        .and_then(|vocalized| {
-                                            crate::vocalized_snippet::vocalize_snippet_html(
-                                                &html,
-                                                &text,
-                                                offset,
-                                                vocalized,
-                                                &hl.highlight_prefix,
-                                                &hl.highlight_postfix,
-                                            )
-                                        })
-                                        .unwrap_or(html)
+                            let page_html = (is_pdf && !vocalized_field)
+                                .then(|| {
+                                    Self::pdf_page_snippet_html(
+                                        searcher,
+                                        snippet_generator,
+                                        &text,
+                                        &line_starts,
+                                        hl,
+                                        phrase,
+                                    )
+                                })
+                                .flatten();
+                            if let Some(html) = page_html {
+                                html
+                            } else {
+                                match Self::snippet_html(
+                                    searcher,
+                                    snippet_generator,
+                                    &text,
+                                    hl,
+                                    phrase,
+                                ) {
+                                    Some((offset, html)) => {
+                                        let html = text.annotate(
+                                            html,
+                                            offset,
+                                            &hl.highlight_prefix,
+                                            &hl.highlight_postfix,
+                                        );
+                                        shown_vocalized
+                                            .as_ref()
+                                            .and_then(|vocalized| {
+                                                crate::vocalized_snippet::vocalize_snippet_html(
+                                                    &html,
+                                                    &text,
+                                                    offset,
+                                                    vocalized,
+                                                    &hl.highlight_prefix,
+                                                    &hl.highlight_postfix,
+                                                )
+                                            })
+                                            .unwrap_or(html)
+                                    }
+                                    None => bounded_display_snippet(
+                                        shown_vocalized.as_ref().unwrap_or(&text),
+                                        hl.max_chars,
+                                    ),
                                 }
-                                None => bounded_display_snippet(
-                                    shown_vocalized.as_ref().unwrap_or(&text),
-                                    hl.max_chars,
-                                ),
                             }
                         }
                         // The line no longer matches what was indexed: painting the query's
@@ -17557,9 +17718,20 @@ impl SearchEngine {
         }
         let next_texts =
             Self::resolve_hit_texts(schema, searcher, &next_documents, HitRendering::Plain)?;
-        for (slot, text) in slots.into_iter().zip(next_texts) {
+        let is_pdf_f = schema.get_field("isPdf")?;
+        for ((slot, text), (_, document)) in slots.into_iter().zip(next_texts).zip(&next_documents)
+        {
             if text.status == TextStatus::Ok {
-                out[slot] = Some(layout_lines_as_spaces(text.display_notes(false)));
+                let text = text.display_notes(false);
+                let is_pdf = document
+                    .get_first(is_pdf_f)
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                out[slot] = Some(if is_pdf {
+                    layout_lines_as_spaces(text)
+                } else {
+                    text
+                });
             }
         }
         Ok(out)

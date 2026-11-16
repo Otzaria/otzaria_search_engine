@@ -515,3 +515,108 @@ fn bench_searches_over_100k_pdf_lines() {
         );
     }
 }
+
+#[test]
+fn a_long_page_s_snippet_shows_every_matched_word() {
+    let mut lines = vec!["ויאמר משה אל העם"];
+    lines.extend(std::iter::repeat_n("שורה של מילוי בלבד בעמוד הזה", 58));
+    lines.push("וראו את ישועת יהוה");
+    let (e, _dir) = pdf_engine(&[&lines]);
+    let same_paragraph = Search {
+        same_paragraph: true,
+        ..Search::default()
+    };
+    let results = advanced(&e, "משה ישועת", &same_paragraph);
+    assert_eq!(pages(&results), [(0, false)]);
+    assert_painted(&results[0], &["משה", "ישועת"]);
+    assert!(results[0].text.contains(" … "), "{}", results[0].text);
+    // So does an ordered match whose words are far apart.
+    let results = advanced(&e, "משה ישועת", &distance(400));
+    assert_eq!(pages(&results), [(0, false)]);
+    assert_painted(&results[0], &["משה", "ישועת"]);
+}
+
+#[test]
+fn the_last_page_index_is_followed_by_no_page() {
+    let dir = TempDir::new().unwrap();
+    let mut e = SearchEngine::new(dir.path().to_str().unwrap());
+    let input = vec![
+        PdfPageInput {
+            reference: "אחרון".into(),
+            text: "סוף העמוד".into(),
+            page_index: u32::MAX,
+        },
+        PdfPageInput {
+            reference: "ראשון".into(),
+            text: "המשך כאן".into(),
+            page_index: 0,
+        },
+    ];
+    assert_eq!(
+        e.add_pdf_book_placed(
+            "ספר".into(),
+            "/t".into(),
+            "/b/x.pdf".into(),
+            0,
+            5,
+            input,
+            None
+        )
+        .unwrap(),
+        2
+    );
+    e.commit().unwrap();
+    assert!(exact(&e, "העמוד המשך").is_empty());
+    assert_eq!(
+        pages(&exact(&e, "סוף העמוד")),
+        [(u64::from(u32::MAX), false)]
+    );
+    assert_eq!(pages(&exact(&e, "המשך כאן")), [(0, false)]);
+}
+
+#[test]
+fn a_pdf_indexed_by_lines_beside_one_indexed_by_pages() {
+    let dir = TempDir::new().unwrap();
+    let mut e = SearchEngine::new(dir.path().to_str().unwrap());
+    // As an older engine wrote a PDF: one document per layout line, no `textHash`.
+    for (ordinal, line) in ["ויאמר משה אל העם", "אל תיראו התיצבו"].iter().enumerate()
+    {
+        e.add_document(
+            ordinal as u32,
+            "ישן",
+            "עמוד 1",
+            "/t",
+            line,
+            0,
+            true,
+            "/b/old.pdf",
+            None,
+            None,
+        )
+        .unwrap();
+    }
+    add_pdf(&mut e, &[PAGE]);
+    e.commit().unwrap();
+    let stamps: HashMap<String, u64> = e
+        .get_book_stamps()
+        .unwrap()
+        .into_iter()
+        .map(|s| (s.file_path, s.text_hash))
+        .collect();
+    assert_eq!(stamps["/b/old.pdf"], 0);
+    assert_ne!(stamps["/b/book.pdf"], 0);
+    let found = |results: Vec<SearchResult>| {
+        let mut paths: Vec<String> = results.into_iter().map(|r| r.file_path).collect();
+        paths.sort();
+        paths
+    };
+    // Both books, each in its own way: the old one by its lines.
+    assert_eq!(
+        found(advanced(&e, "משה העם", &distance(1))),
+        ["/b/book.pdf", "/b/old.pdf"]
+    );
+    assert_eq!(
+        found(advanced(&e, "תיראו העם", &any_order(2))),
+        ["/b/book.pdf"]
+    );
+}

@@ -1,8 +1,9 @@
 use super::*;
 use crate::api::search_engine::{
     configure_attached_line_source, configure_line_source, parse_user_regex,
-    prepare_user_regex_matcher, resume_line_source, suspend_line_source, ResultsOrder,
-    SearchEngine, TextStorage, UserRegexCancellationToken, UserRegexKind, UserRegexStreamUpdate,
+    prepare_user_regex_matcher, resume_line_source, suspend_line_source, PdfPageInput,
+    ResultsOrder, SearchEngine, TextStorage, UserRegexCancellationToken, UserRegexKind,
+    UserRegexStreamUpdate,
 };
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -2627,4 +2628,54 @@ fn suppressing_an_anchor_keeps_an_independent_path_to_the_same_match() {
             .collect();
         assert_eq!(found, expected, "{raw}");
     }
+}
+
+#[test]
+fn line_anchors_and_spans_hold_within_each_line_of_a_pdf_page() {
+    let dir = TempDir::new().unwrap();
+    let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
+    engine
+        .add_pdf_book_placed(
+            "ספר".into(),
+            "/t".into(),
+            "/b/page.pdf".into(),
+            0,
+            0,
+            vec![PdfPageInput {
+                reference: "עמוד 1".into(),
+                text: "ויאמר משה אל העם\nאל תיראו התיצבו".into(),
+                page_index: 0,
+            }],
+            None,
+        )
+        .unwrap();
+    engine.commit().unwrap();
+    assert_eq!(count(&engine, "/^אל תיראו/", &[]), 1);
+    assert_eq!(count(&engine, "/אל העם$/", &[]), 1);
+    assert_eq!(count(&engine, "/^ויאמר.*העם$/", &[]), 1);
+    // As on a text book's lines, `.*` stays within its line.
+    assert_eq!(count(&engine, "/משה .* תיראו/", &[]), 0);
+    assert_eq!(count(&engine, "/^משה/", &[]), 0);
+
+    let found = events(
+        &engine,
+        "/^אל תיראו/",
+        &[],
+        &Arc::new(AtomicBool::new(false)),
+    );
+    let hits = results(&found);
+    assert_eq!(hits.len(), 1);
+    assert!(hits[0].is_pdf);
+    let page = engine.get_document_by_id(hits[0].id).unwrap().unwrap().text;
+    let units: Vec<u16> = page.encode_utf16().collect();
+    let r = &found
+        .iter()
+        .flat_map(|e| e.match_ranges.iter())
+        .next()
+        .unwrap()
+        .ranges[0];
+    assert_eq!(
+        String::from_utf16(&units[r.start as usize..r.end as usize]).unwrap(),
+        "אל תיראו"
+    );
 }
