@@ -458,7 +458,7 @@ fn vocalized_searches_stay_inside_their_line() {
 }
 
 #[test]
-fn pdf_lines_join_across_pages_but_not_across_a_dropped_line() {
+fn pdf_pages_join_across_the_page_break_and_read_past_a_dropped_line() {
     let (mut e, _dir) = engine();
     let pages = vec![
         PdfPageInput {
@@ -483,13 +483,18 @@ fn pdf_lines_join_across_pages_but_not_across_a_dropped_line() {
             None,
         )
         .unwrap();
-    assert_eq!(added, 4);
+    // One document per page.
+    assert_eq!(added, 2);
     e.commit().unwrap();
     let results = exact(&e, "הראשון המשך");
     assert_eq!(results.len(), 1);
     assert!(results[0].is_pdf && results[0].continues_to_next_line);
     assert_eq!(results[0].segment, 0);
-    assert!(exact(&e, "השני אחרי").is_empty());
+    // A dropped line is noise inside its page, which reads on past it.
+    let results = exact(&e, "השני אחרי");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].segment, 1);
+    assert!(!results[0].continues_to_next_line);
 }
 
 #[test]

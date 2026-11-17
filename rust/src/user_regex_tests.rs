@@ -1,8 +1,9 @@
 use super::*;
 use crate::api::search_engine::{
     configure_attached_line_source, configure_line_source, parse_user_regex,
-    prepare_user_regex_matcher, resume_line_source, suspend_line_source, ResultsOrder,
-    SearchEngine, TextStorage, UserRegexCancellationToken, UserRegexKind, UserRegexStreamUpdate,
+    prepare_user_regex_matcher, resume_line_source, suspend_line_source, PdfPageInput,
+    ResultsOrder, SearchEngine, TextStorage, UserRegexCancellationToken, UserRegexKind,
+    UserRegexStreamUpdate,
 };
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -2627,4 +2628,144 @@ fn suppressing_an_anchor_keeps_an_independent_path_to_the_same_match() {
             .collect();
         assert_eq!(found, expected, "{raw}");
     }
+}
+
+#[test]
+fn line_anchors_and_spans_hold_within_each_line_of_a_pdf_page() {
+    let dir = TempDir::new().unwrap();
+    let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
+    engine
+        .add_pdf_book_placed(
+            "ספר".into(),
+            "/t".into(),
+            "/b/page.pdf".into(),
+            0,
+            0,
+            vec![PdfPageInput {
+                reference: "עמוד 1".into(),
+                text: "ויאמר משה אל העם\nאל תיראו התיצבו".into(),
+                page_index: 0,
+            }],
+            None,
+        )
+        .unwrap();
+    engine.commit().unwrap();
+    assert_eq!(count(&engine, "/^אל תיראו/", &[]), 1);
+    assert_eq!(count(&engine, "/אל העם$/", &[]), 1);
+    assert_eq!(count(&engine, "/^ויאמר.*העם$/", &[]), 1);
+    // As on a text book's lines, `.*` stays within its line.
+    assert_eq!(count(&engine, "/משה .* תיראו/", &[]), 0);
+    assert_eq!(count(&engine, "/^משה/", &[]), 0);
+
+    let found = events(
+        &engine,
+        "/^אל תיראו/",
+        &[],
+        &Arc::new(AtomicBool::new(false)),
+    );
+    let hits = results(&found);
+    assert_eq!(hits.len(), 1);
+    assert!(hits[0].is_pdf);
+    let page = engine.get_document_by_id(hits[0].id).unwrap().unwrap().text;
+    let units: Vec<u16> = page.encode_utf16().collect();
+    let r = &found
+        .iter()
+        .flat_map(|e| e.match_ranges.iter())
+        .next()
+        .unwrap()
+        .ranges[0];
+    assert_eq!(
+        String::from_utf16(&units[r.start as usize..r.end as usize]).unwrap(),
+        "אל תיראו"
+    );
+}
+
+fn pdf_engine(dir: &Path, page: &str) -> SearchEngine {
+    let mut engine = SearchEngine::new(dir.to_str().unwrap());
+    engine
+        .add_pdf_book_placed(
+            "ספר".into(),
+            "/t".into(),
+            "/b/page.pdf".into(),
+            0,
+            0,
+            vec![PdfPageInput {
+                reference: "עמוד 1".into(),
+                text: page.into(),
+                page_index: 0,
+            }],
+            None,
+        )
+        .unwrap();
+    engine.commit().unwrap();
+    engine
+}
+
+#[test]
+fn a_pdf_page_s_regex_snippet_reads_as_one_paragraph() {
+    let dir = TempDir::new().unwrap();
+    let engine = pdf_engine(dir.path(), "ויאמר משה אל העם\nאל תיראו התיצבו");
+    let found = events(&engine, "/התיצבו$/", &[], &Arc::new(AtomicBool::new(false)));
+    let hits = results(&found);
+    assert_eq!(hits.len(), 1);
+    let text = &hits[0].text;
+    assert!(!text.contains('\n'), "{text}");
+    assert!(
+        text.contains("אל תיראו <font color=red>התיצבו</font>"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_long_pdf_page_s_regex_snippet_shows_each_match() {
+    let dir = TempDir::new().unwrap();
+    let filler = "שורה של מילוי בלבד בעמוד הזה\n".repeat(100);
+    let page = format!("ויאמר משה אל העם\n{filler}ויען משה ויאמר\nאל תיראו התיצבו");
+    let engine = pdf_engine(dir.path(), &page);
+    for pattern in ["/משה/", "/^ויען משה/", "/משה (אל|ויאמר)/"] {
+        let found = events(&engine, pattern, &[], &Arc::new(AtomicBool::new(false)));
+        let hits = results(&found);
+        assert_eq!(hits.len(), 1, "{pattern}");
+        let text = &hits[0].text;
+        let painted = text.matches("<font color=red>").count();
+        // A sequence paints each of its words.
+        let expected = match pattern {
+            "/^ויען משה/" => 1,
+            "/משה (אל|ויאמר)/" => 4,
+            _ => 2,
+        };
+        assert_eq!(painted, expected, "{pattern}: {text}");
+        assert!(!text.contains('\n'), "{text}");
+    }
+}
+
+#[test]
+fn pdf_layout_markers_preserve_regex_sequences_and_line_anchors() {
+    let dir = TempDir::new().unwrap();
+    let engine = pdf_engine(dir.path(), "שמע ישראל\n(ג) יהוה אלהינו");
+    for query in ["/ישראל יהוה/", "/ג יהוה/"] {
+        assert_eq!(count(&engine, query, &[]), 1, "{query}");
+        let found = events(&engine, query, &[], &Arc::new(AtomicBool::new(false)));
+        let hits = results(&found);
+        assert_eq!(hits.len(), 1);
+        assert!(
+            hits[0].text.contains("<font color=red>יהוה</font>"),
+            "{}",
+            hits[0].text
+        );
+    }
+    assert_eq!(count(&engine, r"/^\(ג\) יהוה/", &[]), 1);
+    assert_eq!(count(&engine, "/ישראל .* יהוה/", &[]), 0);
+    let hits = events(
+        &engine,
+        r"/^\(ג\) יהוה/",
+        &[],
+        &Arc::new(AtomicBool::new(false)),
+    );
+    let raw = engine
+        .get_document_by_id(results(&hits)[0].id)
+        .unwrap()
+        .unwrap()
+        .text;
+    assert_eq!(raw, "שמע ישראל\n(ג) יהוה אלהינו");
 }

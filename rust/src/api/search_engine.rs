@@ -3903,6 +3903,103 @@ pub fn compute_content_fingerprint_bytes(text: Vec<u8>) -> u64 {
     content_fingerprint(&text)
 }
 
+/// Where each layout line of a PDF page starts, in bytes.
+fn layout_line_starts(text: &str) -> Vec<usize> {
+    std::iter::once(0)
+        .chain(text.match_indices('\n').map(|(at, _)| at + 1))
+        .collect()
+}
+
+/// A PDF page's layout lines shown as one paragraph. A space is one byte, as `\n` is,
+/// so every offset into the text still holds.
+fn layout_lines_as_spaces(mut text: DisplayText) -> DisplayText {
+    if text.text.contains('\n') {
+        text.text = text.text.replace('\n', " ");
+    }
+    text
+}
+
+/// `text` cut at its layout lines (`line_starts`), and between words, into pieces of at
+/// most `budget` bytes, each a whole snippet fragment.
+fn snippet_pieces(text: &str, line_starts: &[usize], budget: usize) -> Vec<(usize, usize)> {
+    let budget = budget.max(1);
+    let ends = line_starts.iter().skip(1).map(|&next| next - 1);
+    let mut pieces = Vec::new();
+    for (&line_start, line_end) in line_starts.iter().zip(ends.chain([text.len()])) {
+        let mut start = line_start;
+        while line_end - start > budget {
+            let mut limit = start + budget;
+            while !text.is_char_boundary(limit) {
+                limit -= 1;
+            }
+            let end = match text[start..limit].rfind(char::is_whitespace) {
+                Some(space) if space > 0 => start + space,
+                // A word longer than a fragment is cut where the fragment ends.
+                _ if limit > start => limit,
+                _ => start + text[start..].chars().next().map_or(1, char::len_utf8),
+            };
+            pieces.push((start, end));
+            start = end;
+        }
+        pieces.push((start, line_end));
+    }
+    pieces
+}
+
+/// Joins the windows of a long PDF page's snippet.
+const PAGE_SNIPPET_GAP: &str = " … ";
+/// Windows of one page's snippet, one per distinct matched word.
+const PAGE_SNIPPET_MAX_WINDOWS: usize = 8;
+/// Characters shown on each side of a matched word, at least.
+const PAGE_SNIPPET_MIN_CONTEXT: usize = 24;
+
+/// Where a window `chars` characters before `at` starts: at a word's start.
+fn word_start_before(text: &str, at: usize, chars: usize) -> usize {
+    let Some((from, _)) = text[..at].char_indices().rev().nth(chars) else {
+        return 0;
+    };
+    text[from..at]
+        .char_indices()
+        .find(|(_, c)| c.is_whitespace())
+        .map_or(from, |(space, c)| from + space + c.len_utf8())
+}
+
+/// Where a window `chars` characters after `at` ends: at a word's end.
+fn word_end_after(text: &str, at: usize, chars: usize) -> usize {
+    let Some((to, _)) = text[at..].char_indices().nth(chars) else {
+        return text.len();
+    };
+    let to = at + to;
+    text[at..to]
+        .rfind(char::is_whitespace)
+        .map_or(to, |space| at + space)
+}
+
+/// A PDF's `textHash`: its raw page texts and page indexes. Only a PDF indexed one
+/// document per page has one, so 0 marks a PDF to index again.
+fn pdf_pages_fingerprint(pages: &[PdfPageText<'_>]) -> u64 {
+    let mut fnv = Fnv::new();
+    for page in pages {
+        fnv.feed(&page.page_index.to_le_bytes());
+        fnv.feed_field(page.text.as_bytes());
+    }
+    fnv.finish()
+}
+
+/// [`pdf_pages_fingerprint`] of the pages a test gives [`SearchEngine::add_pdf_book`].
+#[cfg(test)]
+pub(crate) fn pdf_pages_fingerprint_for_tests(pages: &[PdfPageInput]) -> u64 {
+    let pages: Vec<PdfPageText<'_>> = pages
+        .iter()
+        .map(|page| PdfPageText {
+            reference: Cow::Borrowed(&page.reference),
+            text: Cow::Borrowed(&page.text),
+            page_index: page.page_index,
+        })
+        .collect();
+    pdf_pages_fingerprint(&pages)
+}
+
 fn content_fingerprint(text: &str) -> u64 {
     let mut fnv = Fnv::new();
     fnv.feed(text.as_bytes());
@@ -9645,10 +9742,13 @@ impl SearchEngine {
     /// ([`normalize_pdf_text_for_indexing`]) and dropped when the garbage
     /// heuristic ([`is_probably_garbage_pdf_text`]) flags it — exactly the
     /// per-line logic of [`normalize_pdf_texts_for_indexing`]. One document is
-    /// added per surviving line, with `segment` = the page's `page_index` and
-    /// ids composed like [`Self::add_text_book`]'s. PDFs record their
-    /// `metadataHash` and no content fingerprint (`contentHash` = 0, their text is
-    /// not in the library DB).
+    /// added per page with a surviving line: its lines joined by `\n`, so every
+    /// search mode — proximity, any order, same paragraph, at least N — matches
+    /// across the page's layout lines (#5237). `segment` = the page's
+    /// `page_index`; ids are composed like [`Self::add_text_book`]'s. PDFs record
+    /// their `metadataHash`, no content fingerprint (`contentHash` = 0, their text
+    /// is not in the library DB), and as `textHash` [`pdf_pages_fingerprint`]: a
+    /// PDF an older engine indexed line by line has `textHash` 0.
     ///
     /// Returns the number of documents added; 0 means the PDF yielded no
     /// usable text (scanned/garbage) — the caller falls back to a sidecar or
@@ -9707,6 +9807,7 @@ impl SearchEngine {
         let extra_facets = extra_facets.unwrap_or_default();
         let stamps = Stamps {
             metadata: metadata_fingerprint(&title, &topics, extra_facets.clone()),
+            text: pdf_pages_fingerprint(&pages),
             ..Stamps::default()
         };
         let topics_facet = Facet::from_text(&topics)?;
@@ -9726,51 +9827,60 @@ impl SearchEngine {
         // Normalize on the bounded indexing pool, then enqueue sequentially.
         use rayon::prelude::*;
         let prepare_started = Instant::now();
-        let lines: Vec<(usize, &str)> = pages
-            .iter()
-            .enumerate()
-            .flat_map(|(page_idx, page)| page.text.split('\n').map(move |line| (page_idx, line)))
-            .collect();
-        type Prepared = (usize, String, bool, Option<cross_line::LineEdges>);
+        // A page is one document: a PDF line is where the layout wrapped, not where a
+        // sentence ended (#5237). Its surviving lines are joined by `\n`, a separator to
+        // the tokenizer, so positions run on from line to line.
+        type Prepared = (
+            usize,
+            String,
+            u64,
+            Option<cross_line::LineEdges>,
+            crate::pdf_layout::LayoutMarkers,
+        );
         let prepared: Vec<Prepared> =
             crate::indexing_buffers::preparation_cpu(preparation_threads, || {
-                lines
+                pages
                     .par_iter()
+                    .enumerate()
                     .map_init(
                         || edge_analyzer.clone(),
-                        |analyzer, (page_idx, raw_line)| {
-                            let normalized =
-                                hebrew_query::normalize_pdf_text_for_indexing(raw_line);
-                            let is_garbage =
-                                hebrew_query::is_probably_garbage_pdf_text(&normalized);
-                            let edges = (!is_garbage)
-                                .then(|| cross_line::line_edges(analyzer, &normalized))
-                                .flatten();
-                            (*page_idx, normalized, is_garbage, edges)
+                        |analyzer, (page_idx, page)| {
+                            let mut text = String::with_capacity(page.text.len());
+                            let mut garbage = 0u64;
+                            for raw_line in page.text.split('\n') {
+                                let normalized =
+                                    hebrew_query::normalize_pdf_text_for_indexing(raw_line);
+                                if hebrew_query::is_probably_garbage_pdf_text(&normalized) {
+                                    garbage += 1;
+                                    continue;
+                                }
+                                if !text.is_empty() {
+                                    text.push('\n');
+                                }
+                                text.push_str(&normalized);
+                            }
+                            let edges = cross_line::line_edges(analyzer, &text);
+                            let markers = crate::pdf_layout::LayoutMarkers::of(&text);
+                            (page_idx, text, garbage, edges, markers)
                         },
                     )
                     .collect()
             })?;
         let prepare_time = prepare_started.elapsed();
-        // A dropped line sits between its neighbours' consecutive ids: no
-        // phrase may continue across it.
-        let garbage: Vec<bool> = prepared.iter().map(|p| p.2).collect();
+        let garbage_lines: u64 = prepared.iter().map(|page| page.2).sum();
+        let mut prepared = prepared;
+        prepared.retain(|(_, text, _, _, _)| !text.is_empty());
 
         let enqueue_started = Instant::now();
         let mut ordinal: u64 = 0;
-        let mut garbage_lines: u64 = 0;
-        for (line, (page_idx, normalized, is_garbage, edges)) in prepared.into_iter().enumerate() {
-            if is_garbage {
-                garbage_lines += 1;
-                continue;
-            }
-            let page = &pages[page_idx];
+        for (i, (page_idx, text, _, edges, markers)) in prepared.iter().enumerate() {
+            let page = &pages[*page_idx];
             let id = id_base + ordinal + 1;
-            let line_hash = line_dedup_hash(&normalized);
+            let line_hash = line_dedup_hash(text);
             let mut document = doc!(
                 title_f        => title.as_str(),
                 reference_f    => page.reference.as_ref(),
-                text_f         => normalized.as_str(),
+                text_f         => text.as_str(),
                 id_f           => id,
                 is_pdf_f       => true,
                 file_path_f    => file_path.as_str(),
@@ -9785,23 +9895,33 @@ impl SearchEngine {
             if let Some(stored) = segment_to_store(id, u64::from(page.page_index)) {
                 document.add_u64(segment_f, stored);
             }
-            // A PDF's lines are not the library's text, so no vector is built from them.
+            // A PDF's pages are not the library's text, so no vector is built from them.
             set_chunk_key(&mut document, chunk_key_f, 0);
             for facet in &extra_facet_values {
                 document.add_facet(topics_f, facet.clone());
             }
-            if let Some(edges) = &edges {
-                let can_start = line == 0 || !garbage[line - 1];
-                let can_end = !garbage.get(line + 1).copied().unwrap_or(false);
+            // A phrase continues onto the next page only when no page between them
+            // lost its text.
+            let mut has_first = false;
+            if let Some(edges) = edges {
+                let follows = |a: usize, b: usize| {
+                    pages[a].page_index.checked_add(1) == Some(pages[b].page_index)
+                };
+                let can_start = i == 0 || follows(prepared[i - 1].0, *page_idx);
+                has_first = can_start;
+                let can_end = prepared
+                    .get(i + 1)
+                    .is_none_or(|next| follows(*page_idx, next.0));
                 edge_fields.add(&mut document, edges, can_start, can_end);
             }
-            add_stored_text(&mut document, stored_fields, &normalized, None);
+            edge_fields.add_layout_markers(&mut document, markers, has_first);
+            add_stored_text(&mut document, stored_fields, text, None);
             writer.add_document(document)?;
             ordinal += 1;
         }
         let enqueue_time = enqueue_started.elapsed();
         info!(
-            "add_pdf_book '{title}': {ordinal} docs from {page_count} pages \
+            "add_pdf_book '{title}': {ordinal} page docs from {page_count} pages \
              ({garbage_lines} garbage lines), {text_bytes} bytes in {:?} \
              (prepare {prepare_time:?}, enqueue {enqueue_time:?})",
             started.elapsed()
@@ -10594,7 +10714,8 @@ impl SearchEngine {
     /// checks that must not be invalidated by adding/removing other books.
     ///
     /// A value of 0 means "unverifiable", same semantics as
-    /// [`Self::get_book_fingerprints`].
+    /// [`Self::get_book_fingerprints`]. A PDF's value fingerprints its pages instead,
+    /// and is 0 for one an older engine indexed line by line (see [`Self::add_pdf_book`]).
     pub fn get_book_text_fingerprints(&self) -> Result<HashMap<String, u64>> {
         let searcher = self.index_reader.searcher();
         Ok(searcher.search(
@@ -10612,8 +10733,8 @@ impl SearchEngine {
     /// matching live documents only.
     ///
     /// `0` means "unverifiable", exactly as in the map form: the book has no
-    /// document in the index, was indexed without a text fingerprint (PDF), or
-    /// its live documents disagree (a partial reindex).
+    /// document in the index, was indexed without a text fingerprint (a PDF indexed
+    /// line by line), or its live documents disagree (a partial reindex).
     pub fn get_book_text_fingerprint(&self, file_path: String) -> Result<u64> {
         let file_path_f = self.schema.get_field("filePath")?;
         let query = TermQuery::new(
@@ -13181,13 +13302,16 @@ impl SearchEngine {
                     gaps.to_vec(),
                 ))
             };
-            if !cross_line {
-                return Ok((inline, false));
-            }
             let words: Vec<cross_line::CrossLineWord> = regex_terms
                 .iter()
                 .map(|p| cross_line::CrossLineWord::Pattern(p.joined()))
                 .collect();
+            if !cross_line {
+                return Ok((
+                    self.with_pdf_layout(inline, text_field, &words, gaps, facets_query)?,
+                    false,
+                ));
+            }
             return Ok((
                 self.with_cross_line(inline, text_field, &words, gaps, facets_query)?,
                 false,
@@ -13276,9 +13400,15 @@ impl SearchEngine {
             position_terms,
             proximity.clone(),
         ));
-        let (true, Proximity::Ordered(gaps)) = (cross_line, proximity) else {
+        let Proximity::Ordered(gaps) = proximity else {
             return Ok((inline, truncated));
         };
+        if !cross_line {
+            return Ok((
+                self.with_pdf_layout(inline, text_field, &words, gaps, facets_query)?,
+                truncated,
+            ));
+        }
         Ok((
             self.with_cross_line(inline, text_field, &words, gaps, facets_query)?,
             truncated,
@@ -13814,7 +13944,7 @@ impl SearchEngine {
                 &token_texts[0],
                 IndexRecordOption::Basic,
             )?,
-            _ if cross_line => {
+            _ if cross_line || self.has_pdf_layout_markers()? => {
                 let words: Vec<cross_line::CrossLineWord> = token_texts
                     .iter()
                     .map(|t| {
@@ -13823,13 +13953,12 @@ impl SearchEngine {
                     })
                     .collect::<tantivy::Result<_>>()?;
                 let gaps = vec![0; words.len() - 1];
-                self.with_cross_line(
-                    quote_expansion::phrase_query(&searcher, text_f, &token_texts, 0)?,
-                    text_f,
-                    &words,
-                    &gaps,
-                    facets_query.as_deref(),
-                )?
+                let inline = quote_expansion::phrase_query(&searcher, text_f, &token_texts, 0)?;
+                if cross_line {
+                    self.with_cross_line(inline, text_f, &words, &gaps, facets_query.as_deref())?
+                } else {
+                    self.with_pdf_layout(inline, text_f, &words, &gaps, facets_query.as_deref())?
+                }
             }
             _ => quote_expansion::phrase_query(&searcher, text_f, &token_texts, 0)?,
         };
@@ -13942,6 +14071,45 @@ impl SearchEngine {
                     (
                         Occur::Should,
                         Box::new(cross.with_filter(facets_query.map(|query| query.box_clone()))),
+                    ),
+                ])),
+                None => inline,
+            },
+        )
+    }
+
+    fn has_pdf_layout_markers(&self) -> Result<bool> {
+        let term = Term::from_field_text(
+            self.schema.get_field(cross_line::LINE_EDGE_FIELD)?,
+            crate::pdf_layout::MARKER_PAGE,
+        );
+        Ok(self.index_reader.searcher().doc_freq(&term)? > 0)
+    }
+
+    /// The document-local counterpart of `with_cross_line`. In particular, a negative
+    /// phrase keeps its existing no-cross-document rule while sharing the PDF gap rules.
+    fn with_pdf_layout(
+        &self,
+        inline: Box<dyn Query>,
+        text_field: Field,
+        words: &[cross_line::CrossLineWord],
+        gaps: &[u32],
+        facets_query: Option<&dyn Query>,
+    ) -> Result<Box<dyn Query>> {
+        if text_field != self.schema.get_field("text")? || !self.has_pdf_layout_markers()? {
+            return Ok(inline);
+        }
+        Ok(
+            match cross_line::CrossLineQuery::new(&self.schema, text_field, words, gaps)? {
+                Some(query) => Box::new(BooleanQuery::new(vec![
+                    (Occur::Should, inline),
+                    (
+                        Occur::Should,
+                        Box::new(
+                            query
+                                .only_pdf_layouts()
+                                .with_filter(facets_query.map(|query| query.box_clone())),
+                        ),
                     ),
                 ])),
                 None => inline,
@@ -17002,6 +17170,20 @@ impl SearchEngine {
         fragment: &str,
         phrase: &PhraseHighlight,
     ) -> Option<Vec<(usize, usize)>> {
+        Self::phrase_occurrences_in_layout(
+            searcher,
+            fragment,
+            phrase,
+            &crate::pdf_layout::LayoutMap::default(),
+        )
+    }
+
+    fn phrase_occurrences_in_layout(
+        searcher: &Searcher,
+        fragment: &str,
+        phrase: &PhraseHighlight,
+        layout: &crate::pdf_layout::LayoutMap,
+    ) -> Option<Vec<(usize, usize)>> {
         let word_count = phrase.per_word_terms.len();
         if word_count == 0 {
             return None;
@@ -17084,6 +17266,17 @@ impl SearchEngine {
         // a repeated word whose later suffix lies outside the next gap.
         // Time and space are O(word_count * candidate_count), with no
         // exponential backtracking when many words match the same pattern.
+        // Ordinary text and unmarked PDFs keep their original candidate storage.
+        let layout_positions = if layout.is_empty() {
+            None
+        } else {
+            Some(
+                candidates
+                    .iter()
+                    .map(|c| u32::try_from(c.order).ok().map(|raw| layout.position(raw)))
+                    .collect::<Option<Vec<_>>>()?,
+            )
+        };
         let mut layers: Vec<Vec<(usize, usize)>> = vec![Vec::new(); word_count];
         layers[word_count - 1] = by_word[word_count - 1].iter().map(|&ci| (ci, 0)).collect();
         for w in (0..word_count - 1).rev() {
@@ -17096,9 +17289,15 @@ impl SearchEngine {
                 while cursor < next.len() && candidates[next[cursor].0].order <= order {
                     cursor += 1;
                 }
-                if cursor < next.len()
-                    && candidates[next[cursor].0].order <= order.saturating_add(max_step)
-                {
+                let within_gap = cursor < next.len()
+                    && match &layout_positions {
+                        Some(positions) => {
+                            positions[next[cursor].0].content as usize
+                                <= (positions[ci].reach() as usize).saturating_add(max_step)
+                        }
+                        None => candidates[next[cursor].0].order <= order.saturating_add(max_step),
+                    };
+                if within_gap {
                     viable.push((ci, cursor));
                 }
             }
@@ -17120,6 +17319,167 @@ impl SearchEngine {
             }
         }
         (!ranges.is_empty()).then_some(ranges)
+    }
+
+    /// The same per-gap marker semantics as the indexed PDF verifier, retaining raw
+    /// token order and original byte offsets even when selected words are markers.
+    fn phrase_occurrences_with_layout(
+        searcher: &Searcher,
+        text: &str,
+        layout: &crate::pdf_layout::LayoutMap,
+        phrase: &PhraseHighlight,
+    ) -> Option<Vec<(usize, usize)>> {
+        if matches!(phrase.proximity, Proximity::Ordered(_)) {
+            Self::phrase_occurrences_in_layout(searcher, text, phrase, layout)
+        } else {
+            Self::phrase_occurrences(searcher, text, phrase)
+        }
+    }
+
+    /// Every token of `text` some word of `phrase`, or of an alternative, can fill.
+    fn query_word_ranges(
+        searcher: &Searcher,
+        text: &str,
+        phrase: &PhraseHighlight,
+    ) -> Option<Vec<(usize, usize)>> {
+        let mut analyzer = searcher.index().tokenizers().get(phrase.analyzer)?;
+        let mut ranges = Vec::new();
+        let mut stream = analyzer.token_stream(text);
+        while let Some(token) = stream.next() {
+            let word = token.text.as_str();
+            if phrase
+                .variants()
+                .any(|variant| variant.per_word_terms.iter().any(|set| set.contains(word)))
+            {
+                ranges.push((token.offset_from, token.offset_to));
+            }
+        }
+        Some(ranges)
+    }
+
+    /// The snippet of a PDF page longer than the snippet budget: a window around each
+    /// word that matched, joined by [`PAGE_SNIPPET_GAP`]. The words of a page match far
+    /// apart, and the app highlights the page by the words its snippet paints, so every
+    /// one must be in it. `None` when the page fits the budget or nothing matched.
+    ///
+    /// The words come from the phrase's first complete occurrence, else from every
+    /// occurrence of the query's words: a window for each distinct word, then for
+    /// further occurrences, [`PAGE_SNIPPET_MAX_WINDOWS`] in all.
+    fn pdf_page_snippet_html(
+        searcher: &Searcher,
+        snippet_generator: &SnippetGenerator,
+        text: &DisplayText,
+        line_starts: &[usize],
+        layout: &crate::pdf_layout::LayoutMap,
+        hl: &HighlightConfig,
+        phrase: Option<&PhraseHighlight>,
+    ) -> Option<String> {
+        let budget = hl.max_chars as usize;
+        let fits = text.chars().count() <= budget;
+        if fits && layout.is_empty() {
+            return None;
+        }
+        let occurrence = phrase.and_then(|pf| {
+            pf.variants().find_map(|variant| {
+                let ranges = Self::phrase_occurrences_with_layout(searcher, text, layout, variant)?;
+                let first = ranges[..variant.per_word_terms.len()].to_vec();
+                let mut painted = ranges;
+                for other in pf.variants() {
+                    if !std::ptr::eq(other, variant) {
+                        painted.extend(
+                            Self::phrase_occurrences_with_layout(searcher, text, layout, other)
+                                .into_iter()
+                                .flatten(),
+                        );
+                    }
+                }
+                Some((first, painted))
+            })
+        });
+        let (mut shown, painted) = match occurrence {
+            Some(found) => found,
+            None if phrase.is_none_or(|pf| pf.allow_term_fallback) => {
+                let mut painted = match phrase {
+                    Some(pf) => Self::query_word_ranges(searcher, text, pf)?,
+                    None => {
+                        // Each piece fits one fragment, which then paints every term in it.
+                        let mut painted = Vec::new();
+                        for (start, end) in snippet_pieces(text, line_starts, budget) {
+                            let snippet = snippet_generator.snippet(&text[start..end]);
+                            let fragment = start + snippet.fragment_range().start;
+                            painted.extend(
+                                snippet
+                                    .highlighted()
+                                    .iter()
+                                    .map(|r| (fragment + r.start, fragment + r.end)),
+                            );
+                        }
+                        painted
+                    }
+                };
+                painted.sort_unstable();
+                painted.dedup();
+                let mut words = HashSet::new();
+                let shown = painted
+                    .iter()
+                    .copied()
+                    .filter(|&(s, e)| words.insert(&text[s..e]))
+                    .collect();
+                (shown, painted)
+            }
+            None => return None,
+        };
+        if shown.is_empty() {
+            return None;
+        }
+        if fits {
+            return Some(text.annotate(
+                Self::paint_ranges(text, painted, hl),
+                0,
+                &hl.highlight_prefix,
+                &hl.highlight_postfix,
+            ));
+        }
+        // Every distinct word first, then further occurrences while windows remain.
+        shown.truncate(PAGE_SNIPPET_MAX_WINDOWS);
+        for range in &painted {
+            if shown.len() >= PAGE_SNIPPET_MAX_WINDOWS {
+                break;
+            }
+            if !shown.contains(range) {
+                shown.push(*range);
+            }
+        }
+        shown.sort_unstable();
+        let context = (budget / (2 * shown.len())).max(PAGE_SNIPPET_MIN_CONTEXT);
+        let mut windows: Vec<(usize, usize)> = Vec::new();
+        for &(start, end) in &shown {
+            let window = (
+                word_start_before(text, start, context),
+                word_end_after(text, end, context),
+            );
+            match windows.last_mut() {
+                Some(last) if window.0 <= last.1 => last.1 = last.1.max(window.1),
+                _ => windows.push(window),
+            }
+        }
+        let html: Vec<String> = windows
+            .iter()
+            .map(|&(from, to)| {
+                let ranges = painted
+                    .iter()
+                    .filter(|&&(s, e)| s >= from && e <= to)
+                    .map(|&(s, e)| (s - from, e - from))
+                    .collect();
+                text.annotate(
+                    Self::paint_ranges(&text[from..to], ranges, hl),
+                    from,
+                    &hl.highlight_prefix,
+                    &hl.highlight_postfix,
+                )
+            })
+            .collect();
+        Some(html.join(PAGE_SNIPPET_GAP))
     }
 
     /// `fragment` as HTML with `ranges` painted.
@@ -17156,7 +17516,11 @@ impl SearchEngine {
         next: &DisplayText,
         phrase: &PhraseHighlight,
         hl: &HighlightConfig,
+        is_pdf: bool,
     ) -> Option<String> {
+        if !phrase.variants().any(|variant| variant.cross_line) {
+            return None;
+        }
         // Same enumerator/whitespace cuts as joined_lines, retaining the offsets of
         // both source lines instead of searching their possibly repeated words.
         let left_end = line[..cross_line::content_range(line).end].trim_end().len();
@@ -17165,9 +17529,22 @@ impl SearchEngine {
             right_start + next[right_start..].len() - next[right_start..].trim_start().len();
         let left = line.slice(0..left_end);
         let right = next.slice(right_start..next.len());
-        let joined = DisplayText::join(&[&left, &right], cross_line::SNIPPET_LINE_BREAK);
+        let mut joined = DisplayText::join(&[&left, &right], cross_line::SNIPPET_LINE_BREAK);
         let line_break = left.len()..left.len() + cross_line::SNIPPET_LINE_BREAK.len();
         debug_assert_eq!(joined.text, cross_line::joined_lines(line, next).0);
+        let layout = if is_pdf {
+            crate::pdf_layout::LayoutMap::from_markers(&crate::pdf_layout::LayoutMarkers::of(
+                &joined,
+            ))
+        } else {
+            crate::pdf_layout::LayoutMap::default()
+        };
+        if is_pdf {
+            joined = layout_lines_as_spaces(joined);
+            joined
+                .text
+                .replace_range(line_break.clone(), cross_line::SNIPPET_LINE_BREAK);
+        }
         phrase
             .variants()
             .filter(|variant| variant.cross_line)
@@ -17176,7 +17553,8 @@ impl SearchEngine {
                 if word_count < 2 {
                     return None;
                 }
-                let ranges = Self::phrase_occurrences(searcher, &joined, variant)?;
+                let ranges =
+                    Self::phrase_occurrences_with_layout(searcher, &joined, &layout, variant)?;
                 let crossing = ranges.chunks_exact(word_count).position(|occurrence| {
                     occurrence[0].0 < line_break.start
                         && occurrence[word_count - 1].1 > line_break.end
@@ -17356,41 +17734,82 @@ impl SearchEngine {
                     };
                     let cross_line_html = match (next_lines.get(slot), phrase) {
                         (Some(Some(next)), Some(pf)) => {
-                            Self::cross_line_snippet_html(searcher, &text, next, pf, hl)
+                            Self::cross_line_snippet_html(searcher, &text, next, pf, hl, is_pdf)
                         }
                         _ => None,
+                    };
+                    // Derive matching metadata before flattening layout breaks for display.
+                    let (text, line_starts, layout) = if is_pdf {
+                        let starts = layout_line_starts(&text);
+                        let layout = if !vocalized_field
+                            && phrase.is_some_and(|pf| {
+                                pf.variants().any(|variant| {
+                                    matches!(variant.proximity, Proximity::Ordered(_))
+                                })
+                            }) {
+                            crate::pdf_layout::LayoutMap::from_markers(
+                                &crate::pdf_layout::LayoutMarkers::of(&text),
+                            )
+                        } else {
+                            crate::pdf_layout::LayoutMap::default()
+                        };
+                        (layout_lines_as_spaces(text), starts, layout)
+                    } else {
+                        (text, Vec::new(), crate::pdf_layout::LayoutMap::default())
                     };
                     let continues_to_next_line = cross_line_html.is_some();
                     let result_text = match (text_status, cross_line_html) {
                         (TextStatus::Ok, Some(html)) => html,
                         (TextStatus::Ok, None) => {
-                            match Self::snippet_html(searcher, snippet_generator, &text, hl, phrase)
-                            {
-                                Some((offset, html)) => {
-                                    let html = text.annotate(
-                                        html,
-                                        offset,
-                                        &hl.highlight_prefix,
-                                        &hl.highlight_postfix,
-                                    );
-                                    shown_vocalized
-                                        .as_ref()
-                                        .and_then(|vocalized| {
-                                            crate::vocalized_snippet::vocalize_snippet_html(
-                                                &html,
-                                                &text,
-                                                offset,
-                                                vocalized,
-                                                &hl.highlight_prefix,
-                                                &hl.highlight_postfix,
-                                            )
-                                        })
-                                        .unwrap_or(html)
+                            let page_html = (is_pdf && !vocalized_field)
+                                .then(|| {
+                                    Self::pdf_page_snippet_html(
+                                        searcher,
+                                        snippet_generator,
+                                        &text,
+                                        &line_starts,
+                                        &layout,
+                                        hl,
+                                        phrase,
+                                    )
+                                })
+                                .flatten();
+                            if let Some(html) = page_html {
+                                html
+                            } else {
+                                match Self::snippet_html(
+                                    searcher,
+                                    snippet_generator,
+                                    &text,
+                                    hl,
+                                    phrase,
+                                ) {
+                                    Some((offset, html)) => {
+                                        let html = text.annotate(
+                                            html,
+                                            offset,
+                                            &hl.highlight_prefix,
+                                            &hl.highlight_postfix,
+                                        );
+                                        shown_vocalized
+                                            .as_ref()
+                                            .and_then(|vocalized| {
+                                                crate::vocalized_snippet::vocalize_snippet_html(
+                                                    &html,
+                                                    &text,
+                                                    offset,
+                                                    vocalized,
+                                                    &hl.highlight_prefix,
+                                                    &hl.highlight_postfix,
+                                                )
+                                            })
+                                            .unwrap_or(html)
+                                    }
+                                    None => bounded_display_snippet(
+                                        shown_vocalized.as_ref().unwrap_or(&text),
+                                        hl.max_chars,
+                                    ),
                                 }
-                                None => bounded_display_snippet(
-                                    shown_vocalized.as_ref().unwrap_or(&text),
-                                    hl.max_chars,
-                                ),
                             }
                         }
                         // The line no longer matches what was indexed: painting the query's
