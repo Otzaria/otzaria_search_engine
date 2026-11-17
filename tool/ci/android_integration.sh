@@ -3,13 +3,53 @@
 # and Gradle do not compete with the API-24 guest for the runner's resources.
 set -euo pipefail
 
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 device=${ANDROID_SERIAL:-emulator-5554}
+sdk_adb=''
+saved_adb=''
 build_args=(build apk --debug --target integration_test/search_test.dart
   --target-platform android-x64
   --dart-define=INTEGRATION_TEST_SHOULD_REPORT_RESULTS_TO_NATIVE=false)
 # `flutter test` does not support `--use-application-binary`. It repeats the
 # build incrementally, reusing the matching target and Dart define above.
 test_args=(test integration_test -d "$device" --no-pub)
+
+restore_adb() {
+  if [[ -n "$saved_adb" && -f "$saved_adb" ]]; then
+    mv -f -- "$saved_adb" "$sdk_adb"
+  fi
+}
+
+non_streaming_installs() {
+  local sdk_root help
+  sdk_root=${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}
+  if [[ -z "$sdk_root" ]]; then
+    echo '::error::ANDROID_HOME or ANDROID_SDK_ROOT must point to the Android SDK'
+    return 1
+  fi
+  sdk_adb="$sdk_root/platform-tools/adb"
+  saved_adb="$sdk_adb.otzaria-original"
+  if [[ ! -x "$sdk_adb" || -e "$saved_adb" ]]; then
+    echo '::error::Cannot safely wrap the Android SDK adb executable'
+    return 1
+  fi
+  help=$("$sdk_adb" help 2>&1)
+  if [[ "$help" != *'--no-streaming'* ]]; then
+    echo '::error::The Android SDK adb does not advertise --no-streaming installs'
+    return 1
+  fi
+  # Flutter uses the SDK adb's absolute path; a PATH-only wrapper is bypassed.
+  # This is the disposable CI SDK. Restore its executable even when tests fail.
+  trap restore_adb EXIT
+  trap 'exit 143' TERM
+  trap 'exit 130' INT
+  mv -- "$sdk_adb" "$saved_adb"
+  cp -- "$script_dir/adb_non_streaming.sh" "$sdk_adb"
+  chmod +x "$sdk_adb"
+  export OTZARIA_REAL_ADB="$saved_adb"
+  export PATH="${sdk_adb%/*}:$PATH"
+  echo 'Android APK installs use adb --no-streaming (push, then install)'
+}
 
 build_apk() {
   local attempt status log
@@ -50,6 +90,9 @@ ready() {
 
 run_test() {
   local attempt status
+  # API 24's streamed APK install can stall before the app ever starts. Use
+  # adb's push-then-install path, including the installs Flutter starts itself.
+  non_streaming_installs
   for attempt in 1 2; do
     ready
     # This is a disposable CI emulator. API 24's install verifier can stall

@@ -12,9 +12,11 @@ FAKE_TOOL = r'''#!/usr/bin/env python3
 import json
 import os
 from pathlib import Path
+import signal
+import subprocess
 import sys
 
-name = Path(sys.argv[0]).name
+name = Path(sys.argv[0]).name.removesuffix(".otzaria-original")
 args = sys.argv[1:]
 state_path = Path(os.environ["FAKE_STATE"])
 state = json.loads(state_path.read_text())
@@ -23,38 +25,71 @@ status = 0
 if name == "flutter":
     result = state["results"].pop(0)
     status = result[0]
+    if args[0] == "test":
+        # Flutter bypasses PATH and uses the SDK executable's absolute path.
+        state_path.write_text(json.dumps(state))
+        install = subprocess.run([
+            str(Path(os.environ["ANDROID_HOME"]) / "platform-tools/adb"),
+            "-s", "emulator-5554", "install", "-t", "-r", "probe app.apk",
+        ])
+        state = json.loads(state_path.read_text())
+        if install.returncode:
+            status = install.returncode
+        if state.get("terminate_runner"):
+            os.kill(os.getppid(), signal.SIGTERM)
     print(result[1])
 elif name == "adb":
-    if "getprop" in args:
+    if args == ["help"]:
+        print("install [--streaming|--no-streaming] [-r] [-t] APK")
+    elif "install" in args:
+        status = state.get("install_failure", 0) if "--no-streaming" in args else 98
+    elif "getprop" in args:
         print("0" if state.get("not_ready") else "1")
     elif "pm" in args:
         print("package:/system/framework/framework-res.apk")
 elif name == "timeout":
     state_path.write_text(json.dumps(state))
     os.execvp(args[2], args[2:])
+elif name == "mv":
+    status = subprocess.run(["/bin/mv", *args]).returncode
+    if state.get("terminate_move"):
+        state["terminate_move"] = False
+        state_path.write_text(json.dumps(state))
+        os.kill(os.getppid(), signal.SIGTERM)
 state_path.write_text(json.dumps(state))
 sys.exit(status)
 '''
 
 
 class AndroidIntegrationTest(unittest.TestCase):
-    def run_script(self, mode, results, *, not_ready=False):
+    def run_script(self, mode, results, *, not_ready=False, install_failure=0,
+                   terminate_runner=False, terminate_move=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             state_file = root / "state.json"
             state_file.write_text(json.dumps({
                 "results": results, "calls": [], "not_ready": not_ready,
+                "install_failure": install_failure,
+                "terminate_runner": terminate_runner,
+                "terminate_move": terminate_move,
             }))
-            for name in ["flutter", "adb", "timeout", "sleep"]:
+            for name in ["flutter", "adb", "timeout", "sleep", "mv"]:
                 tool = root / name
                 tool.write_text(FAKE_TOOL)
                 tool.chmod(0o755)
+            sdk = root / "sdk"
+            sdk_adb = sdk / "platform-tools/adb"
+            sdk_adb.parent.mkdir(parents=True)
+            sdk_adb.write_text(FAKE_TOOL)
+            sdk_adb.chmod(0o755)
             result = subprocess.run(
                 ["bash", str(SCRIPT), mode], text=True, capture_output=True,
                 env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
-                     "FAKE_STATE": str(state_file)}, timeout=15,
+                     "FAKE_STATE": str(state_file), "ANDROID_HOME": str(sdk)}, timeout=15,
             )
             state = json.loads(state_file.read_text())
+            self.assertEqual(sdk_adb.read_text(), FAKE_TOOL, "SDK adb was not restored")
+            self.assertFalse(Path(str(sdk_adb) + ".otzaria-original").exists())
             return result, state["calls"]
 
     def test_success_builds_once(self):
@@ -94,6 +129,29 @@ class AndroidIntegrationTest(unittest.TestCase):
         flutter = next(c for c in calls if c[0] == "flutter")
         self.assertIn("--no-pub", flutter)
 
+    def test_flutter_absolute_sdk_installs_are_non_streaming(self):
+        result, calls = self.run_script("test", [[0, "passed"]])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        installs = [c for c in calls if c[0] == "adb" and "install" in c]
+        self.assertEqual(len(installs), 1)
+        self.assertIn("--no-streaming", installs[0])
+        self.assertIn("probe app.apk", installs[0])
+
+    def test_install_failure_stays_red_and_restores_the_sdk(self):
+        result, calls = self.run_script("test", [[0, "passed"]], install_failure=3)
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(sum(c[0] == "flutter" for c in calls), 1)
+        self.assertFalse(any("reboot" in c for c in calls))
+
+    def test_sigterm_restores_the_sdk(self):
+        result, _ = self.run_script("test", [[0, "passed"]], terminate_runner=True)
+        self.assertEqual(result.returncode, 143, result.stderr)
+
+    def test_sigterm_during_wrapper_activation_restores_the_sdk(self):
+        result, calls = self.run_script("test", [], terminate_move=True)
+        self.assertEqual(result.returncode, 143, result.stderr)
+        self.assertFalse(any(c[0] == "flutter" for c in calls))
+
     def test_failed_assertion_stays_red_without_retry(self):
         result, calls = self.run_script("test", [[1, "assertion failed"]])
         self.assertEqual(result.returncode, 1, result.stderr)
@@ -118,7 +176,7 @@ class AndroidIntegrationTest(unittest.TestCase):
         result, calls = self.run_script("test", [], not_ready=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(any(c[0] == "flutter" for c in calls))
-        self.assertEqual(sum(c[0] == "adb" for c in calls), 30)
+        self.assertEqual(sum(c[0] == "adb" and "getprop" in c for c in calls), 30)
 
 
 if __name__ == "__main__":
