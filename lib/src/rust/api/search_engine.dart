@@ -405,10 +405,13 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// ([`normalize_pdf_text_for_indexing`]) and dropped when the garbage
   /// heuristic ([`is_probably_garbage_pdf_text`]) flags it — exactly the
   /// per-line logic of [`normalize_pdf_texts_for_indexing`]. One document is
-  /// added per surviving line, with `segment` = the page's `page_index` and
-  /// ids composed like [`Self::add_text_book`]'s. PDFs record their
-  /// `metadataHash` and no content fingerprint (`contentHash` = 0, their text is
-  /// not in the library DB).
+  /// added per page with a surviving line: its lines joined by `\n`, so every
+  /// search mode — proximity, any order, same paragraph, at least N — matches
+  /// across the page's layout lines (#5237). `segment` = the page's
+  /// `page_index`; ids are composed like [`Self::add_text_book`]'s. PDFs record
+  /// their `metadataHash`, no content fingerprint (`contentHash` = 0, their text
+  /// is not in the library DB), and as `textHash` [`pdf_pages_fingerprint`]: a
+  /// PDF an older engine indexed line by line has `textHash` 0.
   ///
   /// Returns the number of documents added; 0 means the PDF yielded no
   /// usable text (scanned/garbage) — the caller falls back to a sidecar or
@@ -931,8 +934,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// matching live documents only.
   ///
   /// `0` means "unverifiable", exactly as in the map form: the book has no
-  /// document in the index, was indexed without a text fingerprint (PDF), or
-  /// its live documents disagree (a partial reindex).
+  /// document in the index, was indexed without a text fingerprint (a PDF indexed
+  /// line by line), or its live documents disagree (a partial reindex).
   Future<BigInt> getBookTextFingerprint({required String filePath});
 
   /// Text-only fingerprint per distinct `filePath` — the `textHash` column
@@ -943,7 +946,8 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// checks that must not be invalidated by adding/removing other books.
   ///
   /// A value of 0 means "unverifiable", same semantics as
-  /// [`Self::get_book_fingerprints`].
+  /// [`Self::get_book_fingerprints`]. A PDF's value fingerprints its pages instead,
+  /// and is 0 for one an older engine indexed line by line (see [`Self::add_pdf_book`]).
   Future<Map<String, BigInt>> getBookTextFingerprints();
 
   /// Fetch a single document by its numeric id. Returns None if not found.
