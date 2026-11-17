@@ -134,8 +134,8 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-          # The app's Flutter, whose hooks runner ships the library.
-          flutter-version: 3.47.2
+          # Keep the tested Flutter version consistent across all workflows.
+          flutter-version: 3.47.7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -255,11 +255,17 @@ jobs:
           # Only the emulator ABI, or the hook compiles all three from source.
           echo 'target-platform=android-x64' >> probe/android/gradle.properties
 
+      - name: Build the Android integration app
+        if: matrix.platform == 'android'
+        working-directory: probe
+        timeout-minutes: 45
+        run: bash ../otzaria_search_engine/tool/ci/android_integration.sh build
+
       # API 24 is the app's minSdk: a library linked against newer libc symbols
       # fails to load here.
       - name: Run on an Android emulator
         if: matrix.platform == 'android'
-        timeout-minutes: 45
+        timeout-minutes: 35
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 24
@@ -267,11 +273,7 @@ jobs:
           target: default
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
           working-directory: probe
-          # The runner reports boot before the package manager answers; an install then hangs.
-          # Each line runs on its own, hence the one-line loop and the retry.
-          script: |
-            until adb shell pm path android | grep -q package:; do sleep 2; done
-            timeout 900 flutter test integration_test -d emulator-5554 || timeout 900 flutter test integration_test -d emulator-5554
+          script: bash ../otzaria_search_engine/tool/ci/android_integration.sh test
 
   apple:
     name: App on Apple (macOS + iOS)
@@ -292,8 +294,8 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-          # The app's Flutter, whose hooks runner ships the library.
-          flutter-version: 3.47.2
+          # Keep the tested Flutter version consistent across all workflows.
+          flutter-version: 3.47.7
 
       - uses: dtolnay/rust-toolchain@stable
 

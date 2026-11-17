@@ -1,6 +1,8 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:code_assets/code_assets.dart';
+import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 
 import 'rust_target.dart';
@@ -113,6 +115,11 @@ Future<File> cargoBuild({
   required String targetDir,
   void Function(String message)? log,
 }) async {
+  targetDir = cargoTargetDirectory(
+    targetDir,
+    hostIsWindows: Platform.isWindows,
+    tempRoot: Directory.systemTemp.path,
+  );
   final crateDir = p.join(packageRoot, options.crateDir);
   final cargo = _tool('cargo');
   final rustupHomes = rustupEnvironment(cargo);
@@ -167,6 +174,25 @@ Future<File> cargoBuild({
     throw StateError('cargo did not produce ${library.path}');
   }
   return library;
+}
+
+/// Keeps MSVC's LTO scratch archives below MAX_PATH, even when hooks_runner's
+/// shared output is nested deep inside an app. Cargo still caches builds, and
+/// separate output directories keep separate caches (and Cargo lock files).
+String cargoTargetDirectory(
+  String requested, {
+  required bool hostIsWindows,
+  required String tempRoot,
+}) {
+  if (!hostIsWindows) return requested;
+  final paths = p.Context(style: p.Style.windows);
+  final absolute = paths.normalize(paths.absolute(requested));
+  // Leave room for Cargo's target/profile/build/crate/hash/out/archive suffix.
+  // In particular, retain the publisher's already-short rust/target cache.
+  if (absolute.length <= 80) return requested;
+  final identity = absolute.toLowerCase();
+  final key = sha256.convert(utf8.encode(identity)).toString().substring(0, 20);
+  return paths.join(tempRoot, 'ose-cargo', key);
 }
 
 /// Source files cargo recorded for the last build of [library].

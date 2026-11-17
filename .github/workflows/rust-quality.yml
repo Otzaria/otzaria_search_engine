@@ -552,7 +552,9 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
+          # Pin formatter, analyzer and hooks_runner together.
           channel: stable
+          flutter-version: 3.47.7
           cache: true
 
       - name: Install Flutter dependencies
