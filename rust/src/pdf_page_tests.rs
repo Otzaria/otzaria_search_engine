@@ -88,6 +88,7 @@ struct Search {
     mode: Mode,
     count: Option<u32>,
     options: HashMap<String, HashMap<String, bool>>,
+    negative: String,
 }
 
 impl Default for Search {
@@ -99,6 +100,7 @@ impl Default for Search {
             mode: Mode::All,
             count: None,
             options: HashMap::new(),
+            negative: String::new(),
         }
     }
 }
@@ -131,7 +133,7 @@ fn with_options(mut search: Search, words: &[(&str, usize, &[&str])]) -> Search 
 fn advanced(e: &SearchEngine, query: &str, s: &Search) -> Vec<SearchResult> {
     e.search_advanced(
         query.to_string(),
-        String::new(),
+        s.negative.clone(),
         vec![],
         100,
         0,
@@ -160,7 +162,7 @@ fn advanced(e: &SearchEngine, query: &str, s: &Search) -> Vec<SearchResult> {
 fn count(e: &SearchEngine, query: &str, s: &Search) -> u32 {
     e.count_advanced(
         query.to_string(),
-        String::new(),
+        s.negative.clone(),
         vec![],
         s.distance,
         0,
@@ -224,6 +226,201 @@ const PAGE: &[&str] = &[
     "כי אשר ראיתם את",
     "מצרים היום לא תספו",
 ];
+
+#[test]
+fn layout_enumerators_do_not_hide_existing_phrases() {
+    for lines in [
+        vec!["שמע ישראל", "(ג) יהוה אלהינו"],
+        vec!["שמע ישראל {פ}", "יהוה אלהינו"],
+        vec!["שמע ישראל {פ}", "(ג) יהוה אלהינו"],
+        vec!["שמע ישראל", "[ג] יהוה אלהינו"],
+        vec!["שמע ישראל", "{ג} יהוה אלהינו"],
+    ] {
+        let (e, _dir) = pdf_engine(&[&lines]);
+        let results = exact(&e, "ישראל יהוה");
+        assert_eq!(results.len(), 1, "{lines:?}");
+        assert_eq!(count(&e, "ישראל יהוה", &Search::default()), 1);
+        assert_eq!(advanced(&e, "ישראל יהוה", &Search::default()).len(), 1);
+        assert_painted(&results[0], &["ישראל", "יהוה"]);
+        assert!(!results[0].continues_to_next_line);
+    }
+}
+
+#[test]
+fn layout_markers_remain_searchable_without_inventing_phrases() {
+    let (e, _dir) = pdf_engine(&[&["ויקרא ישראל", "(ג) יהוה אלהינו"]]);
+    assert_eq!(exact(&e, "ג").len(), 1);
+    assert_eq!(exact(&e, "ג יהוה").len(), 1);
+    assert!(exact(&e, "ויקרא ג יהוה").is_empty());
+    let (e, _dir) = pdf_engine(&[&["שמע ישראל (ג) יהוה אלהינו", "סוף העמוד"]]);
+    assert!(exact(&e, "ישראל יהוה").is_empty());
+    assert_eq!(exact(&e, "ישראל ג יהוה").len(), 1);
+}
+
+#[test]
+fn layout_marker_track_keeps_gaps_and_deduplicates_raw_matches() {
+    let (e, _dir) = pdf_engine(&[&["שמע ישראל", "(ג) מאד יהוה אלהינו"]]);
+    assert!(exact(&e, "ישראל יהוה").is_empty());
+    assert_eq!(advanced(&e, "ישראל יהוה", &distance(1)).len(), 1);
+    assert_eq!(count(&e, "ישראל יהוה", &distance(1)), 1);
+    let (e, _dir) = pdf_engine(&[&["ישראל יהוה שמע ישראל", "(ג) יהוה אלהינו"]]);
+    assert_eq!(exact(&e, "ישראל יהוה").len(), 1);
+    assert_eq!(count(&e, "ישראל יהוה", &Search::default()), 1);
+}
+
+#[test]
+fn layout_marker_phrases_apply_to_negative_queries_and_facets() {
+    let (e, _dir) = pdf_engine(&[&["שמע ישראל", "(ג) יהוה אלהינו"]]);
+    let search = Search {
+        negative: "ישראל יהוה".into(),
+        ..Search::default()
+    };
+    assert!(advanced(&e, "אלהינו", &search).is_empty());
+    assert_eq!(count(&e, "אלהינו", &search), 0);
+    assert!(e
+        .search_exact(
+            "ישראל יהוה".into(),
+            vec!["/not-this-book".into()],
+            10,
+            0,
+            ResultsOrder::Catalogue,
+            false,
+            false,
+            None,
+            None
+        )
+        .unwrap()
+        .is_empty());
+    let (e, _dir) = pdf_engine(&[&["ישראל", "(ג) סוף"], &["יהוה אלהינו"]]);
+    let negative_across_pages = Search {
+        negative: "סוף יהוה".into(),
+        ..Search::default()
+    };
+    assert_eq!(advanced(&e, "ישראל", &negative_across_pages).len(), 1);
+    assert_eq!(count(&e, "ישראל", &negative_across_pages), 1);
+}
+
+#[test]
+fn a_cross_page_phrase_can_skip_internal_layout_markers() {
+    let (e, _dir) = pdf_engine(&[&["שמע ישראל", "(ג) יהוה"], &["(ד) אלהינו אחד"]]);
+    let results = exact(&e, "ישראל יהוה אלהינו");
+    assert_eq!(pages(&results), [(0, true)]);
+    assert_painted(&results[0], &["ישראל", "יהוה", "אלהינו"]);
+    assert_eq!(count(&e, "ישראל יהוה אלהינו", &Search::default()), 1);
+    let (e, _dir) = pdf_engine(&[&["שמע ישראל"], &["(ג) יהוה", "(ד) אלהינו אחד"]]);
+    assert_eq!(pages(&exact(&e, "ישראל יהוה אלהינו")), [(0, true)]);
+}
+
+#[test]
+fn layout_readings_remain_content_alternatives() {
+    let (e, _dir) = pdf_engine(&[&["שמע משה", "(ישראל) [יעקב] יהוה אלהינו"]]);
+    for query in ["משה ישראל", "משה יעקב", "ישראל יהוה", "יעקב יהוה"]
+    {
+        assert_eq!(exact(&e, query).len(), 1, "{query}");
+    }
+    assert!(exact(&e, "משה יהוה").is_empty());
+}
+
+#[test]
+fn explicit_layout_markers_can_mix_with_skipped_markers() {
+    let (e, _dir) = pdf_engine(&[&["מבוא כאן", "(ג) שמע ישראל {פ}", "(ד) יהוה אלהינו"]]);
+    for query in [
+        "ג שמע ישראל יהוה",
+        "ישראל פ יהוה",
+        "ישראל ד יהוה",
+        "ישראל פ ד יהוה",
+    ] {
+        let results = exact(&e, query);
+        assert_eq!(results.len(), 1, "{query}");
+        assert_eq!(count(&e, query, &Search::default()), 1, "{query}");
+        assert_painted(&results[0], &query.split_whitespace().collect::<Vec<_>>());
+    }
+    let (e, _dir) = pdf_engine(&[&["מבוא כאן", "(ג) שמע ישראל"], &["(ד) יהוה", "(ה) אלהינו"]]);
+    let results = exact(&e, "ג שמע ישראל יהוה אלהינו");
+    assert_eq!(pages(&results), [(0, true)]);
+    assert_painted(&results[0], &["ג", "שמע", "ישראל", "יהוה", "אלהינו"]);
+}
+
+#[test]
+fn long_layout_marker_snippets_keep_original_text_and_offsets() {
+    let mut lines = vec!["מילוי נוסף בעמוד הזה"; 40];
+    lines.extend(["(ג) שמע ישראל {פ}", "(ד) יהוה אלהינו"]);
+    lines.extend(std::iter::repeat_n("המשך המילוי בעמוד", 40));
+    let (e, _dir) = pdf_engine(&[&lines]);
+    let results = exact(&e, "ג שמע ישראל יהוה");
+    assert_eq!(pages(&results), [(0, false)]);
+    assert_painted(&results[0], &["ג", "שמע", "ישראל", "יהוה"]);
+    assert!(results[0].text.contains("{פ}"), "{}", results[0].text);
+    assert!(results[0].text.contains("(ד)"), "{}", results[0].text);
+}
+
+#[test]
+fn layout_metadata_preserves_anchors_after_merge_and_reopen() {
+    fn check(e: &SearchEngine) {
+        let searcher = e.searcher_for_tests();
+        let mut marked = 0;
+        for segment in searcher.segment_readers() {
+            let first = segment
+                .fast_fields()
+                .u64(crate::cross_line::LINE_FIRST_FIELD)
+                .unwrap();
+            for doc in 0..segment.max_doc() {
+                let values: Vec<_> = first.values_for_doc(doc).collect();
+                if let Some(&anchor) = values.first() {
+                    assert!(anchor <= u64::from(u32::MAX) + 1);
+                    if values.len() > 1 {
+                        marked += 1;
+                        // These pages have a missing predecessor page. Metadata must
+                        // never stand in for their absent continuation anchor.
+                        assert_eq!(anchor, 0);
+                        assert_eq!(values.len() % 2, 1);
+                        assert!(values[1..]
+                            .chunks_exact(2)
+                            .all(|range| range[0] < range[1] && range[1] <= u64::from(u32::MAX)));
+                    }
+                }
+            }
+        }
+        assert_eq!(marked, 10);
+        assert_eq!(exact(e, "ישראל יהוה").len(), 10);
+        assert_eq!(exact(e, "ישראל יהוה אלהינו אחד").len(), 10);
+        assert!(exact(e, "העמוד שמע").is_empty());
+    }
+    let dir = TempDir::new().unwrap();
+    let mut e = SearchEngine::new(dir.path().to_str().unwrap());
+    for book in 0..10 {
+        let pages = [
+            (0, "ראש העמוד"),
+            (2, "שמע ישראל\n(ג) יהוה אלהינו"),
+            (3, "אחד"),
+        ]
+        .into_iter()
+        .map(|(page_index, text)| PdfPageInput {
+            page_index,
+            text: text.into(),
+            reference: format!("עמוד {page_index}"),
+        })
+        .collect();
+        e.add_pdf_book_placed(
+            format!("ספר {book}"),
+            "/t".into(),
+            format!("/b/{book}.pdf"),
+            book,
+            5,
+            pages,
+            None,
+        )
+        .unwrap();
+        e.commit().unwrap();
+    }
+    check(&e);
+    let before = e.searcher_for_tests().segment_readers().len();
+    e.optimize().unwrap();
+    assert!(e.searcher_for_tests().segment_readers().len() < before);
+    check(&e);
+    drop(e);
+    check(&SearchEngine::new(dir.path().to_str().unwrap()));
+}
 
 #[test]
 fn a_page_is_one_document() {
@@ -395,6 +592,7 @@ fn text_books_keep_their_lines() {
 #[test]
 #[ignore = "benchmark"]
 fn bench_searches_over_100k_pdf_lines() {
+    let with_markers = std::env::var_os("OTZARIA_PDF_BENCH_MARKERS").is_some();
     let words = [
         "ויאמר",
         "משה",
@@ -443,11 +641,16 @@ fn bench_searches_over_100k_pdf_lines() {
             .map(|page| PdfPageInput {
                 reference: format!("עמוד {}", page + 1),
                 text: (0..lines_per_page)
-                    .map(|_| {
-                        (0..5)
+                    .map(|line| {
+                        let words = (0..5)
                             .map(|_| words[next() % words.len()])
                             .collect::<Vec<_>>()
-                            .join(" ")
+                            .join(" ");
+                        if with_markers && line > 0 && line % 4 == 0 {
+                            format!("(ג) {words}")
+                        } else {
+                            words
+                        }
                     })
                     .collect::<Vec<_>>()
                     .join("\n"),
@@ -481,7 +684,7 @@ fn bench_searches_over_100k_pdf_lines() {
     }
     let size = dir_size(dir.path());
     println!(
-        "indexed {} lines in {index_time:?}, index {:.1} MB",
+        "indexed {} lines in {index_time:?}, index {:.1} MB ({size} bytes), markers={with_markers}",
         books * pages_per_book * lines_per_page,
         size as f64 / 1e6
     );

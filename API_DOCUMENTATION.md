@@ -782,6 +782,22 @@ Future<void> configureUserBooksLineSource({String? dbPath}); // personal books; 
 - `DocumentInput.textStorage` (optional) accepts only `null` or `inIndex`:
   `addDocumentsBatch` / `upsertDocumentsBatch` refuse a `libraryDb` document, since a
   ready-made document cannot be tied to its row. `addPdfBook` always stores its text.
+- `addPdfBook` indexes one document per usable page, joining its normalized layout
+  lines with `\n`. Its return value is the number of indexed pages; 0 still permits an
+  OCR fallback. `segment` and `reference` retain the page's index and reference. A
+  result and the count both represent a page, even if it holds several occurrences.
+  Proximity, any-order, paragraph and partial-word-match searches can use all of that
+  page's lines. Ordered phrases retain the existing enumerator-skipping rule below.
+  Stored text and regex input retain the original normalized markers and layout breaks;
+  regex anchors and `.*` apply within each layout line. Snippets flatten layout breaks
+  and show up to eight windows of matched words on a long page.
+- Existing PDF documents indexed line by line remain readable. Reindex those PDFs to
+  enable page-wide matching: their `textHash` is 0; new PDF books have a fingerprint of
+  their raw page text and indexes instead. When adopting this engine, the app must mark
+  PDF books with `textHash == 0` as changed, use a nonzero fingerprint for its empty-PDF
+  marker, and split OCR sidecars into actual pages (a sidecar without `\f` is otherwise
+  one page). This needs no index-wide schema change. Test indexes made with an earlier
+  revision of this unreleased page-indexing PR must reindex PDFs to add marker metadata.
 - `addPdfBookBytes` is `addPdfBook` over one UTF-8 buffer: for page `i`, `ends[2i]` ends
   its reference and `ends[2i + 1]` its text, each slice starting where the previous ended,
   and `pageIndexes[i]` is its index. The bridge encodes and decodes arguments on the
@@ -1026,13 +1042,15 @@ the total number of groups; `totalCount` and `bookCounts` remain raw hit counts.
 
 ### Phrases across a line break
 
-Every line of a book is one document, yet an exact phrase (`searchExact*`, the string
+Every line of a text book is one document, yet an exact phrase (`searchExact*`, the string
 `search*` API) and an advanced phrase (`searchAdvanced*` with `SearchScope.wordDistance`
 and all words required, including `distance`/`customSpacing`, word options and
 acronym expansions) are also found when they continue from the end of one line onto
 the start of the next. The hit belongs to the first line and is counted once — also when
 that line holds the phrase on its own as well — so counts, per-book counts, facets and
 grouping agree with the results. A phrase crosses at most one line break.
+For a PDF, the document is a whole page: phrases can cross several layout lines inside
+it, and an ordered phrase can additionally continue across one adjacent page boundary.
 
 - **What a line's edge is.** Leading and trailing enumerators — `(ג)`, `[יא]`, `{פ}`,
   up to five letters, digits or quote marks in brackets — are not words of the text:
@@ -1040,14 +1058,18 @@ grouping agree with the results. A phrase crosses at most one line break.
   word after a leading one. Paired readings such as `(הוצא) [היצא]` remain one
   content position at either edge, and either reading can match. The words of both
   lines count toward `distance`.
-- **What stops a phrase.** A heading line (`<h…>`), a line without words, the end of a
-  book, and in a PDF a line dropped as extraction garbage. A PDF phrase may continue
-  onto the next page.
+- **What stops a phrase.** In text books: a heading line (`<h…>`), a line without
+  words, or the end of a book. In PDFs: a missing or empty page, or the end of a book.
+  An extraction-garbage layout line is dropped before page text is joined and does not
+  interrupt the remaining page text.
 - **Not across lines:** vocalized searches (`matchNikud`/`matchTaamim`), fuzzy search,
   the `sameParagraph`/`sameSection` scopes and partial word-match modes (which already
   ignore order within a line), negative queries (a negative phrase excludes only lines
   that contain it), semantic search's lexical candidates, and documents added through
   `addDocument`/`addDocumentsBatch`.
+  In PDFs these document-local modes use a whole page; a negative ordered phrase also
+  skips internal layout-edge enumerators, but never excludes a page by crossing into
+  the following page.
 - **Ranking.** Under `ResultsOrder.relevance` a cross-line hit scores half the BM25
   score of one in-line occurrence on a line of average length, so it ranks below
   typical in-line hits. Catalogue and generation orders are unaffected.
@@ -1059,6 +1081,16 @@ line, the right part to the start of one — and joins them on consecutive docum
 Facet filters restrict the attributed first line before positional verification;
 the continuation is still read from its immediate neighbour. A rare continuation
 can drive neighbour lookups instead of scanning a broad selection of first lines.
+
+PDF pages additionally record optional internal enumerator ranges after the ordinary
+first `lineFirst` anchor (or an explicit 0 when that edge is closed), as `(start, end)`
+position pairs, and a raw `lineEdge` flag. The existing first-value anchor contract and
+schema stay unchanged, including after segment merging. Phrases on flagged pages are
+verified from positional postings and these fast values; there is no stored-page read
+or scan of other pages' metadata. Only markers strictly between selected query words
+are omitted from their gap: markers themselves remain searchable, including in a
+phrase that explicitly selects one marker and skips another. A normal raw phrase
+match gets no additional score merely because its page has markers elsewhere.
 
 ### Index Persistence
 

@@ -2738,3 +2738,34 @@ fn a_long_pdf_page_s_regex_snippet_shows_each_match() {
         assert!(!text.contains('\n'), "{text}");
     }
 }
+
+#[test]
+fn pdf_layout_markers_preserve_regex_sequences_and_line_anchors() {
+    let dir = TempDir::new().unwrap();
+    let engine = pdf_engine(dir.path(), "שמע ישראל\n(ג) יהוה אלהינו");
+    for query in ["/ישראל יהוה/", "/ג יהוה/"] {
+        assert_eq!(count(&engine, query, &[]), 1, "{query}");
+        let found = events(&engine, query, &[], &Arc::new(AtomicBool::new(false)));
+        let hits = results(&found);
+        assert_eq!(hits.len(), 1);
+        assert!(
+            hits[0].text.contains("<font color=red>יהוה</font>"),
+            "{}",
+            hits[0].text
+        );
+    }
+    assert_eq!(count(&engine, r"/^\(ג\) יהוה/", &[]), 1);
+    assert_eq!(count(&engine, "/ישראל .* יהוה/", &[]), 0);
+    let hits = events(
+        &engine,
+        r"/^\(ג\) יהוה/",
+        &[],
+        &Arc::new(AtomicBool::new(false)),
+    );
+    let raw = engine
+        .get_document_by_id(results(&hits)[0].id)
+        .unwrap()
+        .unwrap()
+        .text;
+    assert_eq!(raw, "שמע ישראל\n(ג) יהוה אלהינו");
+}

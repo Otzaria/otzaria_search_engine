@@ -48,6 +48,21 @@ words to their exact UTF-16 ranges in the original query, so per-word options
 and selections use the same word order. Native library, generated bindings and
 the app's prepared highlight matcher integration must be updated together.
 
+## PDF pages and layout-line phrases
+
+`addPdfBook` and `addPdfBookBytes` index one document per usable page. Proximity,
+any-order, paragraph and partial-word-match queries can match across its layout lines;
+the result count is in pages. Ordered phrases keep skipping line-edge enumerators such
+as `(ג)` and `{פ}`, including at internal layout breaks and when a phrase continues
+onto the next page. The enumerators and original normalized layout text remain
+searchable; snippets use the same gap rules as the query. Regex anchors stay per line.
+
+Existing line-indexed PDFs remain readable but need reindexing for page-wide matching.
+The app must detect their `textHash == 0`, write a nonzero empty-PDF marker and split
+OCR sidecars into pages. There is no schema bump or index-wide rebuild; see the
+[API documentation](API_DOCUMENTATION.md#phrases-across-a-line-break). PDFs indexed by
+an earlier revision of this unreleased PR need reindexing for the marker fix as well.
+
 ## Display highlighting
 
 Native highlight generators return a prepared `HighlightPattern.matcher`.

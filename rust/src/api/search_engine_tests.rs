@@ -14423,3 +14423,112 @@ mod semantic_verification {
         assert!(forged.lexical_score.is_some());
     }
 }
+
+#[test]
+fn pdf_layout_markers_work_on_both_exact_and_degraded_phrase_paths() {
+    let (mut engine, _dir) = make_engine();
+    engine
+        .add_pdf_book_placed(
+            "ספר".into(),
+            "/t".into(),
+            "/b/markers.pdf".into(),
+            0,
+            0,
+            vec![PdfPageInput {
+                reference: "עמוד 1".into(),
+                text: "שמע ישראל\n(ג) יהוה אלהינו".into(),
+                page_index: 0,
+            }],
+            None,
+        )
+        .unwrap();
+    engine.commit().unwrap();
+    let patterns: Vec<_> = ["ישראל", "יהוה"]
+        .into_iter()
+        .map(hebrew_query::WordPattern::parse)
+        .collect();
+    let field = engine.schema.get_field("text").unwrap();
+    for max_expansions in [1, 64] {
+        let (query, truncated) = engine
+            .phrase_query_with_degrade(
+                &patterns,
+                &Proximity::adjacent(2),
+                field,
+                max_expansions,
+                true,
+                None,
+            )
+            .unwrap();
+        assert!(!truncated);
+        assert_eq!(
+            engine
+                .index_reader
+                .searcher()
+                .search(query.as_ref(), &Count)
+                .unwrap(),
+            1,
+            "max_expansions={max_expansions}"
+        );
+    }
+}
+
+#[test]
+fn document_local_pdf_phrase_snippets_use_layout_gaps_without_crossing_pages() {
+    let (mut engine, _dir) = make_engine();
+    engine
+        .add_pdf_book_placed(
+            "ספר".into(),
+            "/t".into(),
+            "/b/markers.pdf".into(),
+            0,
+            0,
+            vec![PdfPageInput {
+                reference: "עמוד 1".into(),
+                text: format!("{}\nישראל\n(ג) יהוה", "מילוי בעמוד ".repeat(80)),
+                page_index: 0,
+            }],
+            None,
+        )
+        .unwrap();
+    engine.commit().unwrap();
+    let query = engine.phrase_query_for_tests("ישראל יהוה", None, false);
+    let searcher = engine.index_reader.searcher();
+    let addresses = searcher
+        .search(query.as_ref(), &TopDocs::with_limit(10).order_by_score())
+        .unwrap()
+        .into_iter()
+        .map(|(_, address)| address)
+        .collect();
+    let phrase = PhraseHighlight {
+        per_word_terms: ["ישראל", "יהוה"]
+            .into_iter()
+            .map(|word| HashSet::from([word.to_string()]))
+            .collect(),
+        proximity: Proximity::adjacent(2),
+        analyzer: "hebrew",
+        cross_line: false,
+        alternatives: Vec::new(),
+        allow_term_fallback: false,
+    };
+    let results = SearchEngine::build_results(
+        &engine.schema,
+        &searcher,
+        query.as_ref(),
+        engine.schema.get_field("text").unwrap(),
+        addresses,
+        &HighlightConfig::default(),
+        Some(&phrase),
+    )
+    .unwrap();
+    assert_eq!(results.len(), 1);
+    assert!(!results[0].continues_to_next_line);
+    for word in ["ישראל", "יהוה"] {
+        assert!(
+            results[0]
+                .text
+                .contains(&format!("<font color=red>{word}</font>")),
+            "{}",
+            results[0].text
+        );
+    }
+}

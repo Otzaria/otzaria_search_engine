@@ -17,6 +17,7 @@ mod frb_generated;
 mod highlight_cache;
 mod highlight_matcher;
 mod id_lookup;
+mod pdf_layout;
 #[cfg(test)]
 mod pdf_page_tests;
 // Display metadata only: note boundaries never enter a token, hash or semantic chunk.

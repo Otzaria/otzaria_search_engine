@@ -44,11 +44,14 @@ use crate::gap_phrase::{end_anchored_slack, start_anchored_slack, ChainSweep, Wo
 use crate::hebrew_tokenizer::{
     continues_token, is_word_char, next_token_boundaries, paired_reading_after, starts_token,
 };
+use crate::pdf_layout::{self, LayoutMap, LayoutMarkers, LayoutSweep};
 use crate::quote_expansion::QuoteTransparent;
 use crate::term_automaton::{self, TermDfa};
 
 /// Position of a line's first content word, plus one; absent (or 0) when no
 /// phrase may continue into the line from the one before.
+/// Only the first value is the anchor. PDF pages may append pairs of internal
+/// layout-marker ranges; see `pdf_layout`. These use the existing u64 schema.
 pub(crate) const LINE_FIRST_FIELD: &str = "lineFirst";
 /// Position of a line's last content word, plus one; absent (or 0) when no
 /// phrase may continue from the line onto the next.
@@ -515,6 +518,26 @@ impl EdgeFields {
             }
         }
     }
+
+    /// Optional PDF-only `(start, end)` pairs after the first anchor. Every existing
+    /// consumer reads `.first(doc)`, so an absent anchor needs an explicit 0 first.
+    pub(crate) fn add_layout_markers(
+        &self,
+        document: &mut TantivyDocument,
+        markers: &LayoutMarkers,
+        has_first: bool,
+    ) {
+        if markers.positions.is_empty() {
+            return;
+        }
+        if !has_first {
+            document.add_u64(self.first, 0);
+        }
+        for value in markers.encoded() {
+            document.add_u64(self.first, value);
+        }
+        document.add_text(self.edge, pdf_layout::MARKER_PAGE);
+    }
 }
 
 /// `left` (line `L`) and `right` (line `L + 1`) joined for a snippet: the
@@ -683,6 +706,7 @@ pub(crate) struct CrossLineQuery {
     gaps: Vec<u32>,
     /// Applied to the attributed (first) line before positional matching.
     filter: Option<Arc<dyn Query>>,
+    cross_documents: bool,
 }
 
 impl CrossLineQuery {
@@ -710,6 +734,7 @@ impl CrossLineQuery {
             words: compiled,
             gaps: gaps.to_vec(),
             filter: None,
+            cross_documents: true,
         }))
     }
 
@@ -717,6 +742,13 @@ impl CrossLineQuery {
     /// and AND between them. The continuation itself need not pass the filter.
     pub(crate) fn with_filter(mut self, filter: Option<Box<dyn Query>>) -> Self {
         self.filter = filter.map(Arc::from);
+        self
+    }
+
+    /// Negative predicates may match inside a PDF page but must never exclude a
+    /// document merely because its phrase continues into another document.
+    pub(crate) fn only_pdf_layouts(mut self) -> Self {
+        self.cross_documents = false;
         self
     }
 
@@ -739,6 +771,9 @@ impl CrossLineQuery {
         let mut hits: Vec<Vec<DocId>> = vec![Vec::new(); segments.len()];
         let mut scratch = Scratch::default();
         for split in 1..self.words.len() {
+            if !self.cross_documents {
+                break;
+            }
             let allowance = self.gaps[split - 1];
             let left = Part {
                 words: &self.words[..split],
@@ -761,6 +796,7 @@ impl CrossLineQuery {
                 hits[segment].push(doc);
             }
         }
+        self.match_pdf_layouts(&segments, filter.as_deref(), &mut hits, &mut scratch)?;
         Ok(segments
             .iter()
             .zip(hits)
@@ -770,6 +806,97 @@ impl CrossLineQuery {
                 (segment.reader.segment_id(), Arc::new(docs))
             })
             .collect())
+    }
+
+    /// A second, marker-aware track for marked PDF pages. The normal phrase path
+    /// still indexes and matches the enumerators. Drive from the rarer of the page
+    /// flag and a query word; verify only those candidates, from positional postings
+    /// and per-document fast metadata, without reading the stored page or scanning
+    /// the library's marker metadata.
+    fn match_pdf_layouts(
+        &self,
+        segments: &[Segment],
+        filter: Option<&dyn Weight>,
+        hits: &mut [Vec<DocId>],
+        scratch: &mut Scratch,
+    ) -> tantivy::Result<()> {
+        let term = Term::from_field_text(self.edge, pdf_layout::MARKER_PAGE);
+        let cancellation = crate::lexical_cancellation::LexicalFlag::current();
+        for segment in segments {
+            let Some(marked) = segment.edge.get_term_info(&term)? else {
+                continue;
+            };
+            let mut rarest = (u64::MAX, &self.words[0].text);
+            for word in &self.words {
+                let frequency = segment.doc_freq(&word.text)?;
+                if frequency < rarest.0 {
+                    rarest = (frequency, &word.text);
+                }
+            }
+            if rarest.0 == 0 {
+                continue;
+            }
+            let mut marked_docs = segment
+                .edge
+                .read_postings_from_terminfo(&marked, IndexRecordOption::Basic)?;
+            let driver = if u64::from(marked.doc_freq) < rarest.0 {
+                vec![segment
+                    .edge
+                    .read_postings_from_terminfo(&marked, IndexRecordOption::Basic)?]
+            } else {
+                segment.postings(rarest.1, &segment.text, IndexRecordOption::Basic)?
+            };
+            let selected = filter
+                .map(|filter| filter.scorer(segment.reader, 1.0))
+                .transpose()?;
+            let docs = self.candidate_docs(driver, 0, selected)?;
+            let mut words = self
+                .words
+                .iter()
+                .map(|word| {
+                    segment
+                        .postings(
+                            &word.text,
+                            &segment.text,
+                            IndexRecordOption::WithFreqsAndPositions,
+                        )
+                        .map(WordPositions::new)
+                })
+                .collect::<tantivy::Result<Vec<_>>>()?;
+            scratch.positions.resize_with(self.words.len(), Vec::new);
+            for doc in docs {
+                cancellation.check_tantivy()?;
+                if !segment.is_alive(doc) {
+                    continue;
+                }
+                if marked_docs.doc() < doc {
+                    marked_docs.seek(doc);
+                }
+                if marked_docs.doc() != doc {
+                    continue;
+                }
+                scratch.layout.read(segment.first.values_for_doc(doc));
+                if scratch.layout.is_empty() {
+                    continue;
+                }
+                for (word, positions) in words.iter_mut().zip(&mut scratch.positions) {
+                    word.positions_in(doc, positions);
+                }
+                let positions = &mut scratch.positions[..self.words.len()];
+                // A raw match already has its normal score. Do not give unrelated
+                // markers elsewhere on the page an extra constant-score boost.
+                if ordered_match(&mut scratch.sweep, positions, &self.gaps) {
+                    continue;
+                }
+                if scratch
+                    .layout_sweep
+                    .chain(positions, &self.gaps, &scratch.layout)
+                {
+                    hits[segment.ordinal].push(doc);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Lines `L` (as segment ordinal and doc) where `left` ends `L` and
@@ -1125,22 +1252,42 @@ impl CrossLineQuery {
                 if !present {
                     continue;
                 }
+                scratch.layout.read(segment.first.values_for_doc(doc));
                 let positions = &scratch.positions[..part.words.len()];
-                match part.side {
-                    Side::EndsLine => end_anchored_slack(
-                        &mut scratch.sweep,
-                        positions,
-                        part.gaps,
-                        anchor,
-                        allowance,
-                    ),
-                    Side::StartsLine => start_anchored_slack(
-                        &mut scratch.sweep,
-                        positions,
-                        part.gaps,
-                        anchor,
-                        allowance,
-                    ),
+                if scratch.layout.is_empty() {
+                    match part.side {
+                        Side::EndsLine => end_anchored_slack(
+                            &mut scratch.sweep,
+                            positions,
+                            part.gaps,
+                            anchor,
+                            allowance,
+                        ),
+                        Side::StartsLine => start_anchored_slack(
+                            &mut scratch.sweep,
+                            positions,
+                            part.gaps,
+                            anchor,
+                            allowance,
+                        ),
+                    }
+                } else {
+                    match part.side {
+                        Side::EndsLine => scratch.layout_sweep.end_slack(
+                            positions,
+                            part.gaps,
+                            anchor,
+                            allowance,
+                            &scratch.layout,
+                        ),
+                        Side::StartsLine => scratch.layout_sweep.start_slack(
+                            positions,
+                            part.gaps,
+                            anchor,
+                            allowance,
+                            &scratch.layout,
+                        ),
+                    }
                 }
             };
             let Some(slack) = slack else {
@@ -1290,6 +1437,20 @@ struct PartMatch {
 struct Scratch {
     positions: Vec<Vec<u32>>,
     sweep: ChainSweep,
+    layout: LayoutMap,
+    layout_sweep: LayoutSweep,
+}
+
+fn ordered_match(sweep: &mut ChainSweep, words: &[Vec<u32>], gaps: &[u32]) -> bool {
+    let Some((first, rest)) = words.split_first() else {
+        return false;
+    };
+    sweep.start(first);
+    !first.is_empty()
+        && rest
+            .iter()
+            .zip(gaps)
+            .all(|(word, &gap)| sweep.extend(word, gap))
 }
 
 struct Segment<'a> {
