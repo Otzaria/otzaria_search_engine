@@ -908,6 +908,37 @@ pub struct SemanticCoverage {
     pub ratio: f64,
 }
 
+/// The books a vector set covers, as [`SearchEngine::semantic_covered_books`] finds them,
+/// and the state of the set the answer is for.
+pub struct SemanticCoveredBooks {
+    /// The index `filePath` of every book with a live line whose text the set holds a vector
+    /// for, sorted and distinct. A book whose lines copy a covered book's text is covered too:
+    /// vectors are keyed by text, not by book.
+    pub file_paths: Vec<String>,
+    /// What the answer depends on in the set: its identity digest, and the checksum and dead
+    /// slots of each segment of the generation it serves. Opaque; compare it for equality
+    /// only. It changes whenever the vectors served change — an install of a base or a delta,
+    /// by this engine or any other tool through the set's generations, a compaction, a
+    /// fallback to `PREVIOUS` — and not otherwise: retiring the `PREVIOUS` generation keeps
+    /// it, and so does installing the same releases into an emptied directory.
+    ///
+    /// It says nothing of the lexical index, and the answer depends on that too: a book
+    /// added, removed or reindexed can change it with the set unchanged. The engine returns
+    /// no key for the index's state, so the application recomputes after it changes the
+    /// index, as well as when this key changes.
+    pub set_key: String,
+    /// The set's live generation. Every install and compaction numbers a new one past those
+    /// on disk, but a fallback goes back to an older one, and a directory deleted and
+    /// installed again starts over: [`Self::set_key`] is the cache key, not this.
+    pub generation: u64,
+    /// The library version the set stands at.
+    pub vectors_library_version: u32,
+    /// The live generation (`CURRENT`) did not open, and the one before it (`PREVIOUS`) is
+    /// what the answer is for, as [`SemanticVectorsInfo::recovered_from_previous`] says:
+    /// for instance, a generation another tool wrote was damaged.
+    pub recovered_from_previous: bool,
+}
+
 /// What stopped the semantic path, as a value an application can switch on to choose a
 /// message and an action. A [`SemanticError`] carries one when a semantic call fails,
 /// [`SemanticStatus::error_kind`] when a session cannot serve, and
@@ -929,8 +960,8 @@ pub struct SemanticCoverage {
 /// | --- | --- | --- | --- |
 /// | `NotConfigured` | no semantic session is open: none was opened, or `disable_semantic` closed it | open the vectors; lexical search is unaffected | status, search fallback |
 /// | `FeatureNotInBuild` | this library was built without semantic support | hide semantic search; no file or setting changes it | status, search fallback |
-/// | `ArtifactMissing` | there is no vector set at `vectors_dir`: no directory, or nothing ever installed in it (no `CURRENT` or `PREVIOUS`) | download and install the vectors | `open_semantic_artifact`, `verify_semantic_vectors`, `semantic_coverage`, `retire_previous_semantic_generation` |
-/// | `ArtifactCorrupt` | the vectors are damaged: a set whose pointers, metadata or segments do not open or fail their checksums, or a release whose segment is not the one its manifest describes | install the release again, which repairs the set, downloading it again if it is gone; on a FAT or exFAT drive on Windows, close the session first | `open_semantic_artifact`, installing, verifying, `semantic_vectors_info`, `retire_previous_semantic_generation` (the live generation does not open, and the one before it is kept) |
+/// | `ArtifactMissing` | there is no vector set at `vectors_dir`: no directory, or nothing ever installed in it (no `CURRENT` or `PREVIOUS`) | download and install the vectors | `open_semantic_artifact`, `verify_semantic_vectors`, `semantic_coverage`, `semantic_covered_books`, `retire_previous_semantic_generation` |
+/// | `ArtifactCorrupt` | the vectors are damaged: a set whose pointers, metadata or segments do not open or fail their checksums, or a release whose segment is not the one its manifest describes | install the release again, which repairs the set, downloading it again if it is gone; on a FAT or exFAT drive on Windows, close the session first | `open_semantic_artifact`, installing, verifying, `semantic_vectors_info`, `semantic_coverage`, `semantic_covered_books`, `retire_previous_semantic_generation` (the live generation does not open, and the one before it is kept) |
 /// | `ArtifactIncompatible` | sound vectors built for something else: lines made by another line recipe, another model or chunking, a store format this build does not read, or a delta that does not follow the installed set; `field` names the first field that disagreed. With `field` `segment_id`, installing: the release is a version the set has installed, published again with other bytes — a sound release, and a sound set, which keeps what it serves | install the vectors built for this application and this model; for `segment_id`, do not download it again, which is refused the same way: keep the set, or install the release into a new, empty `vectors_dir` and open that | `open_semantic_artifact`, installing |
 /// | `ArtifactNotPublished` | self-consistent, but the release's manifest is not the one published for it | download the official release again | installing |
 /// | `InsufficientDiskSpace` | installing or compacting vectors needs more free space than the device has | free space, and try again | installing, compacting |
@@ -945,7 +976,7 @@ pub struct SemanticCoverage {
 /// | `ReadOnlySession` | a call that builds vectors, on an opened artifact, which is read-only; or a call that changes the vector set, on an index opened read-only | nothing: the device does not build the library's vectors | `semantic_index_books`, `semantic_index_diff`, `remove_semantic_books`, `reset_semantic_index`, `compact_semantic_vectors`, `retire_previous_semantic_generation` |
 /// | `ReindexRequired` | a session built on this device holds vectors built under another configuration | `reset_semantic_index`, and index again (development) | `semantic_index_books` |
 /// | `QueryFailed` | the semantic half of one search failed, and its lexical results were served; the sidecar reports why as text only, so this is not split further | show the results; [`SearchEngine::semantic_status`] says whether the session still serves | search fallback |
-/// | `Cancelled` | the search was abandoned through its [`SemanticCancellationToken`]: not a failure, and it was not answered with lexical results instead | nothing: drop it, since the query that cancelled it is the one that matters; a cancelled install, compaction, verification or count left the set as it was | `search_semantic`, and the calls that install, compact, verify or count a vector set |
+/// | `Cancelled` | the search was abandoned through its [`SemanticCancellationToken`]: not a failure, and it was not answered with lexical results instead | nothing: drop it, since the query that cancelled it is the one that matters; a cancelled install, compaction, verification or count left the set as it was | `search_semantic`, and the calls that install, compact, verify or count a vector set, or list the books it covers |
 /// | `InvalidInput` | an input the call cannot take: an empty `model_quantization` or `onnx_runtime_path`, a `model_identity_json` that is not an identity, a pooling or text recipe no backend serves, a token cap out of range, a ranking option or a compaction threshold out of its range; `field` names it when it is known | fix the call: a programming error, not a state of the device | `configure_semantic`, `open_semantic_artifact`, `search_semantic`, `compact_semantic_vectors` |
 /// | `Internal` | anything else: an I/O error, a fault inside the engine or the lexical index, a failure the sidecar reports only as text | report it, with the message | any call; status, for a session built on this device |
 /// | `VectorsBusy` | another install or compaction of the same vector set is running, in this process or another (`field` is `vectors_dir`); nothing was read or changed, and an open session keeps serving. Verifying: an install replaced bytes the check had read while it read them, and nothing was condemned | try again once it has finished; never `disable_semantic` for it | installing, compacting, verifying, `retire_previous_semantic_generation` |
@@ -6718,10 +6749,9 @@ impl SearchEngine {
     /// column, one pass over it; on an index without the column, every book's keys are
     /// recomputed from its stored text, which reads the whole store. Cancellable.
     ///
-    /// A line is covered when any slot of the set holds its text's key, including a slot a
-    /// later delta deleted, or an alias shares a neighbour's vector with it; a release
-    /// deletes only texts no line of its library holds, so that counts a line of an index
-    /// older than the set at most.
+    /// A line is covered when a live slot of the generation the set serves holds its text's
+    /// key, or an alias shares a live neighbour's vector with it: a slot a later delta
+    /// deleted covers nothing, as a search returns nothing from it.
     pub fn semantic_coverage(
         &self,
         vectors_dir: String,
@@ -6729,63 +6759,7 @@ impl SearchEngine {
     ) -> Result<SemanticCoverage, SemanticError> {
         #[cfg(feature = "semantic-integration")]
         {
-            use crate::semantic_resolver::LiveResolver;
-            use otzaria_semantic_search::semantic::oxv::reader::Segment;
-            use otzaria_semantic_search::semantic::segment_set;
-            let vectors_dir = PathBuf::from(&vectors_dir);
-            let cancel = &cancellation.flag;
-            let failed = |err: &SemanticSearchError| {
-                vector_set_error(
-                    err,
-                    &vectors_dir,
-                    format!(
-                        "failed to count what the semantic vectors at {} cover: {err}",
-                        vectors_dir.display()
-                    ),
-                    "counting the coverage",
-                )
-            };
-            let Some(info) = segment_set::info(&vectors_dir).map_err(|err| failed(&err))? else {
-                return Err(SemanticError::new(
-                    SemanticErrorKind::ArtifactMissing,
-                    format!(
-                        "no semantic vectors are installed at {}",
-                        vectors_dir.display()
-                    ),
-                )
-                .with_field("vectors_dir"));
-            };
-            let mut keys = Vec::new();
-            for segment in &info.segments {
-                if cancel.is_cancelled() {
-                    return Err(failed(&SemanticSearchError::Cancelled));
-                }
-                // Where the set keeps its segments, as the sidecar lays it out.
-                let path = vectors_dir
-                    .join("segments")
-                    .join(format!("{}.oxv", segment.id));
-                let opened = Segment::open(&path).map_err(|err| failed(&err.into()))?;
-                keys.extend((0..opened.slot_count()).map(|slot| opened.key(slot).column_value()));
-                // A short line that shares a neighbour's vector is covered by it.
-                keys.extend(
-                    opened
-                        .occurrences()
-                        .filter(|row| row.is_alias())
-                        .map(|row| row.anchor.column_value()),
-                );
-            }
-            keys.sort_unstable();
-            keys.dedup();
-            ensure_keyed_chunking(&info.identity.model, &|err| err.to_string())?;
-            let coverage = LiveResolver::for_chunking(
-                self.index_reader.searcher(),
-                self.chunk_key_field,
-                &self.semantic_resolver,
-                semantic_keys::keyed_chunking(info.identity.model.chunking_identity)
-                    .expect("checked recipe"),
-            )
-            .and_then(|resolver| resolver.coverage(&keys, cancel))
-            .map_err(|err| failed(&err.into()))?;
+            let (info, coverage) = self.coverage_of_set(vectors_dir, cancellation)?;
             Ok(SemanticCoverage {
                 live_keyed_lines: coverage.keyed_lines,
                 covered_lines: coverage.covered_lines,
@@ -6823,6 +6797,137 @@ impl SearchEngine {
             }
             _ => None,
         }
+    }
+
+    /// The books of the open index that the set at `vectors_dir` covers: the `filePath` of
+    /// every book with a live line whose text the set holds a vector for, as
+    /// [`Self::semantic_coverage`] counts them, and the set's state the answer is for. A copy
+    /// of a covered book's text is covered wherever it is — a personal book, an attached
+    /// library — since vectors are keyed by text, not by book.
+    ///
+    /// It costs what [`Self::semantic_coverage`] does: every key of the set read, and one pass
+    /// over the index's `chunkKey` column; on an index without the column, every book's keys
+    /// recomputed from its stored text, which reads the whole store. Call it off the UI
+    /// thread, and cache the answer by [`SemanticCoveredBooks::set_key`] and the state of the
+    /// lexical index: recompute it only when either changed. Cancellable; the errors are
+    /// [`Self::semantic_coverage`]'s.
+    pub fn semantic_covered_books(
+        &self,
+        vectors_dir: String,
+        cancellation: &SemanticCancellationToken,
+    ) -> Result<SemanticCoveredBooks, SemanticError> {
+        #[cfg(feature = "semantic-integration")]
+        {
+            let (info, coverage) = self.coverage_of_set(vectors_dir, cancellation)?;
+            let mut set_key = info.identity_digest.clone();
+            for segment in &info.segments {
+                set_key.push_str(&format!(":{}/{}", segment.sha256, segment.slots_dead));
+            }
+            Ok(SemanticCoveredBooks {
+                file_paths: coverage.covered_books,
+                set_key,
+                generation: info.generation,
+                vectors_library_version: info.library_version,
+                recovered_from_previous: info.recovered_from_previous,
+            })
+        }
+
+        #[cfg(not(feature = "semantic-integration"))]
+        {
+            let _ = (vectors_dir, cancellation);
+            Err(Self::semantic_not_in_build())
+        }
+    }
+
+    /// The set at `vectors_dir`, and what of the open index it covers.
+    #[cfg(feature = "semantic-integration")]
+    fn coverage_of_set(
+        &self,
+        vectors_dir: String,
+        cancellation: &SemanticCancellationToken,
+    ) -> Result<
+        (
+            otzaria_semantic_search::semantic::segment_set::SetInfo,
+            crate::semantic_resolver::Coverage,
+        ),
+        SemanticError,
+    > {
+        use crate::semantic_resolver::LiveResolver;
+        use otzaria_semantic_search::semantic::segment_set::{self, SegmentSet};
+        let vectors_dir = PathBuf::from(&vectors_dir);
+        let cancel = &cancellation.flag;
+        let failed = |err: &SemanticSearchError| {
+            vector_set_error(
+                err,
+                &vectors_dir,
+                format!(
+                    "failed to count what the semantic vectors at {} cover: {err}",
+                    vectors_dir.display()
+                ),
+                "counting the coverage",
+            )
+        };
+        if segment_set::info(&vectors_dir)
+            .map_err(|err| failed(&err))?
+            .is_none()
+        {
+            return Err(SemanticError::new(
+                SemanticErrorKind::ArtifactMissing,
+                format!(
+                    "no semantic vectors are installed at {}",
+                    vectors_dir.display()
+                ),
+            )
+            .with_field("vectors_dir"));
+        }
+        // A reader: no lock or recovery, so an install or a compaction never waits for it. An
+        // install's garbage collection can remove the generation mid-open: open once more.
+        let set = SegmentSet::open_without_recovery(&vectors_dir)
+            .or_else(|_| SegmentSet::open_without_recovery(&vectors_dir))
+            .map_err(|err| failed(&err))?;
+        let info = set.info().clone();
+        let mut keys = Vec::new();
+        for (seg, segment) in set.segments().iter().enumerate() {
+            if cancel.is_cancelled() {
+                return Err(failed(&SemanticSearchError::Cancelled));
+            }
+            keys.extend(
+                (0..segment.slot_count())
+                    .filter(|&slot| set.is_live(seg as u16, slot))
+                    .map(|slot| segment.key(slot).column_value()),
+            );
+        }
+        keys.sort_unstable();
+        keys.dedup();
+        // A short line that shares a live neighbour's vector is covered by it; `anchor` is
+        // the short line's own key.
+        let mut aliases = Vec::new();
+        for segment in set.segments() {
+            aliases.extend(
+                segment
+                    .occurrences()
+                    .filter(|row| {
+                        row.is_alias() && keys.binary_search(&row.key.column_value()).is_ok()
+                    })
+                    .map(|row| row.anchor.column_value()),
+            );
+        }
+        keys.extend(aliases);
+        keys.sort_unstable();
+        keys.dedup();
+        // Unmapped before the pass over the index, which needs only the keys.
+        drop(set);
+        ensure_keyed_chunking(&info.identity.model, &|err| err.to_string())?;
+        let coverage = LiveResolver::for_chunking(
+            self.index_reader.searcher(),
+            self.chunk_key_field,
+            &self.semantic_resolver,
+            semantic_keys::keyed_chunking(info.identity.model.chunking_identity)
+                .expect("checked recipe"),
+        )
+        .and_then(|resolver| resolver.coverage(&keys, cancel))
+        .map_err(|err| failed(&err.into()))?;
+        Ok((info, coverage))
     }
 
     /// Move the open session onto the generation an install or a compaction made live, when

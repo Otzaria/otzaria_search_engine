@@ -375,6 +375,7 @@ Future<SemanticCompactionReport> compactSemanticVectors({required String vectors
 Future<SemanticGenerationRetireReport> retirePreviousSemanticGeneration({required String vectorsDir})
 Future<SemanticVectorsVerification> verifySemanticVectors({required String vectorsDir, required SemanticCancellationToken cancellation})
 Future<SemanticCoverage> semanticCoverage({required String vectorsDir, required SemanticCancellationToken cancellation})
+Future<SemanticCoveredBooks> semanticCoveredBooks({required String vectorsDir, required SemanticCancellationToken cancellation})
 Future<SemanticStatus> openSemanticArtifact({required SemanticArtifactInput config})
 Future<void> disableSemantic()
 Future<SemanticStatus> semanticStatus()
@@ -471,7 +472,25 @@ bytes the check had read, while it read them, is not damage: nothing is
 condemned, and the call throws `vectorsBusy`, to verify again once the install
 has finished. A cancelled verification records nothing. `semanticCoverage` counts the open index's live lines the
 recipe embeds and those the set holds a vector for: one pass over the `chunkKey`
-column, or, on an index without it, a read of the whole store.
+column, or, on an index without it, a read of the whole store. Only live vectors of
+the generation the set serves count: a vector a later delta deleted covers nothing,
+as a search returns nothing from it.
+`semanticCoveredBooks` makes the same pass, at the same cost, and returns the
+`filePath` of every book with a live line the set holds a vector for (`filePaths`,
+sorted and distinct). Vectors are keyed by text, not by book, so a personal book
+or an attached library's copy of a covered book's text is covered too. Call it
+off the UI thread and cache the answer. `setKey` (opaque, compare for equality)
+changes exactly when the vectors the set serves change: any install of a base
+or a delta, by this engine or another tool, a compaction, a fallback to
+`PREVIOUS`. The answer also depends on the lexical index, and the engine returns
+no key for the index's state: recompute whenever the application changed the
+index (a book added, removed or reindexed), as well as when `setKey` changed.
+`recoveredFromPrevious` is true when `CURRENT`'s generation did not open and the
+answer is for `PREVIOUS`'s, as `semanticVectorsInfo` reports it; for instance, a
+generation another tool wrote was damaged. `generation` and
+`vectorsLibraryVersion` are reported too, but are no cache key: a fallback goes
+back to an older generation, and a directory emptied and installed again numbers
+its generations from the start.
 
 `openSemanticArtifact` opens the vector set read-only and serves
 `searchSemantic` from it, hydrating every result from this index. It compares
@@ -665,8 +684,8 @@ added: a `switch` needs a default branch, which is best treated as `internal`.
 | --- | --- | --- | --- |
 | `notConfigured` | `state`, `fallbackKind` | no session is open | open the vector set |
 | `featureNotInBuild` | `state`, `fallbackKind` | no semantic support in this build | hide semantic search |
-| `artifactMissing` | `openSemanticArtifact`, `verifySemanticVectors`, `semanticCoverage`, `retirePreviousSemanticGeneration` | nothing at `vectorsDir`, or nothing ever installed there (no `CURRENT` or `PREVIOUS`) | download and install the vectors |
-| `artifactCorrupt` | opening, installing, verifying, `semanticVectorsInfo`, `retirePreviousSemanticGeneration` | a set whose pointers, metadata or segments do not open or fail their checksums, an identity left unfilled (`field`), or a release whose segment is not the one its manifest describes. Retiring: the live generation does not open, and the one before it is kept | install the release again, which repairs the set (download it again if it is gone); on a FAT or exFAT drive on Windows, close the session first |
+| `artifactMissing` | `openSemanticArtifact`, `verifySemanticVectors`, `semanticCoverage`, `semanticCoveredBooks`, `retirePreviousSemanticGeneration` | nothing at `vectorsDir`, or nothing ever installed there (no `CURRENT` or `PREVIOUS`) | download and install the vectors |
+| `artifactCorrupt` | opening, installing, verifying, `semanticVectorsInfo`, `semanticCoverage`, `semanticCoveredBooks`, `retirePreviousSemanticGeneration` | a set whose pointers, metadata or segments do not open or fail their checksums, an identity left unfilled (`field`), or a release whose segment is not the one its manifest describes. Retiring: the live generation does not open, and the one before it is kept | install the release again, which repairs the set (download it again if it is gone); on a FAT or exFAT drive on Windows, close the session first |
 | `artifactIncompatible` | opening, installing | sound vectors built for something else; `field` is the first field that disagreed: `text.line_text_version`, `model.family_id`, `model.chunking_identity`, `store.store_format_version`, `store.vector_precision`, `metadata_version`, or for a delta that does not follow the set `delta.*`. Installing, `field` `segment_id`: the release is a version the set has installed, published again with other bytes; the set is sound and keeps what it serves | install the vectors built for this application and model; for `segment_id`, do not download it again, which is refused the same way: keep the set, or install the release into a new, empty `vectorsDir` and open that |
 | `artifactNotPublished` | `installSemanticVectors` | the manifest is not the one whose digest was published | download the official release |
 | `insufficientDiskSpace` | installing, compacting | more free space is needed than the device has | free space, and try again |
@@ -681,7 +700,7 @@ added: a `switch` needs a default branch, which is best treated as `internal`.
 | `readOnlySession` | `semanticIndexBooks`, `semanticIndexDiff`, `removeSemanticBooks`, `resetSemanticIndex`, `compactSemanticVectors`, `retirePreviousSemanticGeneration` | a build-side call on an opened vector set, or a call that changes the vector set on an index opened read-only | nothing |
 | `reindexRequired` | `semanticIndexBooks` | a development session holds vectors from another configuration | `resetSemanticIndex`, index again |
 | `queryFailed` | `fallbackKind` | the semantic half of one search failed | show the lexical results |
-| `cancelled` | `searchSemantic`, and the calls that install, compact, verify or count | its `SemanticCancellationToken` was cancelled before it finished | drop it: nothing failed, and nothing changed |
+| `cancelled` | `searchSemantic`, and the calls that install, compact, verify, count or list covered books | its `SemanticCancellationToken` was cancelled before it finished | drop it: nothing failed, and nothing changed |
 | `invalidInput` | `configureSemantic`, `openSemanticArtifact`, `installSemanticVectors`, `searchSemantic`, `compactSemanticVectors` | a value the call cannot take; `field` when known (`model_quantization`, `max_tokens`, `model_identity_json`, `pooling`, `embedding_text_version`, `normalization_version`, `vectors_dir`, `segment_path`, `onnx_runtime_path`, `scan_threads`, a ranking option such as `alpha_by_query_type.short` or `rrf_k`, or `policy.<option>`) | fix the call |
 | `internal` | any | an I/O error or a fault, including the lexical index failing under `searchSemantic` | report `message` |
 | `vectorsBusy` | `installSemanticVectors`, `compactSemanticVectors`, `verifySemanticVectors`, `retirePreviousSemanticGeneration` | another install or compaction of the set at `vectorsDir` is running, in this process or another (`field` `vectors_dir`); nothing was read or changed, and an open session keeps serving. Verifying: an install replaced bytes the check had read, and nothing was condemned | try again once it has finished; never `disableSemantic` for it |

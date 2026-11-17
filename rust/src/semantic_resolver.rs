@@ -1940,7 +1940,7 @@ impl<'a> LiveResolver<'a> {
 }
 
 /// How much of the live index a vector set covers: see [`LiveResolver::coverage`].
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Coverage {
     /// Live lines the recipe embeds: the lines a vector could exist for.
     pub(crate) keyed_lines: u64,
@@ -1950,6 +1950,8 @@ pub(crate) struct Coverage {
     pub(crate) books_live: u32,
     /// Books with a covered line.
     pub(crate) books_covered: u32,
+    /// The `filePath` of each book with a covered line, sorted.
+    pub(crate) covered_books: Vec<String>,
 }
 
 impl LiveResolver<'_> {
@@ -1958,8 +1960,9 @@ impl LiveResolver<'_> {
         self.column
     }
 
-    /// The live lines the recipe embeds, and how many of them `keys` holds: the column
-    /// values of every key of a vector set, sorted. From the column, one pass over it;
+    /// The live lines the recipe embeds, how many of them `keys` holds, and the books with
+    /// one it holds: `keys` are the column values of every key of a vector set, sorted. From
+    /// the column, one pass over it;
     /// without one, every book's keys recomputed from its stored text, which reads the
     /// whole store.
     pub(crate) fn coverage(
@@ -2036,7 +2039,13 @@ impl LiveResolver<'_> {
             }
         }
         coverage.books_live = books.values().filter(|(keyed, _)| *keyed).count() as u32;
-        coverage.books_covered = books.values().filter(|(_, covered)| *covered).count() as u32;
+        coverage.covered_books = books
+            .into_iter()
+            .filter(|(_, (_, covered))| *covered)
+            .map(|(name, _)| name)
+            .collect();
+        coverage.covered_books.sort_unstable();
+        coverage.books_covered = coverage.covered_books.len() as u32;
         Ok(coverage)
     }
 }

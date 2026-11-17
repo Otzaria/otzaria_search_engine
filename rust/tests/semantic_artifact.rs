@@ -19,10 +19,10 @@ use otzaria_semantic_search::semantic::model_package::validate_onnx_package;
 use otzaria_semantic_search::semantic::versioning::{ModelIdentity, ModelPackage};
 use search_engine::api::search_engine::{
     BookOrderEntry, SearchEngine, SemanticArtifactInput, SemanticBookInput, SemanticBookLineInput,
-    SemanticCancellationToken, SemanticCompactionPolicy, SemanticConfigInput, SemanticError,
-    SemanticErrorKind, SemanticExecutedMode, SemanticGroupingMode, SemanticLexicalMode,
-    SemanticResultSource, SemanticRetrievalMode, SemanticSearchResponse, SemanticState,
-    SemanticVectorsInstallInput, SemanticVectorsPackageKind, TextStorage,
+    SemanticCancellationToken, SemanticCompactionPolicy, SemanticConfigInput, SemanticCoveredBooks,
+    SemanticError, SemanticErrorKind, SemanticExecutedMode, SemanticGroupingMode,
+    SemanticLexicalMode, SemanticResultSource, SemanticRetrievalMode, SemanticSearchResponse,
+    SemanticState, SemanticVectorsInstallInput, SemanticVectorsPackageKind, TextStorage,
 };
 use search_engine::semantic_keys::production_chunking;
 use std::collections::BTreeSet;
@@ -3529,6 +3529,81 @@ fn coverage_counts_the_live_lines_the_set_holds() {
     );
 }
 
+/// The covered books are those with a line whose text the set holds, a copy of a covered
+/// book among them, the same from the column and recomputed without it.
+#[test]
+fn covered_books_are_the_books_with_a_line_the_set_holds() {
+    const ANOTHER: &str = "/books/another.txt";
+    const COPY: &str = "/books/genesis-copy.txt";
+    for without_column in [false, true] {
+        let library = build_library_of(&default_books(), without_column);
+        let mut engine = library.engine();
+        let token = SemanticCancellationToken::new();
+        let vectors = dir_string(&library.vectors);
+        add_books(
+            &mut engine,
+            &[
+                (
+                    "ספר נוסף",
+                    "/אחר",
+                    ANOTHER,
+                    2,
+                    "שורה שלא הייתה בספרייה כשהווקטורים נבנו ממנה".to_string(),
+                ),
+                ("העתק בראשית", "/אישי", COPY, 3, GENESIS_TEXT.to_string()),
+            ],
+        );
+        let covered = engine
+            .semantic_covered_books(vectors.clone(), &token)
+            .unwrap();
+        assert_eq!(
+            covered.file_paths,
+            [BERACHOT, COPY, GENESIS].map(str::to_string),
+            "without column: {without_column}"
+        );
+        let info = engine.semantic_vectors_info(vectors.clone()).unwrap();
+        assert_eq!(
+            (covered.generation, covered.vectors_library_version),
+            (info.generation, LIBRARY_VERSION),
+            "without column: {without_column}"
+        );
+        let coverage = engine.semantic_coverage(vectors.clone(), &token).unwrap();
+        assert_eq!(
+            (coverage.books_live, coverage.books_covered),
+            (4, 3),
+            "without column: {without_column}"
+        );
+        let again = engine
+            .semantic_covered_books(vectors.clone(), &token)
+            .unwrap();
+        assert_eq!(
+            (again.file_paths, again.set_key),
+            (covered.file_paths, covered.set_key)
+        );
+
+        let cancelled = SemanticCancellationToken::new();
+        cancelled.cancel();
+        let error = engine
+            .semantic_covered_books(vectors, &cancelled)
+            .err()
+            .expect("a cancelled listing");
+        assert_eq!(error.kind, SemanticErrorKind::Cancelled);
+    }
+    let library = build_library();
+    let missing = library
+        .engine()
+        .semantic_covered_books(
+            dir_string(&library.vectors.join("absent")),
+            &SemanticCancellationToken::new(),
+        )
+        .err()
+        .expect("nothing installed");
+    assert_eq!(
+        (missing.kind, missing.field.as_deref()),
+        (SemanticErrorKind::ArtifactMissing, Some("vectors_dir"))
+    );
+}
+
 /// A set built from the index finds every record at its hint and covers every keyed line;
 /// after a line is inserted above, the records below it are counted as moved.
 #[test]
@@ -4551,6 +4626,173 @@ fn a_release_declaring_a_mixed_store_is_refused_by_its_store_field() {
     }
 }
 
+/// A delta appended to the set by another tool covers the books it brings, and changes the
+/// set key a cached answer is kept under.
+#[test]
+fn an_appended_delta_changes_the_covered_books_and_the_set_key() {
+    const ADDED: &str = "/books/added.txt";
+    let mut pipeline = Pipeline::new(ReleaseCodec::I8SymVec);
+    let base = pipeline.release(LIBRARY_VERSION, &default_books());
+    let mut books = default_books();
+    books.push((
+        "ספר שנוסף",
+        "/אחר",
+        ADDED,
+        2,
+        "שורה שנוספה לספרייה במהדורה הבאה שלה".to_string(),
+    ));
+    let delta = pipeline.release(LIBRARY_VERSION + 1, &books);
+    let engine = SearchEngine::new(pipeline.index(LIBRARY_VERSION + 1).to_str().unwrap());
+    // Another tool, on another index, installs into the set this engine reads.
+    let other = SearchEngine::new(pipeline.index(LIBRARY_VERSION).to_str().unwrap());
+    let vectors = pipeline.root.path().join("vectors");
+    let token = SemanticCancellationToken::new();
+    other
+        .install_semantic_vectors(pipeline.install_input(&vectors, &base), &token)
+        .unwrap();
+    let before = engine
+        .semantic_covered_books(dir_string(&vectors), &token)
+        .unwrap();
+    assert_eq!(before.file_paths, [BERACHOT, GENESIS].map(str::to_string));
+    assert_eq!(before.vectors_library_version, LIBRARY_VERSION);
+
+    other
+        .install_semantic_vectors(pipeline.install_input(&vectors, &delta), &token)
+        .unwrap();
+    let after = engine
+        .semantic_covered_books(dir_string(&vectors), &token)
+        .unwrap();
+    assert_eq!(
+        after.file_paths,
+        [ADDED, BERACHOT, GENESIS].map(str::to_string)
+    );
+    assert_eq!(after.vectors_library_version, LIBRARY_VERSION + 1);
+    assert!(after.generation > before.generation);
+    assert_ne!(after.set_key, before.set_key);
+}
+
+/// A base of both books and a delta that removes Genesis, and the set directory to install
+/// them into: the base's index, which still holds Genesis, is the one read.
+fn set_with_genesis_removed(pipeline: &mut Pipeline) -> (PathBuf, PathBuf, PathBuf) {
+    let base = pipeline.release(LIBRARY_VERSION, &default_books());
+    let delta = pipeline.release(LIBRARY_VERSION + 1, &default_books()[1..]);
+    let vectors = pipeline.root.path().join("vectors");
+    (base, delta, vectors)
+}
+
+/// The books of the set at `vectors`, as `engine` lists them.
+fn covered_books(engine: &SearchEngine, vectors: &Path) -> SemanticCoveredBooks {
+    engine
+        .semantic_covered_books(dir_string(vectors), &SemanticCancellationToken::new())
+        .unwrap()
+}
+
+/// A book a delta removed is not covered while its tombstoned vectors are still on disk,
+/// nor after a compaction drops them; the compaction changes the set key and not the books.
+#[test]
+fn a_book_a_delta_removed_is_not_covered_before_or_after_compaction() {
+    let mut pipeline = Pipeline::new(ReleaseCodec::I8SymVec);
+    let (base, delta, vectors) = set_with_genesis_removed(&mut pipeline);
+    let engine = SearchEngine::new(pipeline.index(LIBRARY_VERSION).to_str().unwrap());
+    let token = SemanticCancellationToken::new();
+    engine
+        .install_semantic_vectors(pipeline.install_input(&vectors, &base), &token)
+        .unwrap();
+    let before = covered_books(&engine, &vectors);
+    assert_eq!(before.file_paths, [BERACHOT, GENESIS].map(str::to_string));
+    let keyed = engine
+        .semantic_coverage(dir_string(&vectors), &token)
+        .unwrap()
+        .live_keyed_lines;
+
+    engine
+        .install_semantic_vectors(pipeline.install_input(&vectors, &delta), &token)
+        .unwrap();
+    let info = engine.semantic_vectors_info(dir_string(&vectors)).unwrap();
+    assert!(info.slots_dead > 0, "the delta tombstones Genesis");
+    let removed = covered_books(&engine, &vectors);
+    assert_eq!(removed.file_paths, [BERACHOT].map(str::to_string));
+    assert!(!removed.recovered_from_previous);
+    assert_ne!(removed.set_key, before.set_key);
+    let coverage = engine
+        .semantic_coverage(dir_string(&vectors), &token)
+        .unwrap();
+    assert_eq!(
+        (
+            coverage.live_keyed_lines,
+            coverage.covered_lines,
+            coverage.books_live,
+            coverage.books_covered
+        ),
+        (keyed, 1, 2, 1),
+        "only Berachot's one line is covered"
+    );
+
+    let compaction = engine
+        .compact_semantic_vectors(
+            dir_string(&vectors),
+            None,
+            Some(SemanticCompactionPolicy {
+                force: true,
+                ..SemanticCompactionPolicy::defaults()
+            }),
+            &token,
+        )
+        .unwrap();
+    assert!(compaction.compacted, "{}", compaction.reason);
+    let compacted = covered_books(&engine, &vectors);
+    assert_eq!(compacted.file_paths, removed.file_paths);
+    assert_ne!(compacted.set_key, removed.set_key);
+    assert!(compacted.generation > removed.generation);
+}
+
+/// When `CURRENT` does not open, the books are those of `PREVIOUS`, under its set key, and
+/// the answer says so; with neither, the set is corrupt.
+#[test]
+fn a_fallback_to_previous_lists_the_previous_generations_books() {
+    let mut pipeline = Pipeline::new(ReleaseCodec::I8SymVec);
+    let (base, delta, vectors) = set_with_genesis_removed(&mut pipeline);
+    let engine = SearchEngine::new(pipeline.index(LIBRARY_VERSION).to_str().unwrap());
+    let token = SemanticCancellationToken::new();
+    engine
+        .install_semantic_vectors(pipeline.install_input(&vectors, &base), &token)
+        .unwrap();
+    let previous = covered_books(&engine, &vectors);
+    engine
+        .install_semantic_vectors(pipeline.install_input(&vectors, &delta), &token)
+        .unwrap();
+    assert_eq!(
+        covered_books(&engine, &vectors).file_paths,
+        [BERACHOT].map(str::to_string)
+    );
+
+    std::fs::write(vectors.join("CURRENT"), "not a pointer").unwrap();
+    let fallback = covered_books(&engine, &vectors);
+    assert_eq!(fallback.file_paths, [BERACHOT, GENESIS].map(str::to_string));
+    assert_eq!(
+        (&fallback.set_key, fallback.generation),
+        (&previous.set_key, previous.generation)
+    );
+    assert!(fallback.recovered_from_previous && !previous.recovered_from_previous);
+
+    std::fs::write(vectors.join("PREVIOUS"), "not a pointer").unwrap();
+    let corrupt = engine
+        .semantic_covered_books(dir_string(&vectors), &token)
+        .err()
+        .expect("neither generation opens");
+    assert_eq!(
+        corrupt.kind,
+        SemanticErrorKind::ArtifactCorrupt,
+        "{}",
+        corrupt.message
+    );
+    let corrupt = engine
+        .semantic_coverage(dir_string(&vectors), &token)
+        .err()
+        .expect("neither generation opens");
+    assert_eq!(corrupt.kind, SemanticErrorKind::ArtifactCorrupt);
+}
+
 #[test]
 fn releases_with_previous_line_text_recipes_are_refused_before_installation() {
     for previous in [1, 2, 3] {
@@ -4614,6 +4856,11 @@ fn repeated_alias_in_public_search() {
     engine
         .install_semantic_vectors(pipeline.install_input(&vectors, &base), &token)
         .unwrap();
+    // The short line has no slot of its own: its alias covers it.
+    let coverage = engine
+        .semantic_coverage(dir_string(&vectors), &token)
+        .unwrap();
+    assert_eq!(coverage.covered_lines, coverage.live_keyed_lines);
     engine
         .open_semantic_artifact(SemanticArtifactInput {
             vectors_dir: dir_string(&vectors),

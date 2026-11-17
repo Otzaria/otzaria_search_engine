@@ -42,7 +42,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1284195639;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1494882127;
 
 // Section: executor
 
@@ -6314,6 +6314,76 @@ fn wire__crate__api__search_engine__SearchEngine_semantic_coverage_impl(
         },
     )
 }
+fn wire__crate__api__search_engine__SearchEngine_semantic_covered_books_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "SearchEngine_semantic_covered_books",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>,
+            >>::sse_decode(&mut deserializer);
+            let api_vectors_dir = <String>::sse_decode(&mut deserializer);
+            let api_cancellation = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SemanticCancellationToken>,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::api::search_engine::SemanticError>((move || {
+                    let mut api_that_guard = None;
+                    let mut api_cancellation_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_cancellation,
+                                1,
+                                false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            1 => {
+                                api_cancellation_guard =
+                                    Some(api_cancellation.lockable_decode_sync_ref())
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let api_cancellation_guard = api_cancellation_guard.unwrap();
+                    let output_ok =
+                        crate::api::search_engine::SearchEngine::semantic_covered_books(
+                            &*api_that_guard,
+                            api_vectors_dir,
+                            &*api_cancellation_guard,
+                        )?;
+                    std::result::Result::Ok(output_ok)
+                })(
+                ))
+            }
+        },
+    )
+}
 fn wire__crate__api__search_engine__SearchEngine_semantic_index_books_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -10432,6 +10502,24 @@ impl SseDecode for crate::api::search_engine::SemanticCoverage {
     }
 }
 
+impl SseDecode for crate::api::search_engine::SemanticCoveredBooks {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_filePaths = <Vec<String>>::sse_decode(deserializer);
+        let mut var_setKey = <String>::sse_decode(deserializer);
+        let mut var_generation = <u64>::sse_decode(deserializer);
+        let mut var_vectorsLibraryVersion = <u32>::sse_decode(deserializer);
+        let mut var_recoveredFromPrevious = <bool>::sse_decode(deserializer);
+        return crate::api::search_engine::SemanticCoveredBooks {
+            file_paths: var_filePaths,
+            set_key: var_setKey,
+            generation: var_generation,
+            vectors_library_version: var_vectorsLibraryVersion,
+            recovered_from_previous: var_recoveredFromPrevious,
+        };
+    }
+}
+
 impl SseDecode for crate::api::search_engine::SemanticError {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -11282,35 +11370,36 @@ fn pde_ffi_dispatcher_primary_impl(
 102 => wire__crate__api__search_engine__SearchEngine_search_stream_impl(port, ptr, rust_vec_len, data_len),
 103 => wire__crate__api__search_engine__SearchEngine_search_user_regex_stream_impl(port, ptr, rust_vec_len, data_len),
 104 => wire__crate__api__search_engine__SearchEngine_semantic_coverage_impl(port, ptr, rust_vec_len, data_len),
-105 => wire__crate__api__search_engine__SearchEngine_semantic_index_books_impl(port, ptr, rust_vec_len, data_len),
-106 => wire__crate__api__search_engine__SearchEngine_semantic_index_diff_impl(port, ptr, rust_vec_len, data_len),
-107 => wire__crate__api__search_engine__SearchEngine_semantic_passage_highlights_impl(port, ptr, rust_vec_len, data_len),
-108 => wire__crate__api__search_engine__SearchEngine_semantic_status_impl(port, ptr, rust_vec_len, data_len),
-109 => wire__crate__api__search_engine__SearchEngine_semantic_vectors_info_impl(port, ptr, rust_vec_len, data_len),
-110 => wire__crate__api__search_engine__SearchEngine_set_acronyms_dictionary_path_impl(port, ptr, rust_vec_len, data_len),
-111 => wire__crate__api__search_engine__SearchEngine_set_book_order_impl(port, ptr, rust_vec_len, data_len),
-112 => wire__crate__api__search_engine__SearchEngine_set_bulk_indexing_impl(port, ptr, rust_vec_len, data_len),
-113 => wire__crate__api__search_engine__SearchEngine_set_economy_indexing_impl(port, ptr, rust_vec_len, data_len),
-114 => wire__crate__api__search_engine__SearchEngine_set_magic_dictionary_path_impl(port, ptr, rust_vec_len, data_len),
-115 => wire__crate__api__search_engine__SearchEngine_set_translation_dictionary_path_impl(port, ptr, rust_vec_len, data_len),
-116 => wire__crate__api__search_engine__SearchEngine_upsert_document_impl(port, ptr, rust_vec_len, data_len),
-117 => wire__crate__api__search_engine__SearchEngine_upsert_documents_batch_impl(port, ptr, rust_vec_len, data_len),
-118 => wire__crate__api__search_engine__SearchEngine_verify_semantic_vectors_impl(port, ptr, rust_vec_len, data_len),
-119 => wire__crate__api__search_engine__SearchEngine_warm_book_order_impl(port, ptr, rust_vec_len, data_len),
-127 => wire__crate__api__search_engine__attached_line_source_status_impl(port, ptr, rust_vec_len, data_len),
-128 => wire__crate__api__search_engine__check_index_compatibility_impl(port, ptr, rust_vec_len, data_len),
-132 => wire__crate__api__search_engine__compute_content_fingerprint_bytes_impl(port, ptr, rust_vec_len, data_len),
-133 => wire__crate__api__search_engine__configure_attached_line_source_impl(port, ptr, rust_vec_len, data_len),
-134 => wire__crate__api__search_engine__configure_line_source_impl(port, ptr, rust_vec_len, data_len),
-135 => wire__crate__api__search_engine__configure_user_books_line_source_impl(port, ptr, rust_vec_len, data_len),
-140 => wire__crate__api__library_indexing__library_book_content_fingerprint_impl(port, ptr, rust_vec_len, data_len),
-141 => wire__crate__api__search_engine__line_source_status_impl(port, ptr, rust_vec_len, data_len),
-149 => wire__crate__api__search_engine__resume_line_source_impl(port, ptr, rust_vec_len, data_len),
-150 => wire__crate__api__search_engine__resume_line_source_owned_impl(port, ptr, rust_vec_len, data_len),
-151 => wire__crate__api__diagnostic_test__run_diagnostic_test_impl(port, ptr, rust_vec_len, data_len),
-152 => wire__crate__api__focused_benchmark__run_focused_benchmark_impl(port, ptr, rust_vec_len, data_len),
-159 => wire__crate__api__search_engine__suspend_line_source_impl(port, ptr, rust_vec_len, data_len),
-160 => wire__crate__api__search_engine__suspend_line_source_owned_impl(port, ptr, rust_vec_len, data_len),
+105 => wire__crate__api__search_engine__SearchEngine_semantic_covered_books_impl(port, ptr, rust_vec_len, data_len),
+106 => wire__crate__api__search_engine__SearchEngine_semantic_index_books_impl(port, ptr, rust_vec_len, data_len),
+107 => wire__crate__api__search_engine__SearchEngine_semantic_index_diff_impl(port, ptr, rust_vec_len, data_len),
+108 => wire__crate__api__search_engine__SearchEngine_semantic_passage_highlights_impl(port, ptr, rust_vec_len, data_len),
+109 => wire__crate__api__search_engine__SearchEngine_semantic_status_impl(port, ptr, rust_vec_len, data_len),
+110 => wire__crate__api__search_engine__SearchEngine_semantic_vectors_info_impl(port, ptr, rust_vec_len, data_len),
+111 => wire__crate__api__search_engine__SearchEngine_set_acronyms_dictionary_path_impl(port, ptr, rust_vec_len, data_len),
+112 => wire__crate__api__search_engine__SearchEngine_set_book_order_impl(port, ptr, rust_vec_len, data_len),
+113 => wire__crate__api__search_engine__SearchEngine_set_bulk_indexing_impl(port, ptr, rust_vec_len, data_len),
+114 => wire__crate__api__search_engine__SearchEngine_set_economy_indexing_impl(port, ptr, rust_vec_len, data_len),
+115 => wire__crate__api__search_engine__SearchEngine_set_magic_dictionary_path_impl(port, ptr, rust_vec_len, data_len),
+116 => wire__crate__api__search_engine__SearchEngine_set_translation_dictionary_path_impl(port, ptr, rust_vec_len, data_len),
+117 => wire__crate__api__search_engine__SearchEngine_upsert_document_impl(port, ptr, rust_vec_len, data_len),
+118 => wire__crate__api__search_engine__SearchEngine_upsert_documents_batch_impl(port, ptr, rust_vec_len, data_len),
+119 => wire__crate__api__search_engine__SearchEngine_verify_semantic_vectors_impl(port, ptr, rust_vec_len, data_len),
+120 => wire__crate__api__search_engine__SearchEngine_warm_book_order_impl(port, ptr, rust_vec_len, data_len),
+128 => wire__crate__api__search_engine__attached_line_source_status_impl(port, ptr, rust_vec_len, data_len),
+129 => wire__crate__api__search_engine__check_index_compatibility_impl(port, ptr, rust_vec_len, data_len),
+133 => wire__crate__api__search_engine__compute_content_fingerprint_bytes_impl(port, ptr, rust_vec_len, data_len),
+134 => wire__crate__api__search_engine__configure_attached_line_source_impl(port, ptr, rust_vec_len, data_len),
+135 => wire__crate__api__search_engine__configure_line_source_impl(port, ptr, rust_vec_len, data_len),
+136 => wire__crate__api__search_engine__configure_user_books_line_source_impl(port, ptr, rust_vec_len, data_len),
+141 => wire__crate__api__library_indexing__library_book_content_fingerprint_impl(port, ptr, rust_vec_len, data_len),
+142 => wire__crate__api__search_engine__line_source_status_impl(port, ptr, rust_vec_len, data_len),
+150 => wire__crate__api__search_engine__resume_line_source_impl(port, ptr, rust_vec_len, data_len),
+151 => wire__crate__api__search_engine__resume_line_source_owned_impl(port, ptr, rust_vec_len, data_len),
+152 => wire__crate__api__diagnostic_test__run_diagnostic_test_impl(port, ptr, rust_vec_len, data_len),
+153 => wire__crate__api__focused_benchmark__run_focused_benchmark_impl(port, ptr, rust_vec_len, data_len),
+160 => wire__crate__api__search_engine__suspend_line_source_impl(port, ptr, rust_vec_len, data_len),
+161 => wire__crate__api__search_engine__suspend_line_source_owned_impl(port, ptr, rust_vec_len, data_len),
                         _ => unreachable!(),
                     }
 }
@@ -11358,121 +11447,121 @@ fn pde_ffi_dispatcher_sync_impl(
             rust_vec_len,
             data_len,
         ),
-        120 => wire__crate__api__search_engine__SemanticCancellationToken_cancel_impl(
+        121 => wire__crate__api__search_engine__SemanticCancellationToken_cancel_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        121 => wire__crate__api__search_engine__SemanticCancellationToken_is_cancelled_impl(
+        122 => wire__crate__api__search_engine__SemanticCancellationToken_is_cancelled_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        122 => wire__crate__api__search_engine__SemanticCancellationToken_new_impl(
+        123 => wire__crate__api__search_engine__SemanticCancellationToken_new_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        123 => wire__crate__api__search_engine__UserRegexCancellationToken_cancel_impl(
+        124 => wire__crate__api__search_engine__UserRegexCancellationToken_cancel_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        124 => wire__crate__api__search_engine__UserRegexCancellationToken_is_cancelled_impl(
+        125 => wire__crate__api__search_engine__UserRegexCancellationToken_is_cancelled_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        125 => wire__crate__api__search_engine__UserRegexCancellationToken_new_impl(
+        126 => wire__crate__api__search_engine__UserRegexCancellationToken_new_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        126 => wire__crate__api__search_engine__UserRegexMatcher_find_matches_impl(
+        127 => wire__crate__api__search_engine__UserRegexMatcher_find_matches_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        129 => wire__crate__api__search_engine__compute_book_fingerprint_impl(
+        130 => wire__crate__api__search_engine__compute_book_fingerprint_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        130 => wire__crate__api__search_engine__compute_book_metadata_fingerprint_impl(
+        131 => wire__crate__api__search_engine__compute_book_metadata_fingerprint_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        131 => wire__crate__api__search_engine__compute_content_fingerprint_impl(
+        132 => wire__crate__api__search_engine__compute_content_fingerprint_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        136 => wire__crate__api__search_engine__generate_highlight_pattern_impl(
+        137 => wire__crate__api__search_engine__generate_highlight_pattern_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        137 => wire__crate__api__search_engine__generate_literal_highlight_pattern_impl(
+        138 => wire__crate__api__search_engine__generate_literal_highlight_pattern_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        138 => wire__crate__api__search_engine__generate_smart_highlight_pattern_impl(
+        139 => wire__crate__api__search_engine__generate_smart_highlight_pattern_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        139 => wire__crate__api__search_engine__is_probably_garbage_pdf_text_impl(
+        140 => wire__crate__api__search_engine__is_probably_garbage_pdf_text_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        142 => wire__crate__api__search_engine__normalize_pdf_text_for_indexing_impl(
+        143 => wire__crate__api__search_engine__normalize_pdf_text_for_indexing_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        143 => wire__crate__api__search_engine__normalize_pdf_texts_for_indexing_impl(
+        144 => wire__crate__api__search_engine__normalize_pdf_texts_for_indexing_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        144 => wire__crate__api__search_engine__normalize_text_for_indexing_impl(
+        145 => wire__crate__api__search_engine__normalize_text_for_indexing_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        145 => wire__crate__api__search_engine__normalize_texts_for_indexing_impl(
+        146 => wire__crate__api__search_engine__normalize_texts_for_indexing_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        146 => wire__crate__api__search_engine__parse_user_regex_impl(ptr, rust_vec_len, data_len),
-        147 => wire__crate__api__search_engine__prepare_user_regex_matcher_impl(
+        147 => wire__crate__api__search_engine__parse_user_regex_impl(ptr, rust_vec_len, data_len),
+        148 => wire__crate__api__search_engine__prepare_user_regex_matcher_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        148 => wire__crate__api__search_engine__query_word_spans_impl(ptr, rust_vec_len, data_len),
-        153 => wire__crate__api__search_engine__sanitize_query_impl(ptr, rust_vec_len, data_len),
-        154 => wire__crate__api__search_engine__semantic_compaction_policy_defaults_impl(
+        149 => wire__crate__api__search_engine__query_word_spans_impl(ptr, rust_vec_len, data_len),
+        154 => wire__crate__api__search_engine__sanitize_query_impl(ptr, rust_vec_len, data_len),
+        155 => wire__crate__api__search_engine__semantic_compaction_policy_defaults_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        155 => wire__crate__api__search_engine__semantic_ranking_options_defaults_impl(
+        156 => wire__crate__api__search_engine__semantic_ranking_options_defaults_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        156 => wire__crate__api__search_engine__set_vocalized_snippets_impl(
+        157 => wire__crate__api__search_engine__set_vocalized_snippets_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        157 => wire__crate__api__search_engine__split_query_words_impl(ptr, rust_vec_len, data_len),
-        158 => wire__crate__api__search_engine__sqlite_host_entry_address_impl(
+        158 => wire__crate__api__search_engine__split_query_words_impl(ptr, rust_vec_len, data_len),
+        159 => wire__crate__api__search_engine__sqlite_host_entry_address_impl(
             ptr,
             rust_vec_len,
             data_len,
@@ -12522,6 +12611,30 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::search_engine::SemanticCovera
     for crate::api::search_engine::SemanticCoverage
 {
     fn into_into_dart(self) -> crate::api::search_engine::SemanticCoverage {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticCoveredBooks {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.file_paths.into_into_dart().into_dart(),
+            self.set_key.into_into_dart().into_dart(),
+            self.generation.into_into_dart().into_dart(),
+            self.vectors_library_version.into_into_dart().into_dart(),
+            self.recovered_from_previous.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::search_engine::SemanticCoveredBooks
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::search_engine::SemanticCoveredBooks>
+    for crate::api::search_engine::SemanticCoveredBooks
+{
+    fn into_into_dart(self) -> crate::api::search_engine::SemanticCoveredBooks {
         self
     }
 }
@@ -14772,6 +14885,17 @@ impl SseEncode for crate::api::search_engine::SemanticCoverage {
         <u32>::sse_encode(self.books_covered, serializer);
         <u32>::sse_encode(self.vectors_library_version, serializer);
         <f64>::sse_encode(self.ratio, serializer);
+    }
+}
+
+impl SseEncode for crate::api::search_engine::SemanticCoveredBooks {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Vec<String>>::sse_encode(self.file_paths, serializer);
+        <String>::sse_encode(self.set_key, serializer);
+        <u64>::sse_encode(self.generation, serializer);
+        <u32>::sse_encode(self.vectors_library_version, serializer);
+        <bool>::sse_encode(self.recovered_from_previous, serializer);
     }
 }
 
