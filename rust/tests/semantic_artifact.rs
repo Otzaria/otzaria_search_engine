@@ -3053,9 +3053,17 @@ fn an_expansion_waiting_for_its_install_is_not_taken_for_abandoned() {
         ]
     );
 
+    // A concurrent build-binary spawn can inherit the open file description
+    // between fork and exec, even with CLOEXEC. Keep such a duplicate here so
+    // the unlocked-fixture transition cannot depend on child scheduling.
+    #[cfg(unix)]
+    let inherited = waiting.try_clone().unwrap();
+    waiting.unlock().unwrap();
     drop(waiting);
     install();
     assert_eq!(left(), [".expanding-stray.oxv", "download.part"]);
+    #[cfg(unix)]
+    drop(inherited);
 }
 
 /// Planning a filtered search opens the set beside the session without its lock, and
