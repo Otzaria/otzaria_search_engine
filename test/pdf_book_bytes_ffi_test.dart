@@ -124,7 +124,12 @@ Future<void> main() async {
           );
         }
       }
-      for (final query in ['בראשית ברא', 'שורה שניה', 'שלום עולם']) {
+      for (final query in [
+        'בראשית ברא',
+        'שורה שניה',
+        'שלום עולם',
+        'אלהים שורה',
+      ]) {
         Future<List<SearchResult>> search(SearchEngine engine) =>
             engine.searchExact(
               query: query,
@@ -155,7 +160,34 @@ Future<void> main() async {
           ),
           PdfPageInput(reference: '', text: 'שלום עולם', pageIndex: 0xffffffff),
         ]);
-        expect(await packed.getDocumentCount(), BigInt.from(3));
+        // Empty/garbage lines add nothing. Both useful lines of the first
+        // nonempty page belong to one document, followed by the last page.
+        expect(await packed.getDocumentCount(), BigInt.two);
+        final stamp = (await packed.getBookStamps()).single;
+        expect(stamp.documents, 2);
+        final firstId = (BigInt.from(stamp.bookNumber) << 32) + BigInt.one;
+        final first = (await packed.getDocumentById(id: firstId))!;
+        expect(first.segment, BigInt.from(3));
+        expect(first.reference, 'עמוד א 😀');
+        expect(first.text, contains('ברא אלהים'));
+        expect(first.text, contains('שורה שניה'));
+        expect(first.text, isNot(contains('≡')));
+        final last = (await packed.getDocumentById(id: firstId + BigInt.one))!;
+        expect(last.segment, BigInt.from(0xffffffff));
+        expect(last.text, contains('שלום עולם'));
+
+        final acrossLayoutLines = await packed.searchExact(
+          query: 'אלהים שורה',
+          facets: const ['/author/מחבר'],
+          limit: 20,
+          offset: 0,
+          order: ResultsOrder.catalogue,
+          matchNikud: false,
+          matchTaamim: false,
+        );
+        expect(acrossLayoutLines, hasLength(1));
+        expect(acrossLayoutLines.single.id, firstId);
+        expect(acrossLayoutLines.single.segment, BigInt.from(3));
       },
     );
 
