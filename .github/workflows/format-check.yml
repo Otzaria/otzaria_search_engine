@@ -36,6 +36,9 @@ jobs:
           flutter-version: 3.47.7
           cache: true
 
+      - name: Validate Android runner arguments with the real Flutter CLI
+        run: bash tool/ci/android_integration.sh check
+
       # pub get חיוני: סגנון ה-formatter (short/tall) נקבע לפי גרסת השפה
       # שנפתרת מ-pubspec/.dart_tool. בלי resolution ה-formatter נופל לברירת
       # מחדל אחרת מהמקומי, ובדיקת הפורמט נכשלת על קבצים תקינים (למשל example,

@@ -3,14 +3,20 @@
 # and Gradle do not compete with the API-24 guest for the runner's resources.
 set -euo pipefail
 
+device=${ANDROID_SERIAL:-emulator-5554}
+build_args=(build apk --debug --target integration_test/search_test.dart
+  --target-platform android-x64
+  --dart-define=INTEGRATION_TEST_SHOULD_REPORT_RESULTS_TO_NATIVE=false)
+# `flutter test` does not support `--use-application-binary`. It repeats the
+# build incrementally, reusing the matching target and Dart define above.
+test_args=(test integration_test -d "$device" --no-pub)
+
 build_apk() {
   local attempt status log
   log=$(mktemp)
   trap 'rm -f "$log"' RETURN
   for attempt in 1 2 3; do
-    if timeout --kill-after=30s 1800s flutter build apk --debug \
-      --target integration_test/search_test.dart --target-platform android-x64 \
-      --dart-define=INTEGRATION_TEST_SHOULD_REPORT_RESULTS_TO_NATIVE=false \
+    if timeout --kill-after=30s 1800s flutter "${build_args[@]}" \
       2>&1 | tee "$log"; then
       return 0
     else
@@ -26,8 +32,6 @@ build_apk() {
     sleep "$((attempt * 30))"
   done
 }
-
-device=${ANDROID_SERIAL:-emulator-5554}
 
 ready() {
   local attempt
@@ -52,8 +56,7 @@ run_test() {
     # indefinitely while consulting a service unavailable in the system image.
     timeout --kill-after=2s 10s adb -s "$device" shell settings put global package_verifier_enable 0
     timeout --kill-after=2s 10s adb -s "$device" shell settings put global verifier_verify_adb_installs 0
-    if timeout --kill-after=30s 300s flutter test integration_test -d "$device" \
-      --use-application-binary=build/app/outputs/flutter-apk/app-debug.apk; then
+    if timeout --kill-after=30s 300s flutter "${test_args[@]}"; then
       return 0
     else
       status=$?
@@ -70,7 +73,13 @@ run_test() {
 }
 
 case "${1:-}" in
+  check)
+    # Parse the exact production arguments with the installed Flutter SDK.
+    # --help avoids an SDK/device build but still rejects unsupported flags.
+    flutter "${build_args[@]}" --help > /dev/null
+    flutter "${test_args[@]}" --help > /dev/null
+    ;;
   build) build_apk ;;
   test) run_test ;;
-  *) echo 'Usage: android_integration.sh build|test' >&2; exit 64 ;;
+  *) echo 'Usage: android_integration.sh check|build|test' >&2; exit 64 ;;
 esac

@@ -88,11 +88,11 @@ class AndroidIntegrationTest(unittest.TestCase):
         self.assertEqual(result.returncode, 124, result.stderr)
         self.assertEqual(sum(c[0] == "flutter" for c in calls), 1)
 
-    def test_integration_runs_prebuilt_apk(self):
+    def test_integration_reuses_dependency_resolution(self):
         result, calls = self.run_script("test", [[0, "passed"]])
         self.assertEqual(result.returncode, 0, result.stderr)
         flutter = next(c for c in calls if c[0] == "flutter")
-        self.assertIn("--use-application-binary=build/app/outputs/flutter-apk/app-debug.apk", flutter)
+        self.assertIn("--no-pub", flutter)
 
     def test_failed_assertion_stays_red_without_retry(self):
         result, calls = self.run_script("test", [[1, "assertion failed"]])
