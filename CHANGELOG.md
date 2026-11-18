@@ -1,5 +1,25 @@
 # Changelog
 
+## 7.3.0 – 2026-11-19
+
+### Added
+
+- **`semanticCoveredBooks`** lists the books that the installed semantic vector
+  set covers, from the live vectors only, so a caller can tell which books
+  (including personal and attached libraries) are searchable semantically.
+- **PDF page documents.** A PDF page is one document in the index, with
+  per-term snippet windows, per-line regex anchors and layout enumerators kept
+  in page phrase searches.
+
+### Changed
+
+- Reopening a semantic set releases its segments before the index pass, a short
+  line that shares a vector is not shown next to its owner, and an omitted alias
+  row leaves no record.
+- Advanced search ranks a previously typed conjunction before its expanded form.
+- The semantic sidecar is pinned to the revision with the versioned source
+  projection, recipe parity and the four-gigabyte base budget.
+
 ## 7.2.0 – 2026-11-14
 
 ### Added
