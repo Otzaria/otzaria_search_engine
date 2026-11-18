@@ -840,3 +840,25 @@ peak RSS and buffer/worker diagnostics; absent baseline diagnostics are null.
 It checks document fingerprints and committed search visibility, without
 performance thresholds. It measures no Flutter frames or slow/network disks.
 The indexing-related PR job in `rust-quality.yml` publishes these artifacts.
+
+### Fresh semantic index from a released catalogue
+
+`build_semantic_index` rebuilds current note provenance from the authoritative library DB,
+while taking book numbers, titles, category/author/era/base facets, catalogue order and generation
+order from the verified released index. It preserves sparse canonical document ids and verifies
+raw-text/metadata fingerprints, every line's id/hash/section/reference, counts and projection
+version 1 before writing `build-provenance.json`. Both inputs remain read-only. Existing output
+paths are refused; a failed run has no completed provenance report.
+
+```sh
+cargo run --manifest-path rust/Cargo.toml --release --features semantic-integration \
+  --bin build_semantic_index -- \
+  --source-index /verified/released-index --seforim-db /verified/seforim.db \
+  --out /new/complete-notes-index --library-version 38
+```
+
+The source must contain its authoritative `otzaria_book_order.json` and complete book
+fingerprints. Only official `id:<bookId>` text books are rebuilt; live PDFs or external books,
+missing catalogue positions, a mismatched DB version/schema or changed source text stop the
+build. Catalogue-only entries without indexed documents are preserved in the order mapping.
+The tool needs bundled SQLite and semantic integration; it loads no model or ONNX Runtime.

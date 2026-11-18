@@ -122,3 +122,7 @@ mod search_cancellation;
 // alone: the tests and tools hold the recipe to the one a model publishes.
 pub mod semantic_keys;
 pub mod semantic_source;
+
+// Offline rebuild from a verified released index and its authoritative library DB.
+#[cfg(all(feature = "semantic-integration", feature = "sqlite-bundled"))]
+pub mod semantic_index_builder;

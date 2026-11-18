@@ -282,21 +282,36 @@ impl BookNumbers {
 
     /// Seed a fresh rebuild with canonical numbers from a verified source index.
     /// Validate the complete mapping before reserving or changing any in-memory state.
+    #[cfg(all(feature = "semantic-integration", feature = "sqlite-bundled"))]
     pub(crate) fn seed_for_rebuild(&mut self, entries: Vec<(String, u32)>) -> Result<()> {
-        anyhow::ensure!(self.by_path.is_empty() && self.paths.is_empty(), "book numbers can only be seeded into an empty index");
+        anyhow::ensure!(
+            self.by_path.is_empty() && self.paths.is_empty(),
+            "book numbers can only be seeded into an empty index"
+        );
         let mut paths = HashSet::new();
         let mut numbers = HashSet::new();
         let mut highest = 0;
         for (path, number) in &entries {
-            anyhow::ensure!(!path.trim().is_empty() && paths.insert(path), "empty or repeated book path in rebuild mapping: {path:?}");
-            anyhow::ensure!(*number > 0 && *number < u32::MAX && numbers.insert(*number), "invalid or repeated book number in rebuild mapping: {number}");
+            anyhow::ensure!(
+                !path.trim().is_empty() && paths.insert(path),
+                "empty or repeated book path in rebuild mapping: {path:?}"
+            );
+            anyhow::ensure!(
+                *number > 0 && *number < u32::MAX && numbers.insert(*number),
+                "invalid or repeated book number in rebuild mapping: {number}"
+            );
             highest = highest.max(*number);
         }
         let reserved = self.reserved.max(highest + 1);
-        atomic_replace(&self.index_dir.join(BOOK_NUMBERS_FILE), &serde_json::to_vec(&NumbersFile { reserved })?)?;
+        atomic_replace(
+            &self.index_dir.join(BOOK_NUMBERS_FILE),
+            &serde_json::to_vec(&NumbersFile { reserved })?,
+        )?;
         self.reserved = reserved;
         self.next = reserved;
-        for (path, number) in entries { self.record(path, number); }
+        for (path, number) in entries {
+            self.record(path, number);
+        }
         Ok(())
     }
 

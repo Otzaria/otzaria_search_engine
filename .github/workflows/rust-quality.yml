@@ -340,11 +340,8 @@ jobs:
   # for the graph and tokenizer.json (tests/data/onnx_golden_vectors_int8.json);
   # a sidecar pin that changes the package changes them too.
   #
-  # ONNX Runtime is Microsoft's 1.28.0 release, the reference runtime, fetched
-  # exactly as the sidecar's `onnx-backend` job fetches it: the same archives,
-  # digests and library paths, pinned because a re-uploaded asset is a different
-  # runtime. Bump the two together. The linux-aarch64 archive, which that job
-  # does not use, is pinned to the release's own asset digest.
+  # Native runtimes are pinned by version, SHA-256 and member in the sidecar's
+  # artifact catalog. The shared fetcher verifies official Microsoft packages.
   real-onnx-model:
     name: Real ONNX model (${{ matrix.os }})
     if: >-
@@ -356,17 +353,11 @@ jobs:
       matrix:
         include:
           - os: ubuntu-24.04
-            ort_archive: onnxruntime-linux-x64-1.28.0.tgz
-            ort_sha256: a3e1b79d7bb1bf09696ce675f49e4064e6c81f6202b8225624fff0e93f8d6407
-            ort_library: onnxruntime-linux-x64-1.28.0/lib/libonnxruntime.so.1.28.0
+            ort_platform: linux-x64
           - os: ubuntu-24.04-arm
-            ort_archive: onnxruntime-linux-aarch64-1.28.0.tgz
-            ort_sha256: e15ff8b5d85afe6c144d97c6fd432254bf76a219daaf17658087d6ecb3e8f0bb
-            ort_library: onnxruntime-linux-aarch64-1.28.0/lib/libonnxruntime.so.1.28.0
+            ort_platform: linux-aarch64
           - os: windows-2022
-            ort_archive: onnxruntime-win-x64-1.28.0.zip
-            ort_sha256: abef733dacbe2f571547a7150b479b5cb9cc0df22f96c24983a42cadb1b4f8bc
-            ort_library: onnxruntime-win-x64-1.28.0/lib/onnxruntime.dll
+            ort_platform: windows-x64
     steps:
       - uses: actions/checkout@v5
 
@@ -402,7 +393,9 @@ jobs:
           repository: Otzaria/otzaria-semantic-search
           ref: ${{ steps.sidecar.outputs.rev }}
           path: otzaria-semantic-search
-          sparse-checkout: config/models
+          sparse-checkout: |
+            config/models
+            tools
           persist-credentials: false
 
       # Downloaded fresh every run and deliberately NOT cached: an Actions cache
@@ -459,57 +452,12 @@ jobs:
           verify tokenizer.json 0664287976ecb078bdfd8f5e5515dc87d8cb7f985a79a481aa1cdf7a7321c0e9
           echo "int8=$dir/seforim-embed-round2-int8.onnx" >> "$GITHUB_OUTPUT"
 
-      # Only the library is extracted from the archive.
-      - name: Fetch ONNX Runtime 1.28.0
-        if: runner.os != 'Windows'
-        run: |
-          archive="$RUNNER_TEMP/${{ matrix.ort_archive }}"
-          curl -fSL --retry 5 --retry-all-errors --output "$archive" \
-            "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/${{ matrix.ort_archive }}"
-          echo "${{ matrix.ort_sha256 }}  $archive" | shasum -a 256 -c -
-          tar -xzf "$archive" -C "$RUNNER_TEMP" "${{ matrix.ort_library }}"
-          test -f "$RUNNER_TEMP/${{ matrix.ort_library }}"
-          echo "OTZARIA_ONNX_RUNTIME=$RUNNER_TEMP/${{ matrix.ort_library }}" >> "$GITHUB_ENV"
-
-      # PowerShell and .NET's zip reader rather than bash: the Windows runner's
-      # bash has no dependable zip tool, and the archive also holds a 408 MB PDB
-      # that extracting everything would write out. The path handed on is a
-      # native Windows one, which the loader needs; an MSYS-style `/d/a/...` is
-      # not.
-      - name: Fetch ONNX Runtime 1.28.0 (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $archive = Join-Path $env:RUNNER_TEMP '${{ matrix.ort_archive }}'
-          curl.exe -fSL --retry 5 --retry-all-errors --output $archive `
-            'https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/${{ matrix.ort_archive }}'
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
-          if ($actual -ne '${{ matrix.ort_sha256 }}') {
-            Write-Output "::error::${{ matrix.ort_archive }}: SHA-256 $actual, expected ${{ matrix.ort_sha256 }}"
-            exit 1
-          }
-          $member = '${{ matrix.ort_library }}'
-          $folder = $member.Substring(0, $member.LastIndexOf('/'))
-          $target = Join-Path $env:RUNNER_TEMP ($folder -replace '/', '\')
-          New-Item -ItemType Directory -Force -Path $target | Out-Null
-          Add-Type -AssemblyName System.IO.Compression.FileSystem
-          $zip = [System.IO.Compression.ZipFile]::OpenRead($archive)
-          try {
-            foreach ($entry in $zip.Entries) {
-              if ($entry.FullName -like "$folder/*.dll") {
-                [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, (Join-Path $target $entry.Name), $true)
-              }
-            }
-          } finally {
-            $zip.Dispose()
-          }
-          $library = Join-Path $env:RUNNER_TEMP ($member -replace '/', '\')
-          if (-not (Test-Path -LiteralPath $library)) {
-            Write-Output "::error::$member is not in ${{ matrix.ort_archive }}"
-            exit 1
-          }
-          Add-Content -Path $env:GITHUB_ENV -Value "OTZARIA_ONNX_RUNTIME=$library"
+      - name: Fetch verified ONNX Runtime 1.28.0
+        shell: bash
+        run: >
+          python otzaria-semantic-search/tools/fetch_onnx_runtime.py
+          --version 1.28.0 --platform ${{ matrix.ort_platform }}
+          --out "$RUNNER_TEMP/onnxruntime-1.28.0"
 
       # `--ignored` is what selects them. The sidecar reads
       # OTZARIA_ONNX_RUNTIME, which the step above left in the environment.

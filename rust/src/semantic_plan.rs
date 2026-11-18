@@ -760,10 +760,11 @@ fn plan_book(
     }
     let semantic = semantic_texts(searcher, &documents, separated)?;
     for (line, (address, _)) in semantic.iter().zip(&documents) {
-        anyhow::ensure!(
-            line.status == TextStatus::Ok,
-            "the source text at {address:?} is unavailable or stale"
-        );
+        match line.status {
+            TextStatus::Ok => {},
+            TextStatus::Stale => anyhow::bail!("the library database no longer holds the text the document at {address:?} was indexed from; plan from the database the index was made with"),
+            TextStatus::Unavailable => anyhow::bail!("the document at {address:?} keeps its text in the library database, which cannot be read (pass --seforim-db)"),
+        }
     }
     let texts: Vec<String> = semantic.iter().map(|line| line.text.clone()).collect();
     let lines: Vec<LineRef<'_>> = texts

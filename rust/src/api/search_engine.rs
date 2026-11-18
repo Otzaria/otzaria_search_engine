@@ -10098,6 +10098,7 @@ impl SearchEngine {
         self.index_reader.searcher()
     }
 
+    #[cfg(all(feature = "semantic-integration", feature = "sqlite-bundled"))]
     pub(crate) fn seed_book_numbers_for_rebuild(&self, source: &Searcher) -> Result<()> {
         self.ensure_write_access()?;
         anyhow::ensure!(
