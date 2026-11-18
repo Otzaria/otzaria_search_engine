@@ -3515,6 +3515,8 @@ struct IndexMetadata {
         skip_serializing_if = "Option::is_none"
     )]
     chunk_key_chunking_identity: Option<u64>,
+    #[serde(default)]
+    semantic_projection_version: u32,
 }
 
 impl IndexMetadata {
@@ -4668,7 +4670,13 @@ fn ensure_current_index_metadata(index_path: &Path, empty: bool) -> Result<()> {
     let has_column =
         schema_of_version(version).is_some_and(|schema| schema.get_field(CHUNK_KEY_FIELD).is_ok());
     let recipe = (has_column && empty).then(ChunkKeyRecipe::current);
-    write_index_metadata(index_path, &index_metadata(version, recipe))
+    let mut metadata = index_metadata(version, recipe);
+    metadata.semantic_projection_version = u32::from(
+        empty
+            && schema_of_version(version)
+                .is_some_and(|schema| schema.get_field(note_spans::FIELD).is_ok()),
+    );
+    write_index_metadata(index_path, &metadata)
 }
 
 /// What a new index's metadata is, written into a directory a test made by other means.
@@ -4707,10 +4715,22 @@ fn index_metadata(schema_version: u32, chunk_keys: Option<ChunkKeyRecipe>) -> In
         line_text_version: chunk_keys.map(|recipe| recipe.line_text_version),
         chunk_key_version: chunk_keys.map(|recipe| recipe.key_version),
         chunk_key_chunking_identity: chunk_keys.map(|recipe| recipe.chunking_identity),
+        semantic_projection_version: 1,
     }
 }
 
 /// The metadata an index directory holds, when it holds metadata this engine reads.
+#[cfg(any(test, feature = "semantic-integration"))]
+pub(crate) fn ensure_semantic_projection(
+    index_path: &Path,
+    config: &otzaria_semantic_search::semantic::chunker::ChunkerConfig,
+) -> Result<()> {
+    anyhow::ensure!(config.embedding_text_version != 4 || read_index_metadata(index_path)
+        .is_some_and(|meta| meta.semantic_projection_version == 1),
+        "embedding recipe 4 requires a rebuilt index with semantic note provenance (semantic_projection_version=1)");
+    Ok(())
+}
+
 fn read_index_metadata(index_path: &Path) -> Option<IndexMetadata> {
     let path = index_metadata_path(index_path);
     let raw = match fs::read_to_string(&path) {
@@ -6045,6 +6065,10 @@ impl SearchEngine {
             // The text recipe is part of the chunking configuration rather than a
             // field of its own, because the chunker is what applies it and
             // `ChunkerConfig::identity` is what records it.
+            if requested.embedding_text_version == 4 {
+                return Err(SemanticError::new(SemanticErrorKind::InvalidInput,
+                    "embedding recipe 4 requires prebuilt complete-window artifacts; the local development vector store supports anchored recipes only"));
+            }
             semantic_config.chunking.embedding_text_version = requested.embedding_text_version;
             // Both dimensions must agree or the sidecar refuses the config, and
             // the store's path is derived from our root rather than the
@@ -6197,6 +6221,11 @@ impl SearchEngine {
             let family = LocalModel::of_family(key.model_path.clone(), &key.model, "");
             semantic_errors::check_local_model(&family, |err| refused(err))?;
             ensure_keyed_chunking(&key.model, &refused)?;
+            let chunking = semantic_keys::keyed_chunking(key.model.chunking_identity)
+                .expect("recipe checked above");
+            ensure_semantic_projection(&self.index_path, &chunking).map_err(|error| {
+                SemanticError::new(SemanticErrorKind::ReindexRequired, error.to_string())
+            })?;
             let package = family_package(&key, call, &refused)?;
             let local = LocalModel {
                 model_quantization: package.quantization,
@@ -7181,6 +7210,8 @@ impl SearchEngine {
                             line_id: line.line_id,
                             section_id: line.section_id,
                             text: line.text,
+                            semantic_text: None,
+                            semantic_notes: Vec::new(),
                             line_hash: line.line_hash,
                             reference: line.reference,
                             segment: line.segment,
@@ -9253,9 +9284,7 @@ impl SearchEngine {
         );
         anyhow::ensure!(!stop(), "indexing preparation interrupted");
         let mut source_notes = note_spans::BookNotes::new(&self.index_path);
-        if note_field.is_some() && (!library || !stored_lines.is_empty()) {
-            source_notes.push_text(text)?;
-        }
+        source_notes.push_text(text)?;
         let mut note_reader = source_notes.reader()?;
         let mut source_offset = 0;
         let line_notes = lines
@@ -9308,8 +9337,8 @@ impl SearchEngine {
         let chunk_keys: Vec<u64> = crate::indexing_buffers::preparation_cpu(
             self.library_preparation_policy().cpu_threads,
             || match chunk_key_f {
-                Some(_) => {
-                    let lines: Vec<LineRef<'_>> = normalized
+                Some(_) if semantic_keys::production_chunking().embedding_text_version != 4 => {
+                    let lines: Vec<_> = normalized
                         .iter()
                         .zip(&reference_of_line)
                         .map(|((plain, _, _, _, _, _), section)| LineRef {
@@ -9318,6 +9347,31 @@ impl SearchEngine {
                         })
                         .collect();
                     semantic_keys::column_values(&lines)
+                }
+                Some(_) => {
+                    let semantic: Vec<_> = normalized
+                        .iter()
+                        .enumerate()
+                        .map(|(index, (plain, _, _, _, _, _))| {
+                            if semantic_keys::production_chunking().embedding_text_version == 4 {
+                                line_notes[index]
+                                    .normalize(lines[index], plain, None)
+                                    .semantic_parts(plain)
+                            } else {
+                                (plain.clone(), Vec::new())
+                            }
+                        })
+                        .collect();
+                    let lines: Vec<LineRef<'_>> = semantic
+                        .iter()
+                        .zip(&reference_of_line)
+                        .map(|((main, _), section)| LineRef {
+                            text: main,
+                            section: u64::from(*section),
+                        })
+                        .collect();
+                    let notes: Vec<_> = semantic.iter().map(|(_, notes)| notes.clone()).collect();
+                    semantic_keys::column_values_with_notes(&lines, &notes)
                 }
                 None => Vec::new(),
             },
@@ -9433,6 +9487,8 @@ impl SearchEngine {
         use std::sync::Arc;
         struct Line {
             plain: String,
+            semantic: Option<String>,
+            semantic_notes: Vec<String>,
             vocalized: Option<String>,
             hash: u64,
             check: Option<u32>,
@@ -9561,8 +9617,14 @@ impl SearchEngine {
                                             .encode()
                                     })
                                     .flatten();
+                                let (semantic, semantic_notes) = if semantic_keys::production_chunking().embedding_text_version == 4 {
+                                    let (main, notes) = source_notes.normalize(raw, &plain, None).semantic_parts(&plain);
+                                    (Some(main), notes)
+                                } else { (None, Vec::new()) };
                                 Line {
                                     plain,
+                                    semantic,
+                                    semantic_notes,
                                     vocalized,
                                     hash,
                                     check,
@@ -9590,11 +9652,15 @@ impl SearchEngine {
                     let lines: Vec<LineRef<'_>> = window
                         .iter()
                         .map(|line| LineRef {
-                            text: &line.plain,
+                            text: line.semantic.as_deref().unwrap_or(&line.plain),
                             section: u64::from(line.section),
                         })
                         .collect();
-                    semantic_keys::column_values(&lines)
+                    let notes: Vec<_> = window
+                        .iter()
+                        .map(|line| line.semantic_notes.clone())
+                        .collect();
+                    semantic_keys::column_values_with_notes(&lines, &notes)
                 })?
             } else {
                 Vec::new()
@@ -10020,8 +10086,48 @@ impl SearchEngine {
     /// which holds it for a whole build precisely so a reload cannot move the corpus
     /// underneath one.
     #[cfg(any(test, feature = "semantic-integration"))]
+    pub(crate) fn ensure_semantic_projection(
+        &self,
+        config: &otzaria_semantic_search::semantic::chunker::ChunkerConfig,
+    ) -> Result<()> {
+        ensure_semantic_projection(&self.index_path, config)
+    }
+
+    #[cfg(any(test, feature = "semantic-integration"))]
     pub(crate) fn corpus_searcher(&self) -> Searcher {
         self.index_reader.searcher()
+    }
+
+    pub(crate) fn seed_book_numbers_for_rebuild(&self, source: &Searcher) -> Result<()> {
+        self.ensure_write_access()?;
+        anyhow::ensure!(
+            self.index_writer.is_some(),
+            "rebuild requires an open index writer"
+        );
+        self.index_reader.reload()?;
+        anyhow::ensure!(
+            self.index_reader.searcher().num_docs() == 0,
+            "book numbers can only seed an empty rebuild index"
+        );
+        let ordinals: Vec<_> = (0..source.segment_readers().len()).collect();
+        let found = crate::book_order::numbers_in_segments(source, &ordinals)?;
+        let mut paths = std::collections::HashMap::new();
+        for (path, number) in &found {
+            if let Some(previous) = paths.insert(*number, path) {
+                anyhow::ensure!(
+                    previous == path,
+                    "source book number {number} names both {previous:?} and {path:?}"
+                );
+            }
+        }
+        let mut numbers = BookNumbers::new(&self.index_path);
+        numbers.seed_for_rebuild(found)?;
+        *self
+            .book_numbers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(numbers);
+        self.numbers_stale.store(false, Ordering::Release);
+        Ok(())
     }
 
     /// Delete a document by its numeric id. Does not commit.
@@ -10907,6 +11013,73 @@ impl SearchEngine {
         use otzaria_semantic_search::semantic::oxv::occurrence::ALIAS_WINDOW;
         let chunking = chunking.clone();
         let chunker = otzaria_semantic_search::semantic::chunker::Chunker::new(chunking.clone())?;
+        if chunking.embedding_text_version == 4 {
+            let resolver = crate::semantic_resolver::LiveResolver::for_chunking(
+                searcher.clone(),
+                self.chunk_key_field,
+                &self.semantic_resolver,
+                chunking.clone(),
+            )
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+            let asked: Vec<_> = lines.iter().map(|line| (line.1, line.2, line.0)).collect();
+            let contexts = resolver
+                .short_line_windows(&asked)
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            let chunker = otzaria_semantic_search::semantic::chunker::Chunker::new(chunking)?;
+            return lines
+                .iter()
+                .zip(contexts)
+                .map(|(line, context)| {
+                    if line.4 == ALIAS_WINDOW {
+                        return Ok(None);
+                    }
+                    let addresses = context.unwrap_or_else(|| vec![line.0]);
+                    let Some(index) = addresses.iter().position(|address| *address == line.0)
+                    else {
+                        return Ok(None);
+                    };
+                    let mut loader = DocumentLoader::new(searcher);
+                    let documents = addresses
+                        .iter()
+                        .map(|address| Ok((*address, loader.load(*address)?)))
+                        .collect::<Result<Vec<_>>>()?;
+                    let projected = semantic_texts(searcher, &documents, true)?;
+                    if projected
+                        .iter()
+                        .any(|text| text.status == TextStatus::Unavailable)
+                    {
+                        return Ok(None);
+                    }
+                    let refs: Vec<_> = projected
+                        .iter()
+                        .map(
+                            |text| otzaria_semantic_search::semantic::chunk_key::LineRef {
+                                text: &text.text,
+                                section: 0,
+                            },
+                        )
+                        .collect();
+                    let main_windows = chunker.embedded_windows(&refs, index).len();
+                    Ok(chunker
+                        .embedded_windows_with_notes(&refs, index, &projected[index].semantic_notes)
+                        .into_iter()
+                        .find(|window| window.ordinal == line.4)
+                        .map(|window| {
+                            let text = window
+                                .text
+                                .strip_prefix("[PASSAGE] ")
+                                .unwrap_or(&window.text)
+                                .to_string();
+                            let display = if usize::from(window.ordinal) >= main_windows {
+                                DisplayText::note(text)
+                            } else {
+                                DisplayText::plain(text)
+                            };
+                            display.collapse_whitespace()
+                        }))
+                })
+                .collect();
+        }
         let short: Vec<usize> = (0..lines.len())
             .filter(|&at| {
                 let length = lines[at].3.trim().chars().count();
@@ -18206,6 +18379,7 @@ impl HitText {
 /// The text a document was indexed from, as [`indexed_texts`] reads it.
 pub(crate) struct IndexedText {
     pub(crate) text: String,
+    pub(crate) semantic_notes: Vec<String>,
     pub(crate) status: TextStatus,
 }
 
@@ -18228,7 +18402,35 @@ pub(crate) fn indexed_texts(
     .into_iter()
     .map(|hit| IndexedText {
         text: hit.plain,
+        semantic_notes: Vec::new(),
         status: hit.status,
+    })
+    .collect())
+}
+
+/// Semantic renderings keep lexical text and note provenance separate.
+pub(crate) fn semantic_texts(
+    searcher: &Searcher,
+    documents: &[(DocAddress, TantivyDocument)],
+    separated_notes: bool,
+) -> Result<Vec<IndexedText>> {
+    if !separated_notes {
+        return indexed_texts(searcher, documents);
+    }
+    Ok(SearchEngine::resolve_hit_texts(
+        searcher.schema(),
+        searcher,
+        documents,
+        HitRendering::Plain,
+    )?
+    .into_iter()
+    .map(|hit| {
+        let (text, semantic_notes) = hit.notes.semantic_parts(&hit.plain);
+        IndexedText {
+            text,
+            semantic_notes,
+            status: hit.status,
+        }
     })
     .collect())
 }

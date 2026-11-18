@@ -70,8 +70,8 @@
 //! kept with the set's view, under the book's postings and its text hash, across generations.
 
 use crate::semantic_keys::{
-    context_window, line_texts, production_chunking, recompute_chunk_keys_at_with,
-    recompute_chunk_keys_with, recompute_window_keys_at_with, KeySpan, WindowKeys,
+    production_chunking, recompute_chunk_keys_at_with, recompute_chunk_keys_with,
+    recompute_window_keys_at_with, KeySpan, WindowKeys,
 };
 use crate::semantic_moves::{Arrival, Known, Postings, SetView};
 use lru::LruCache;
@@ -508,7 +508,10 @@ impl<'a> LiveResolver<'a> {
         let mut geometry = chunking.clone();
         geometry.embedding_text_version = production_chunking().embedding_text_version;
         geometry.normalization_version = production_chunking().normalization_version;
-        if geometry != production_chunking() && geometry != production_chunking().anchor() {
+        if geometry != production_chunking()
+            && geometry != production_chunking().anchor()
+            && chunking != crate::semantic_keys::next_production_chunking()
+        {
             return Err(index_error(
                 "live resolver does not support this chunk geometry",
             ));
@@ -557,6 +560,31 @@ impl<'a> LiveResolver<'a> {
             plans: Vec::new(),
             alias_penalty: otzaria_semantic_search::config::profiles::DEFAULT_ALIAS_PENALTY,
         })
+    }
+
+    #[cfg(test)]
+    fn with_chunking(self, chunking: ChunkerConfig) -> Result<Self, ResolveError> {
+        let column = self
+            .column
+            .then(|| self.searcher.schema().get_field("chunkKey").ok())
+            .flatten();
+        Self::for_chunking(self.searcher.clone(), column, self.cache, chunking)
+    }
+
+    fn recipe_line_texts(
+        &self,
+        searcher: &Searcher,
+        addresses: &[DocAddress],
+    ) -> anyhow::Result<Vec<String>> {
+        crate::semantic_keys::line_texts_for(searcher, addresses, &self.chunking)
+    }
+    fn recipe_context_window(
+        &self,
+        len: usize,
+        position: usize,
+        section: impl Fn(usize) -> Option<u64>,
+    ) -> Option<std::ops::RangeInclusive<usize>> {
+        crate::semantic_keys::context_window_for(len, position, section, &self.chunking)
     }
 
     fn generation_id(&self) -> u64 {
@@ -1293,7 +1321,8 @@ impl<'a> LiveResolver<'a> {
 
     /// The text of the lines at `addresses`, as their keys are computed from it.
     fn texts(&self, addresses: &[DocAddress]) -> Result<Vec<String>, ResolveError> {
-        line_texts(&self.searcher, addresses).map_err(index_error)
+        self.recipe_line_texts(&self.searcher, addresses)
+            .map_err(index_error)
     }
 
     fn section_of(&self, address: DocAddress) -> Option<u64> {
@@ -1311,18 +1340,18 @@ impl<'a> LiveResolver<'a> {
     /// The span of the key the line at `position` of `book` holds, from its window's
     /// texts: at most five documents.
     fn key_span(&self, book: &BookLines, position: usize) -> Result<KeySpan, ResolveError> {
-        // Pardes normalization can erase or join raw words; lineHash-only span
-        // pruning would then reject valid matches. Verify complete keys instead.
-        if self.chunking.normalization_version != production_chunking().normalization_version {
+        if self.chunking.normalization_version != production_chunking().normalization_version
+            || self.chunking.embedding_text_version == 4
+        {
             return Ok(KeySpan::ANY);
         }
         let address = book.docs[position];
         let own = self.texts(&[address])?.pop().unwrap_or_default();
-        if own.trim().chars().count() >= production_chunking().min_meaningful_chars {
+        if own.trim().chars().count() >= self.chunking.min_meaningful_chars {
             return Ok(KeySpan::ANY);
         }
         let (Some(window), Some(own_hash)) = (
-            context_window(book.docs.len(), position, |at| {
+            self.recipe_context_window(book.docs.len(), position, |at| {
                 self.section_of(book.docs[at])
             }),
             self.line_hash_of(address),
@@ -1354,7 +1383,7 @@ impl<'a> LiveResolver<'a> {
                 if book.info.is_pdf || book.docs[position] != address {
                     return Ok(None);
                 }
-                let window = context_window(book.docs.len(), position, |at| {
+                let window = self.recipe_context_window(book.docs.len(), position, |at| {
                     self.section_of(book.docs[at])
                 });
                 Ok(window
@@ -1367,7 +1396,7 @@ impl<'a> LiveResolver<'a> {
     /// The `lineHash`es of the window the line at `position` of `book` is keyed over were it
     /// short, from the columns alone; `None` when they cannot say.
     fn window_hashes(&self, book: &BookLines, position: usize) -> Option<Vec<u64>> {
-        context_window(book.docs.len(), position, |at| {
+        self.recipe_context_window(book.docs.len(), position, |at| {
             self.section_of(book.docs[at])
         })?
         .map(|at| self.line_hash_of(book.docs[at]))
@@ -3538,6 +3567,207 @@ mod tests {
         let mut again = LiveResolver::new(reader.searcher(), column, &cache).unwrap();
         again.share_keys(library);
         assert_eq!(again.key_at(&book, 0).unwrap(), Some(meivin_key));
+    }
+
+    #[test]
+    fn issue34_candidate_and_legacy_keys_do_not_leak_through_shared_cache() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let main = "דברי תורה והלכה למעשה נמצאים בתוך השורה הזאת בשלמותם";
+        let raw = main.replacen("תורה", "תורה<sup>12</sup>", 1);
+        let (index, reader) = windowed_index(&dir, &[raw]);
+        let column = live_chunk_key_field(&index.schema(), dir.path());
+        let legacy = ChunkKey::of(&format!(
+            "[PASSAGE] {}",
+            main.replacen("תורה", "תורה 12", 1)
+        ));
+        let candidate = ChunkKey::of(&format!("[PASSAGE] {main}"));
+        assert_ne!(legacy, candidate);
+        for column in [column, None] {
+            let cache = Mutex::default();
+            for (config, expected, rejected) in [
+                (production_chunking(), legacy, candidate),
+                (
+                    crate::semantic_keys::next_production_chunking(),
+                    candidate,
+                    legacy,
+                ),
+                (production_chunking(), legacy, candidate),
+                (
+                    crate::semantic_keys::next_production_chunking(),
+                    candidate,
+                    legacy,
+                ),
+            ] {
+                let mut resolver = LiveResolver::new(reader.searcher(), column, &cache)
+                    .unwrap()
+                    .with_chunking(config)
+                    .unwrap();
+                resolver.share_keys(Default::default());
+                let book = resolver.book("/books/long.txt").unwrap().unwrap();
+                assert_eq!(resolver.key_at(&book, 0).unwrap(), Some(expected));
+                let good = window_hit(expected, 0, "/books/long.txt", 0);
+                let found = resolver
+                    .resolve(&[good], None, &CancellationToken::new())
+                    .unwrap();
+                assert_eq!(
+                    found
+                        .iter()
+                        .map(|line| (line.segment, line.window))
+                        .collect::<Vec<_>>(),
+                    [(0, 0)]
+                );
+                let wrong = window_hit(rejected, 0, "/books/long.txt", 0);
+                assert!(resolver
+                    .resolve(&[wrong], None, &CancellationToken::new())
+                    .unwrap()
+                    .is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn issue34_note_only_line_resolves_as_window_zero() {
+        let body = "הערת שוליים עצמאית ארוכה דיה כדי להימצא לפי משמעותה";
+        let raw =
+            format!("<sup class=\"footnote-marker\">12</sup><i class=\"footnote\">{body}</i>");
+        let prepared = crate::semantic_source::prepare_line(&raw);
+        assert!(prepared.semantic_text.is_empty());
+        assert_eq!(prepared.semantic_notes, [body]);
+        let expected = ChunkKey::of(&format!("[PASSAGE] {body}"));
+        let dir = tempfile::TempDir::new().unwrap();
+        let (index, reader) = windowed_index(&dir, &[raw]);
+        let column = live_chunk_key_field(&index.schema(), dir.path());
+        for column in [column, None] {
+            let cache = Mutex::default();
+            let resolver = LiveResolver::new(reader.searcher(), column, &cache)
+                .unwrap()
+                .with_chunking(crate::semantic_keys::next_production_chunking())
+                .unwrap();
+            let book = resolver.book("/books/long.txt").unwrap().unwrap();
+            assert_eq!(resolver.key_at(&book, 0).unwrap(), Some(expected));
+            let found = resolver
+                .resolve(
+                    &[window_hit(expected, 0, "/books/long.txt", 0)],
+                    None,
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            assert_eq!(
+                found
+                    .iter()
+                    .map(|line| (line.segment, line.window))
+                    .collect::<Vec<_>>(),
+                [(0, 0)]
+            );
+        }
+    }
+
+    #[test]
+    fn issue34_equal_short_main_and_note_keep_note_window_one() {
+        use otzaria_semantic_search::semantic::chunk_key::LineRef;
+        use otzaria_semantic_search::semantic::chunker::Chunker;
+        let main = "הלכה א";
+        let raw = vec![
+            "ההקשר שלפני השורה הקצרה עוסק בהלכה אחרת".to_string(),
+            format!("{main} <i class=\"footnote\">{main}</i>"),
+            "השורה שאחריה משלימה את הטיעון המרכזי בספר".to_string(),
+        ];
+        let prepared: Vec<_> = raw
+            .iter()
+            .map(|line| crate::semantic_source::prepare_line(line))
+            .collect();
+        assert_eq!(prepared[1].semantic_text, main);
+        assert_eq!(prepared[1].semantic_notes, [main]);
+        let refs: Vec<_> = prepared
+            .iter()
+            .map(|line| LineRef {
+                text: &line.semantic_text,
+                section: 0,
+            })
+            .collect();
+        let windows = Chunker::new(crate::semantic_keys::next_production_chunking())
+            .unwrap()
+            .embedded_windows_with_notes(&refs, 1, &prepared[1].semantic_notes);
+        let note = ChunkKey::of(&format!("[PASSAGE] {main}"));
+        assert_eq!(windows.len(), 2);
+        assert_ne!(ChunkKey::of(&windows[0].text), note);
+        assert_eq!(
+            (windows[1].ordinal, ChunkKey::of(&windows[1].text)),
+            (1, note)
+        );
+        let dir = tempfile::TempDir::new().unwrap();
+        let (index, reader) = windowed_index(&dir, &raw);
+        let column = live_chunk_key_field(&index.schema(), dir.path());
+        for column in [column, None] {
+            let cache = Mutex::default();
+            let resolver = LiveResolver::new(reader.searcher(), column, &cache)
+                .unwrap()
+                .with_chunking(crate::semantic_keys::next_production_chunking())
+                .unwrap();
+            let found = resolver
+                .resolve(
+                    &[window_hit(note, 1, "/books/long.txt", 1)],
+                    None,
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            assert_eq!(
+                found
+                    .iter()
+                    .map(|line| (line.segment, line.window))
+                    .collect::<Vec<_>>(),
+                [(1, 1)]
+            );
+        }
+    }
+
+    #[test]
+    fn issue34_long_line_tail_beyond_six_windows_resolves() {
+        use otzaria_semantic_search::semantic::chunk_key::LineRef;
+        use otzaria_semantic_search::semantic::chunker::Chunker;
+        let long = (0..1_000)
+            .map(|word| format!("מילה{word}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let config = crate::semantic_keys::next_production_chunking();
+        let chunker = Chunker::new(config.clone()).unwrap();
+        let refs = [LineRef {
+            text: &long,
+            section: 0,
+        }];
+        chunker.validate_line_coverage(&refs, 0, &[]).unwrap();
+        let windows = chunker.embedded_windows(&refs, 0);
+        let tail = windows.last().unwrap();
+        assert!(tail.ordinal >= 6);
+        assert_eq!(tail.chars.end as usize, long.chars().count());
+        let key = ChunkKey::of(&tail.text);
+        assert!(!crate::semantic_keys::window_keys(&long)
+            .iter()
+            .any(|(_, old)| *old == key));
+        let dir = tempfile::TempDir::new().unwrap();
+        let (index, reader) = windowed_index(&dir, &[long]);
+        let column = live_chunk_key_field(&index.schema(), dir.path());
+        for column in [column, None] {
+            let cache = Mutex::default();
+            let resolver = LiveResolver::new(reader.searcher(), column, &cache)
+                .unwrap()
+                .with_chunking(config.clone())
+                .unwrap();
+            let found = resolver
+                .resolve(
+                    &[window_hit(key, tail.ordinal, "/books/long.txt", 0)],
+                    None,
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            assert_eq!(
+                found
+                    .iter()
+                    .map(|line| (line.segment, line.window))
+                    .collect::<Vec<_>>(),
+                [(0, tail.ordinal)]
+            );
+        }
     }
 
     /// A window hit resolves at or within [`RECOMPUTE_REACH`] of its hint, with its window;

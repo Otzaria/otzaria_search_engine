@@ -26,7 +26,7 @@
 //! must be the text the index was built from: a row that changed since, or a database that
 //! cannot be read, stops the plan.
 
-use crate::api::search_engine::{indexed_texts, TextStatus, LINE_TEXT_VERSION};
+use crate::api::search_engine::{semantic_texts, TextStatus, LINE_TEXT_VERSION};
 use crate::semantic_keys::{keyed_chunkings, pardes_chunking, production_chunking};
 use anyhow::{Context, Result};
 use otzaria_semantic_search::distribution::ledger::{split, Ledger};
@@ -75,8 +75,8 @@ pub struct PlanExport<'a> {
 pub struct PlanExportReport {
     pub manifest: PlanManifest,
     pub embed: EmbedManifest,
-    /// Whether the keys were held to a `chunkKey` column: `false` for an index without one
-    /// this build uses, whose parity checks nothing.
+    /// Whether parity used the stored `chunkKey` column. Candidate recipe parity uses
+    /// the runtime's recipe-specific recomputation instead of a legacy column.
     pub column_checked: bool,
     /// Live documents in the index, and the PDF lines among them that were not planned.
     pub documents: u64,
@@ -95,6 +95,7 @@ pub fn export_plan(request: PlanExport<'_>) -> Result<PlanExportReport> {
     // The cheap refusals first: nothing below is worth reading six million lines for if
     // the manifest at the end could not be written.
     let chunking = chunking_of(request.model.chunking_identity)?;
+    crate::api::search_engine::ensure_semantic_projection(&request.index_path, &chunking)?;
     EmbeddingRecipe::resolve(&chunking, &request.model)?;
     anyhow::ensure!(
         request
@@ -118,6 +119,7 @@ pub fn export_plan(request: PlanExport<'_>) -> Result<PlanExportReport> {
     identity.validate_complete()?;
 
     let (searcher, chunk_key) = open_index(&request.index_path)?;
+    let chunk_key = chunk_key.filter(|_| chunking.embedding_text_version != 4);
     let columns = SegmentColumns::of(&searcher, chunk_key.is_some())?;
     let books = books_of(&searcher)?;
     let documents: u64 = books.values().map(|lines| lines.len() as u64).sum();
@@ -128,7 +130,10 @@ pub fn export_plan(request: PlanExport<'_>) -> Result<PlanExportReport> {
     book_list.write(&dir.join(BOOKS_FILE))?;
 
     let chunker = Chunker::new(chunking.clone())?;
-    if chunker.recipe().0 == ChunkingAlgorithm::AnchoredLineWindows {
+    if matches!(
+        chunker.recipe().0,
+        ChunkingAlgorithm::AnchoredLineWindows | ChunkingAlgorithm::CompleteAnchoredLineWindows
+    ) {
         let text_hashes = searcher
             .segment_readers()
             .iter()
@@ -151,7 +156,7 @@ pub fn export_plan(request: PlanExport<'_>) -> Result<PlanExportReport> {
     }
     let mut records = match chunker.recipe().0 {
         ChunkingAlgorithm::AnchoredLine => RecordsWriter::create(&dir.join(RECORDS_FILE))?,
-        ChunkingAlgorithm::AnchoredLineWindows => {
+        ChunkingAlgorithm::AnchoredLineWindows | ChunkingAlgorithm::CompleteAnchoredLineWindows => {
             RecordsWriter::create_windowed(&dir.join(RECORDS_FILE))?
         }
     };
@@ -309,9 +314,11 @@ pub fn validate(
     use std::collections::BTreeSet;
     use std::sync::Mutex;
     let (searcher, chunk_key) = open_index(index_path)?;
+    let chunking = chunking_of(set.identity().model.chunking_identity)?;
+    crate::api::search_engine::ensure_semantic_projection(index_path, &chunking)?;
+    let chunk_key = chunk_key.filter(|_| chunking.embedding_text_version != 4);
     let columns = SegmentColumns::of(&searcher, chunk_key.is_some())?;
     let books = books_of(&searcher)?;
-    let chunking = chunking_of(set.identity().model.chunking_identity)?;
     // The column belongs to the production recipe, never to another family's keys.
     // It remains independently audited by plan_book below. For a different recipe,
     // audit_records resolves using the complete keys recomputed from the actual text.
@@ -737,7 +744,28 @@ fn plan_book(
                 .map(|column| column.first(address.doc_id).unwrap_or(0)),
         );
     }
-    let texts = indexed_lines(searcher, documents)?;
+    let separated = chunker.recipe().1
+        == otzaria_semantic_search::semantic::recipe::EmbeddingTextRecipe::RolePrefixedMainAndNotes;
+    if separated {
+        let expected = crate::semantic_keys::recompute_chunk_keys_for(
+            searcher,
+            book,
+            0..book.len(),
+            &crate::semantic_keys::next_production_chunking(),
+        )?;
+        stored_keys = expected
+            .into_iter()
+            .map(|key| Some(key.map_or(0, |key| key.column_value())))
+            .collect();
+    }
+    let semantic = semantic_texts(searcher, &documents, separated)?;
+    for (line, (address, _)) in semantic.iter().zip(&documents) {
+        anyhow::ensure!(
+            line.status == TextStatus::Ok,
+            "the source text at {address:?} is unavailable or stale"
+        );
+    }
+    let texts: Vec<String> = semantic.iter().map(|line| line.text.clone()).collect();
     let lines: Vec<LineRef<'_>> = texts
         .iter()
         .zip(&sections)
@@ -749,15 +777,23 @@ fn plan_book(
     let column_chunker = Chunker::new(production_chunking())?;
     let same_column_text = chunker.recipe().1 == column_chunker.recipe().1
         && chunker.recipe().2 == column_chunker.recipe().2;
+    for index in 0..book.len() {
+        if !pdf[index] {
+            chunker.validate_line_coverage(&lines, index, &semantic[index].semantic_notes)?;
+        }
+    }
     Ok((0..book.len())
         .map(|index| {
             let embedded = if pdf[index] {
                 Vec::new()
             } else {
-                chunker.embedded_windows(&lines, index)
+                chunker.embedded_windows_with_notes(&lines, index, &semantic[index].semantic_notes)
             };
             let coverage = match standalone_min_chars.filter(|_| !pdf[index]) {
-                Some(min_chars) => text_span_coverage(chunker, &texts[index], &embedded, min_chars),
+                Some(min_chars) => {
+                    let main_windows = chunker.embedded_windows(&lines, index);
+                    text_span_coverage(chunker, &texts[index], &main_windows, min_chars)
+                }
                 None => TextSpanCoverage::default(),
             };
             let mut windows = embedded.into_iter().map(|window| {
@@ -767,7 +803,7 @@ fn plan_book(
             let text = windows.next().map(|(_, sha256, text)| (sha256, text));
             let expected_column = if stored_keys[index].is_none() || pdf[index] {
                 0
-            } else if same_column_text {
+            } else if separated || same_column_text {
                 text.as_ref().map_or(0, |(sha256, _)| column_value(sha256))
             } else {
                 column_chunker
@@ -822,7 +858,7 @@ fn indexed_lines(
     searcher: &Searcher,
     documents: Vec<(DocAddress, TantivyDocument)>,
 ) -> Result<Vec<String>> {
-    indexed_texts(searcher, &documents)?
+    semantic_texts(searcher, &documents, false)?
         .into_iter()
         .zip(&documents)
         .map(|(line, (address, _))| match line.status {

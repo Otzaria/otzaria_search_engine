@@ -102,8 +102,9 @@ The app needs a snippet renderer that recognizes these two custom elements.
 Older, unannotated snippets remain valid input for that renderer.
 
 The wrappers are display metadata. They do not enter the normalized search
-text, tokens, positions, scores, line hashes, fingerprints, semantic embedding
-input, or chunk keys. `getDocumentById` still returns its normalized plain text.
+text, tokens, positions, scores, line hashes, or lexical fingerprints.
+Legacy embedding recipes also keep their existing input and keys; the candidate
+recipe below derives separate semantic passages using that provenance. `getDocumentById` still returns its normalized plain text.
 Offsets are mapped from the original HTML, so identical words in the main text
 and a note cannot cause the main text to be reclassified. Invalid or mismatched
 annotation metadata falls back to the existing unannotated snippet.
@@ -171,6 +172,58 @@ with `installSemanticVectors`, opens the set with `openSemanticArtifact`, and
 embeds nothing but the query. `configureSemantic`, `semanticIndexBooks` and the
 other calls that build vectors on the device are development and testing
 scaffolding, described at the end; they are not for the library.
+
+### Candidate semantic text recipe (issue #34)
+
+The installed generation keeps `production_chunking()` and its existing keys.
+`semantic_keys::next_production_chunking()` selects chunking 3 and embedding
+text 4. It projects the normalized source into main text without note markers
+or bodies, and independent note passages anchored to the same line. In this
+semantic projection, classless `sup`/`sub` contents count as markers only for
+decimal digits, `*`, or valid Hebrew numerals of at most four letters, with
+optional brackets/quotes. Hanging letters and other superscripts survive.
+These extra semantic ranges do not change existing snippet annotations. Nested
+note text belongs once to its innermost note, markers at every depth are
+excluded, and notes keep source order (parents before children). The separate
+semantic intervals do not change lexical text or existing display annotations.
+BOMs are
+removed from this semantic projection. Lexical text and the line text version
+remain unchanged. Short main passages keep their own text inside the context
+budget, and long passages use complete word-aligned windows; a source which
+cannot fit the persisted window ordinals fails validation instead of losing
+its tail.
+
+Recipe 4 requires a **freshly rebuilt** lexical index whose
+`otzaria_index_meta.json` records `semantic_projection_version: 1`. Old stored
+text cannot reveal which digits came from classless markers. Opening or
+incrementally updating an old index does not certify its provenance. Build
+the new index and vector set together, using the candidate model/chunking
+profile from the sidecar, and validate their coverage before publishing them.
+The candidate planner compares every first key against the runtime's selected
+recipe; legacy plans continue to compare against their stored `chunkKey`
+column. Runtime resolution selects the vector set's recipe explicitly.
+
+The shared Rust projection is `semantic_source::prepare_line`; its
+`indexed_text`, `semantic_text`, and `semantic_notes` demonstrate how a host
+fills the sidecar's corresponding corpus fields. The heading rule is exactly
+raw `starts_with("<h")`, matching indexing. This migration changes vector keys
+and requires regenerated vectors. Ranking quality of separate note passages
+still needs the S1 query evaluation before production rollout.
+
+Engine-generated conformance examples are in
+[`rust/tests/data/semantic_recipe_v4.json`](rust/tests/data/semantic_recipe_v4.json).
+Regenerate them with `cargo run --manifest-path rust/Cargo.toml
+--no-default-features --features sqlite-bundled --example
+semantic_recipe_fixtures`. The example prints JSON; write stdout to the fixture
+file and run the semantic source tests. During coordinated local development
+against the adjacent sidecar checkout, append:
+
+```sh
+--config 'patch."https://github.com/Otzaria/otzaria-semantic-search".otzaria-semantic-search.path="/absolute/path/to/otzaria-semantic-search"'
+```
+
+The released engine dependency must be pinned to the reviewed sidecar commit
+before distributing this migration.
 
 ### Installing and opening the library's vectors
 

@@ -445,6 +445,7 @@ fn artifact_kind(error: &ArtifactError, vectors_dir: &Path) -> (SemanticErrorKin
         // Absent, unreadable or not JSON: the variant does not say which, and the file
         // system does. Without a `CURRENT` or a `PREVIOUS` pointer nothing was ever
         // installed there; with one, what is installed is damaged.
+        ArtifactError::IncompleteLineCoverage { .. } => (K::ArtifactCorrupt, None),
         ArtifactError::MetadataUnusable { .. } => {
             if SET_POINTERS
                 .iter()

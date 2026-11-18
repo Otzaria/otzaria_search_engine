@@ -510,6 +510,106 @@ fn a_release_with_long_lines_covers_and_resolves_their_windows() {
     assert_eq!(gate(&report, "G6").0, "passed", "{printed}");
 }
 
+#[test]
+fn candidate_recipe_exports_embeds_installs_opens_and_resolves_notes_and_tails() {
+    use search_engine::api::search_engine::SemanticArtifactInput;
+    use search_engine::semantic_keys::next_production_chunking;
+    let mut books = books();
+    let long = (0..75).map(|at| line(7, at)).collect::<Vec<_>>().join(" ");
+    books[2].4 = format!("{}\n<h1>סעיף הערות</h1>\n\
+        גוף הדברים<sup>רלז</sup><i class='footnote'>ביאור עצמאי להערת שוליים ודיון נוסף בדברי הראשונים</i> והמשך הטענה העיקרית\n\
+        <i class='footnote'>הערת שוליים בלבד עם תוכן עצמאי ללא גוף עיקרי בשורה. זהו ביאור נוסף שמרחיב את הדיון בסוגיה אחרת מתוך דברי רבותינו הראשונים ומפרשי התלמוד</i>\n\
+        כותרת קצרה<i class='footnote'>כותרת קצרה</i>\n\
+        זו שורה ארוכה דיה כדי לספק הקשר לכותרת הקצרה\n{long}", books[2].4);
+    let release = release_with_chunking(
+        &books,
+        |_| EpochChoice::New(CodecSpec::I8SymVec),
+        None,
+        next_production_chunking(),
+    );
+    let manifest = PlanManifest::read(&release.plan).unwrap();
+    assert_eq!(manifest.parity.mismatches, 0);
+    assert!(
+        manifest.parity.checked > 0,
+        "candidate keys must be compared to the runtime recipe"
+    );
+    let out = release.path("candidate-report.json");
+    let (code, printed) = validate(&as_args(&all_gates(&release, &release.warehouse, &out)));
+    assert_eq!(code, 0, "{printed}");
+    let report = report(&out);
+    let (status, coverage) = gate(&report, "G3");
+    assert_eq!(status, "passed", "{printed}");
+    assert_eq!(coverage["uncoveredLines"], 0);
+    assert_eq!(coverage["uncoveredWindows"], 0);
+    assert_eq!(coverage["unwindowedStandaloneChars"], 0);
+    assert_eq!(gate(&report, "G4").1["unresolved"], 0);
+    let engine = SearchEngine::new(release.index.to_str().unwrap());
+    let status = engine
+        .open_semantic_artifact(SemanticArtifactInput {
+            vectors_dir: release.vectors.to_string_lossy().into_owned(),
+            model_path: release.model_file.to_string_lossy().into_owned(),
+            model_identity_json: serde_json::to_string(&release.model).unwrap(),
+            onnx_runtime_path: None,
+            scan_threads: None,
+        })
+        .unwrap();
+    assert!(status.enabled);
+    use search_engine::api::search_engine::{
+        SemanticCancellationToken, SemanticLexicalMode, SemanticRetrievalMode,
+    };
+    let response = engine
+        .search_semantic(
+            "הערת שוליים בלבד עם תוכן עצמאי ללא גוף עיקרי בשורה".into(),
+            vec![],
+            100,
+            0,
+            SemanticLexicalMode::Exact,
+            0,
+            SemanticRetrievalMode::SemanticOnly,
+            None,
+            false,
+            false,
+            None,
+            &SemanticCancellationToken::new(),
+        )
+        .unwrap();
+    assert!(
+        response.semantic_available,
+        "{:?}",
+        response.fallback_reason
+    );
+    let note = response
+        .results
+        .iter()
+        .find(|hit| hit.file_path == "/books/three.txt" && hit.segment == 27)
+        .expect("the note-only source line is returned");
+    assert!(
+        note.snippet_html.contains("<otzaria-note>"),
+        "{}",
+        note.snippet_html
+    );
+    let highlights = engine
+        .semantic_passage_highlights(
+            "הערת שוליים בלבד עם תוכן עצמאי ללא גוף עיקרי בשורה".into(),
+            vec![search_engine::api::search_engine::SemanticHighlightTarget {
+                file_path: note.file_path.clone(),
+                id: note.id,
+                window: note.matched_window,
+            }],
+            &SemanticCancellationToken::new(),
+        )
+        .unwrap();
+    assert!(highlights[0].is_highlighted, "{highlights:?}");
+    assert!(
+        highlights[0].snippet_html.contains("<otzaria-note>"),
+        "{highlights:?}"
+    );
+    assert!(
+        highlights[0].snippet_html.contains("<mark>"),
+        "{highlights:?}"
+    );
+}
+
 /// A release in `rot192-i8i4`, segment format 3, keeps eight bytes of each key: the gates
 /// cover and resolve its lines and windows at that width, and hold its recall to the
 /// codec's floors, 0.98 at 10 and at 50. The stand-in's 64 wide vectors are no measure of

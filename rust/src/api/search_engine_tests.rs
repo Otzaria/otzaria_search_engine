@@ -10795,6 +10795,18 @@ mod semantic_configuration {
                 ..meivin(semantic.path())
             };
             let root_dir = input.root_dir.clone();
+            if recipe.version() == 4 {
+                let error = match engine.configure_semantic(input) {
+                    Err(error) => error,
+                    Ok(_) => panic!("candidate recipe requires prebuilt artifacts"),
+                };
+                assert_eq!(error.kind, SemanticErrorKind::InvalidInput);
+                assert!(error.message.contains("prebuilt complete-window artifacts"));
+                assert!(!std::path::Path::new(&root_dir)
+                    .join("semantic_manifest.json")
+                    .exists());
+                continue;
+            }
             engine
                 .configure_semantic(input)
                 .unwrap_or_else(|error| panic!("text recipe {}: {error:#}", recipe.version()));

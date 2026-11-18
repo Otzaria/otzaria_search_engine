@@ -83,6 +83,8 @@ impl Rendering {
 #[serde(deny_unknown_fields)]
 pub(crate) struct NoteSpans {
     plain: Rendering,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    semantic_nested: Option<Rendering>,
     vocalized: Option<Rendering>,
 }
 
@@ -90,13 +92,17 @@ impl NoteSpans {
     pub(crate) fn is_empty(&self) -> bool {
         self.plain.spans.is_empty()
             && self
+                .semantic_nested
+                .as_ref()
+                .is_none_or(|value| value.spans.is_empty())
+            && self
                 .vocalized
                 .as_ref()
                 .is_none_or(|value| value.spans.is_empty())
     }
 
     pub(crate) fn from_html(raw: &str, plain: &str, vocalized: Option<&str>) -> Self {
-        LineNotes(raw_note_ranges(raw)).normalize(raw, plain, vocalized)
+        LineNotes(raw_note_ranges(raw), Vec::new()).normalize(raw, plain, vocalized)
     }
 
     pub(crate) fn from_renderings(
@@ -111,7 +117,11 @@ impl NoteSpans {
         let plain_ranges = raw_note_ranges(raw_plain);
         let vocalized_ranges = raw_note_ranges(raw_vocalized);
         if plain_ranges.is_empty() && vocalized_ranges.is_empty() {
-            return Self::default();
+            return Self {
+                semantic_nested: mapped_nested(raw_plain, &[], &[], plain)
+                    .or_else(|| mapped_nested(raw_vocalized, &[], &[], plain)),
+                ..Self::default()
+            };
         }
         // An already-normalized copy may omit HTML. mapped still requires the whole
         // source rendering to equal the target before borrowing its provenance.
@@ -126,10 +136,36 @@ impl NoteSpans {
             (raw_vocalized, &vocalized_ranges)
         };
         Self {
+            semantic_nested: mapped_nested(plain_source, plain_source_ranges, &[], plain),
             plain: mapped(plain_source, plain_source_ranges, plain, true),
             vocalized: vocalized
                 .map(|text| mapped(vocalized_source, vocalized_source_ranges, text, false)),
         }
+    }
+
+    pub(crate) fn semantic_parts(self, text: &str) -> (String, Vec<String>) {
+        if let Some(rendering) = self.semantic_nested {
+            if let Some(parts) = nested_semantic_parts(rendering, text) {
+                return parts;
+            }
+        }
+        let spans = self.plain.checked(text);
+        let mut main = String::new();
+        let mut notes = Vec::new();
+        let mut at = 0;
+        for span in spans {
+            main.push_str(&text[at..span.start]);
+            main.push(' ');
+            if span.kind == Kind::Note {
+                let body = semantic_whitespace(&text[span.start..span.end]);
+                if !body.is_empty() {
+                    notes.push(body);
+                }
+            }
+            at = span.end;
+        }
+        main.push_str(&text[at..]);
+        (semantic_whitespace(&main), notes)
     }
 
     pub(crate) fn encode(&self) -> Option<String> {
@@ -163,16 +199,16 @@ impl NoteSpans {
 /// Raw offsets for one line, clipped from complete tags in the whole source.
 /// A line's searchable text is still normalized independently, exactly as before.
 #[derive(Default)]
-pub(crate) struct LineNotes(Vec<(Range<usize>, Kind)>);
+pub(crate) struct LineNotes(Vec<(Range<usize>, Kind)>, Vec<(Range<usize>, Kind)>);
 
 impl LineNotes {
     pub(crate) fn normalize(&self, raw: &str, plain: &str, vocalized: Option<&str>) -> NoteSpans {
-        if self.0.is_empty() {
-            return NoteSpans::default();
-        }
+        let mut ranges = self.0.clone();
+        ranges.sort_by_key(|(range, _)| range.start);
         NoteSpans {
-            plain: mapped(raw, &self.0, plain, true),
-            vocalized: vocalized.map(|text| mapped(raw, &self.0, text, false)),
+            semantic_nested: mapped_nested(raw, &ranges, &self.1, plain),
+            plain: mapped(raw, &ranges, plain, true),
+            vocalized: vocalized.map(|text| mapped(raw, &ranges, text, false)),
         }
     }
 }
@@ -183,6 +219,9 @@ impl LineNotes {
 pub(crate) struct BookNotes {
     parser: NoteParser,
     ranges: crate::indexing_buffers::TextBuffer,
+    nested_parser: NoteParser,
+    nested_ranges: Vec<crate::indexing_buffers::TextBuffer>,
+    directory: std::path::PathBuf,
 }
 
 impl BookNotes {
@@ -190,12 +229,33 @@ impl BookNotes {
         Self {
             parser: NoteParser::default(),
             ranges: crate::indexing_buffers::TextBuffer::in_directory(64 << 10, Some(directory)),
+            nested_parser: NoteParser {
+                nested: true,
+                ..NoteParser::default()
+            },
+            nested_ranges: Vec::new(),
+            directory: directory.to_path_buf(),
         }
     }
 
     pub(crate) fn push(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
         self.parser.feed(bytes, |span| {
             self.ranges.push_str(&format!(
+                "{} {} {}\n",
+                span.start,
+                span.end,
+                u8::from(span.kind == Kind::Marker)
+            ))
+        })?;
+        self.nested_parser.feed_with_depth(bytes, |span, depth| {
+            while self.nested_ranges.len() <= depth {
+                self.nested_ranges
+                    .push(crate::indexing_buffers::TextBuffer::in_directory(
+                        64 << 10,
+                        Some(&self.directory),
+                    ));
+            }
+            self.nested_ranges[depth].push_str(&format!(
                 "{} {} {}\n",
                 span.start,
                 span.end,
@@ -212,25 +272,55 @@ impl BookNotes {
     }
 
     pub(crate) fn reader(&mut self) -> anyhow::Result<BookNoteReader<'_>> {
-        // An unfinished tag/note is deliberately never emitted.
         self.parser = NoteParser::default();
-        let mut reader = BookNoteReader {
+        self.nested_parser = NoteParser {
+            nested: true,
+            ..NoteParser::default()
+        };
+        let mut display = RangeReader {
             reader: self.ranges.reader()?,
             next: None,
             buffer: String::new(),
         };
-        reader.advance()?;
-        Ok(reader)
+        display.advance()?;
+        let mut semantic = Vec::new();
+        for ranges in &mut self.nested_ranges {
+            let mut reader = RangeReader {
+                reader: ranges.reader()?,
+                next: None,
+                buffer: String::new(),
+            };
+            reader.advance()?;
+            semantic.push(reader);
+        }
+        Ok(BookNoteReader { display, semantic })
     }
 }
 
 pub(crate) struct BookNoteReader<'a> {
+    display: RangeReader<'a>,
+    semantic: Vec<RangeReader<'a>>,
+}
+
+impl BookNoteReader<'_> {
+    pub(crate) fn line(&mut self, start: usize, len: usize) -> anyhow::Result<LineNotes> {
+        let display = self.display.ranges(start, len)?;
+        let mut semantic = Vec::new();
+        for reader in &mut self.semantic {
+            semantic.extend(reader.ranges(start, len)?);
+        }
+        semantic.sort_by_key(|(range, _)| (range.start, std::cmp::Reverse(range.end)));
+        Ok(LineNotes(display, semantic))
+    }
+}
+
+struct RangeReader<'a> {
     reader: Box<dyn std::io::BufRead + 'a>,
     next: Option<Span>,
     buffer: String,
 }
 
-impl BookNoteReader<'_> {
+impl RangeReader<'_> {
     fn advance(&mut self) -> anyhow::Result<()> {
         self.buffer.clear();
         self.next = if self.reader.read_line(&mut self.buffer)? == 0 {
@@ -250,9 +340,7 @@ impl BookNoteReader<'_> {
         Ok(())
     }
 
-    /// Lines must be requested in source order. A range crossing a line ending
-    /// remains pending for the next line, including lines not stored in the index.
-    pub(crate) fn line(&mut self, start: usize, len: usize) -> anyhow::Result<LineNotes> {
+    fn ranges(&mut self, start: usize, len: usize) -> anyhow::Result<Vec<(Range<usize>, Kind)>> {
         let end = start + len;
         let mut ranges = Vec::new();
         while let Some(span) = &self.next {
@@ -270,7 +358,7 @@ impl BookNoteReader<'_> {
             }
             self.advance()?;
         }
-        Ok(LineNotes(ranges))
+        Ok(ranges)
     }
 }
 
@@ -290,6 +378,20 @@ impl Deref for DisplayText {
 }
 
 impl DisplayText {
+    #[cfg(feature = "semantic-integration")]
+    pub(crate) fn note(text: String) -> Self {
+        let spans = if text.is_empty() {
+            Vec::new()
+        } else {
+            vec![Span {
+                start: 0,
+                end: text.len(),
+                kind: Kind::Note,
+            }]
+        };
+        Self { text, spans }
+    }
+
     #[cfg(any(test, feature = "semantic-integration"))]
     pub(crate) fn plain(text: String) -> Self {
         Self {
@@ -488,12 +590,248 @@ fn mapped(
     }
 }
 
-/// Only complete, explicitly classified tags count. Nested ordinary formatting is
-/// transparent. A body inside a sup belongs to the marker, not to a second note.
+/// Complete classified tags and conservative classless numeric markers count.
+/// A body inside a sup belongs to the marker, not to a second note.
 fn has_footnote_hint(raw: &str) -> bool {
     raw.as_bytes()
         .windows(8)
         .any(|word| word.eq_ignore_ascii_case(b"footnote"))
+}
+
+fn mapped_nested(
+    raw: &str,
+    base: &[(Range<usize>, Kind)],
+    streamed: &[(Range<usize>, Kind)],
+    plain: &str,
+) -> Option<Rendering> {
+    if !has_footnote_hint(raw)
+        && streamed.is_empty()
+        && !base.iter().any(|(_, kind)| *kind == Kind::Note)
+        && !raw
+            .as_bytes()
+            .windows(4)
+            .any(|bytes| bytes.eq_ignore_ascii_case(b"<sup") || bytes.eq_ignore_ascii_case(b"<sub"))
+    {
+        return None;
+    }
+    let mut ranges = base.to_vec();
+    ranges.extend_from_slice(streamed);
+    NoteParser {
+        nested: true,
+        ..NoteParser::default()
+    }
+    .feed(raw.as_bytes(), |span| {
+        ranges.push((span.start..span.end, span.kind));
+        Ok(())
+    })
+    .ok()?;
+    ranges.extend(
+        implicit_marker_ranges(raw)
+            .into_iter()
+            .map(|range| (range, Kind::Marker)),
+    );
+    ranges.sort_by_key(|(range, _)| (range.start, std::cmp::Reverse(range.end)));
+    ranges.dedup();
+    if !ranges
+        .windows(2)
+        .any(|pair| pair[0].0.end > pair[1].0.start)
+        && ranges == base
+    {
+        return None;
+    }
+    let mut layers: Vec<Vec<(Range<usize>, Kind)>> = Vec::new();
+    let mut parents = Vec::new();
+    for (range, kind) in ranges {
+        while parents.last().is_some_and(|&end| end <= range.start) {
+            parents.pop();
+        }
+        if parents.last().is_some_and(|&end| range.end > end) {
+            return None;
+        }
+        let depth = parents.len();
+        if layers.len() <= depth {
+            layers.push(Vec::new());
+        }
+        parents.push(range.end);
+        layers[depth].push((range, kind));
+    }
+    let mut spans = Vec::new();
+    for layer in layers {
+        spans.extend(mapped(raw, &layer, plain, true).spans);
+    }
+    spans.sort_by_key(|span| (span.start, std::cmp::Reverse(span.end)));
+    Some(Rendering {
+        crc: crc32fast::hash(plain.as_bytes()),
+        spans,
+    })
+}
+
+fn nested_semantic_parts(rendering: Rendering, text: &str) -> Option<(String, Vec<String>)> {
+    if rendering.crc != crc32fast::hash(text.as_bytes()) {
+        return None;
+    }
+    let spans = rendering.spans;
+    let mut previous = 0;
+    let mut parents = Vec::new();
+    for span in &spans {
+        if span.start < previous
+            || span.start >= span.end
+            || span.end > text.len()
+            || !text.is_char_boundary(span.start)
+            || !text.is_char_boundary(span.end)
+        {
+            return None;
+        }
+        while parents.last().is_some_and(|&end| end <= span.start) {
+            parents.pop();
+        }
+        if parents.last().is_some_and(|&end| span.end > end) {
+            return None;
+        }
+        parents.push(span.end);
+        previous = span.start;
+    }
+    let mut boundaries = vec![0, text.len()];
+    for span in &spans {
+        boundaries.extend([span.start, span.end]);
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+    let mut main = String::new();
+    let mut notes = vec![String::new(); spans.len()];
+    let mut active: Vec<usize> = Vec::new();
+    let mut next = 0;
+    for window in boundaries.windows(2) {
+        let start = window[0];
+        let end = window[1];
+        while active
+            .last()
+            .is_some_and(|&index| spans[index].end <= start)
+        {
+            active.pop();
+        }
+        while next < spans.len() && spans[next].start <= start {
+            if spans[next].end > start {
+                active.push(next);
+            }
+            next += 1;
+        }
+        if active
+            .iter()
+            .any(|&index| spans[index].kind == Kind::Marker)
+        {
+            continue;
+        }
+        let owner = active
+            .iter()
+            .rev()
+            .copied()
+            .find(|&index| spans[index].kind == Kind::Note);
+        let output = owner.map_or(&mut main, |index| &mut notes[index]);
+        output.push_str(&text[start..end]);
+        output.push(' ');
+    }
+    Some((
+        semantic_whitespace(&main),
+        notes
+            .into_iter()
+            .map(|note| semantic_whitespace(&note))
+            .filter(|note| !note.is_empty())
+            .collect(),
+    ))
+}
+
+fn semantic_whitespace(text: &str) -> String {
+    text.chars()
+        .filter(|&c| c != '\u{FEFF}')
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn is_hebrew_numeral(text: &str) -> bool {
+    let letters: Vec<_> = text
+        .chars()
+        .filter(|c| !matches!(c, '\'' | '"' | '׳' | '״'))
+        .collect();
+    if letters.is_empty() || letters.len() > 4 {
+        return false;
+    }
+    let value = |c| match c {
+        'א' => 1,
+        'ב' => 2,
+        'ג' => 3,
+        'ד' => 4,
+        'ה' => 5,
+        'ו' => 6,
+        'ז' => 7,
+        'ח' => 8,
+        'ט' => 9,
+        'י' => 10,
+        'כ' => 20,
+        'ל' => 30,
+        'מ' => 40,
+        'נ' => 50,
+        'ס' => 60,
+        'ע' => 70,
+        'פ' => 80,
+        'צ' => 90,
+        'ק' => 100,
+        'ר' => 200,
+        'ש' => 300,
+        'ת' => 400,
+        _ => 0,
+    };
+    let mut previous = 401;
+    let mut total = 0;
+    for letter in letters {
+        let number = value(letter);
+        if number == 0 || number > previous || (number == previous && number != 400) {
+            return false;
+        }
+        total += number;
+        previous = number;
+    }
+    total <= 999
+}
+
+fn implicit_marker_ranges(raw: &str) -> Vec<Range<usize>> {
+    use once_cell::sync::Lazy;
+    use regex::Regex;
+    static SCRIPT: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?is)<(sup|sub)\b([^>]*)>(.*?)</(sup|sub)\s*>").unwrap());
+    SCRIPT
+        .captures_iter(raw)
+        .filter_map(|parts| {
+            if !parts[1].eq_ignore_ascii_case(&parts[4]) {
+                return None;
+            }
+            let whole = parts.get(0)?;
+            let gt = whole.start() + whole.as_str().find('>')?;
+            if crate::hebrew_query::is_word_internal_script(raw, whole.start(), gt) {
+                return None;
+            }
+            if has_class(&parts[2], "footnote-marker") {
+                return Some(parts.get(3)?.range());
+            }
+            if parts[2].to_ascii_lowercase().contains("class") {
+                return None;
+            }
+            let text = crate::hebrew_query::normalize_text_for_indexing(&parts[3]);
+            let content = text.trim().trim_matches(|c| {
+                matches!(
+                    c,
+                    '(' | ')' | '[' | ']' | '{' | '}' | '\'' | '"' | '׳' | '״'
+                )
+            });
+            let marker = !content.is_empty()
+                && (content.chars().all(|c| c.is_ascii_digit())
+                    || content == "*"
+                    || is_hebrew_numeral(content));
+            marker.then(|| parts.get(3).unwrap().range())
+        })
+        .collect()
 }
 
 fn raw_note_ranges(raw: &str) -> Vec<(Range<usize>, Kind)> {
@@ -518,6 +856,7 @@ struct OpenNoteTag {
 
 #[derive(Default)]
 struct NoteParser {
+    nested: bool,
     stack: Vec<OpenNoteTag>,
     offset: usize,
     pending: Vec<u8>,
@@ -536,6 +875,14 @@ impl NoteParser {
         &mut self,
         bytes: &[u8],
         mut emit: impl FnMut(Span) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        self.feed_with_depth(bytes, |span, _| emit(span))
+    }
+
+    fn feed_with_depth(
+        &mut self,
+        bytes: &[u8],
+        mut emit: impl FnMut(Span, usize) -> anyhow::Result<()>,
     ) -> anyhow::Result<()> {
         if self.disabled {
             return Ok(());
@@ -603,8 +950,8 @@ impl NoteParser {
                 pending.extend_from_slice(&bytes[start..end]);
                 self.tag(&pending[1..], self.pending_start, self.offset + end + 1)
             };
-            if let Some(span) = span {
-                emit(span)?;
+            if let Some((span, depth)) = span {
+                emit(span, depth)?;
             }
             if self.disabled {
                 return Ok(());
@@ -622,7 +969,7 @@ impl NoteParser {
         self.skipping_tag = false;
     }
 
-    fn tag(&mut self, bytes: &[u8], start: usize, end: usize) -> Option<Span> {
+    fn tag(&mut self, bytes: &[u8], start: usize, end: usize) -> Option<(Span, usize)> {
         let body = std::str::from_utf8(bytes).ok()?;
         let closing = body.starts_with('/');
         let body = body.strip_prefix('/').unwrap_or(body);
@@ -645,11 +992,18 @@ impl NoteParser {
                 let open = &self.stack[index];
                 if let Some(kind) = open.kind {
                     if open.start < start {
-                        span = Some(Span {
-                            start: open.start,
-                            end: start,
-                            kind,
-                        });
+                        let depth = self.stack[..index]
+                            .iter()
+                            .filter(|open| open.kind.is_some())
+                            .count();
+                        span = Some((
+                            Span {
+                                start: open.start,
+                                end: start,
+                                kind,
+                            },
+                            depth,
+                        ));
                     }
                 }
                 self.stack.truncate(index);
@@ -672,7 +1026,7 @@ impl NoteParser {
             .stack
             .iter()
             .any(|open| open.name.eq_ignore_ascii_case("sup"));
-        let kind = if inside {
+        let kind = if inside && !self.nested {
             None
         } else if name.eq_ignore_ascii_case("sup")
             && has_class(&body[name_len..], "footnote-marker")

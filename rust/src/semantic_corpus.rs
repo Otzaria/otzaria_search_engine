@@ -106,7 +106,7 @@ pub struct TantivyCorpus {
 
 /// One library row as a build reads it: the indexed (normalized) text and the
 /// `lineCheck` of the row; `None` for a row that cannot be decoded.
-type LibraryRow = Option<(String, u32)>;
+type LibraryRow = Option<(String, u32, String, Vec<String>)>;
 
 /// Library-database text for a build: whole books, read once each, most recent last.
 struct LibraryText {
@@ -142,10 +142,11 @@ impl LibraryText {
             .map(|row| match row {
                 crate::line_source::RowText::Found(raw) => {
                     let check = crate::line_source::line_check(&raw);
-                    Some((
-                        crate::api::search_engine::normalize_text_for_indexing(raw),
-                        check,
-                    ))
+                    let plain = crate::api::search_engine::normalize_text_for_indexing(raw.clone());
+                    let (semantic, notes) =
+                        crate::note_spans::NoteSpans::from_html(&raw, &plain, None)
+                            .semantic_parts(&plain);
+                    Some((plain, check, semantic, notes))
                 }
                 _ => None,
             })
@@ -190,6 +191,7 @@ impl TantivyCorpus {
         let compatibility =
             crate::api::search_engine::check_index_compatibility(index_path.display().to_string());
         ensure_compatible(&compatibility)?;
+        crate::api::search_engine::ensure_semantic_projection(index_path, &chunking)?;
 
         // `open_in_dir`, never `open_or_create`: a path that holds no index is an error to
         // report, not an index to invent.
@@ -228,6 +230,7 @@ impl TantivyCorpus {
         // build reads when it opens it; asking again here is what turns that into a
         // precondition of building rather than a fact about the binary.
         ensure_compatible(&engine.index_compatibility())?;
+        engine.ensure_semantic_projection(&chunking)?;
         Self::open(
             engine.corpus_searcher(),
             library_db,
@@ -403,13 +406,22 @@ impl TantivyCorpus {
     fn read_full(&self, address: DocAddress, line_id: u64) -> Result<CorpusLine, String> {
         let (mut line, library) = self.read_at(address, line_id)?;
         if let Some(library) = library {
-            line.text = self.library_text(line_id, &library)?;
+            let (plain, semantic, notes) = self.library_text(line_id, &library)?;
+            line.text = plain;
+            if self.chunking.embedding_text_version == 4 {
+                line.semantic_text = Some(semantic);
+                line.semantic_notes = notes;
+            }
         }
         Ok(line)
     }
 
     /// The text of a line the index holds no text for, verified against the index.
-    fn library_text(&self, line_id: u64, at: &LibraryLine) -> Result<String, String> {
+    fn library_text(
+        &self,
+        line_id: u64,
+        at: &LibraryLine,
+    ) -> Result<(String, String, Vec<String>), String> {
         let library = self.library.as_ref().ok_or_else(|| {
             format!(
                 "line {line_id} keeps its text in the library database, and this build was \
@@ -430,7 +442,7 @@ impl TantivyCorpus {
                     at.book_id
                 )
             })?;
-        let (text, check) = lines
+        let (text, check, semantic, notes) = lines
             .get(at.ordinal as usize)
             .ok_or_else(|| {
                 format!(
@@ -447,7 +459,7 @@ impl TantivyCorpus {
                 at.book_id, at.ordinal
             ));
         }
-        Ok(text)
+        Ok((text, semantic, notes))
     }
 
     /// Every field of one line, or an explanation of which one the index could not answer.
@@ -577,6 +589,20 @@ impl TantivyCorpus {
             )
         };
 
+        let (semantic_text, semantic_notes) = if has_stored_text
+            && self.chunking.embedding_text_version == 4
+        {
+            let notes = schema
+                .get_field(crate::note_spans::FIELD)
+                .ok()
+                .and_then(|field| document.get_first(field))
+                .and_then(|value| value.as_str());
+            let (main, notes) = crate::note_spans::NoteSpans::decode(notes).semantic_parts(&text);
+            (Some(main), notes)
+        } else {
+            (None, Vec::new())
+        };
+
         let content_hash = self
             .content_hashes
             .get(&source_book_key)
@@ -600,6 +626,8 @@ impl TantivyCorpus {
                     .read_facets(address)
                     .map_err(|error| format!("reading the facets of line {line_id}: {error}"))?,
                 text,
+                semantic_text,
+                semantic_notes,
             },
             library,
         ))

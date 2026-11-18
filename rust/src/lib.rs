@@ -121,3 +121,4 @@ mod search_cancellation;
 // release index is built by one build and opened by all of them. Public for the Rust side
 // alone: the tests and tools hold the recipe to the one a model publishes.
 pub mod semantic_keys;
+pub mod semantic_source;

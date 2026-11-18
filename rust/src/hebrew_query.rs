@@ -1199,7 +1199,7 @@ fn marks_footnote(attributes: &str) -> bool {
 }
 
 /// Whether the open tag `source[lt..=gt]` wraps one letter (with marks) between letters.
-fn is_word_internal_script(source: &str, lt: usize, gt: usize) -> bool {
+pub(crate) fn is_word_internal_script(source: &str, lt: usize, gt: usize) -> bool {
     let Some((false, name)) = tag_name(&source[lt + 1..gt]) else {
         return false;
     };
