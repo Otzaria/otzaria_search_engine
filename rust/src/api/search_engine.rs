@@ -1301,6 +1301,8 @@ pub struct SemanticSearchResponse {
     /// first page of a fresh search: replace the displayed list instead of appending.
     #[frb(default = false)]
     pub session_restarted: bool,
+    /// Where the time went, by stage; `None` when the search never reached the semantic sidecar.
+    pub timings: Option<SemanticTimings>,
 }
 
 /// A semantic hit whose passage [`SearchEngine::semantic_passage_highlights`] should mark: the
@@ -2633,17 +2635,17 @@ struct Expanded {
     timings: SemanticTimings,
 }
 
-/// Where a semantic search's time went, in milliseconds: logged at debug level, and read by
-/// the benchmark.
-#[cfg(feature = "semantic-integration")]
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct SemanticTimings {
+/// Where a semantic search's time went, in milliseconds, summed over its expansions; `embed`,
+/// `scan` and `resolve` are the sidecar's own share of `semantic`, which runs beside `lexical`.
+/// `total` also holds the wait for the session; a page served from it has no expansion.
+#[frb(non_opaque)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SemanticTimings {
     pub expansions: u32,
     /// The lexical phase, on its own thread beside planning and the semantic half.
     pub lexical_ms: f64,
     /// Planning, embedding, scanning and resolving.
     pub semantic_ms: f64,
-    /// Of `semantic_ms`, as the sidecar measured them.
     pub embed_ms: f64,
     pub scan_ms: f64,
     pub resolve_ms: f64,
@@ -2652,6 +2654,25 @@ pub(crate) struct SemanticTimings {
     /// Cutting the page, reading its texts and painting it.
     pub page_ms: f64,
     pub total_ms: f64,
+}
+
+// By hand, so that the bridge does not export a `default` beside the struct.
+impl Default for SemanticTimings {
+    #[frb(ignore)]
+    fn default() -> Self {
+        Self {
+            expansions: 0,
+            lexical_ms: 0.0,
+            semantic_ms: 0.0,
+            embed_ms: 0.0,
+            scan_ms: 0.0,
+            resolve_ms: 0.0,
+            fuse_ms: 0.0,
+            hydrate_ms: 0.0,
+            page_ms: 0.0,
+            total_ms: 0.0,
+        }
+    }
 }
 
 #[cfg(feature = "semantic-integration")]
@@ -2670,13 +2691,6 @@ impl SemanticTimings {
             total_ms: self.total_ms + later.total_ms,
         }
     }
-}
-
-#[cfg(all(test, feature = "semantic-integration"))]
-thread_local! {
-    /// The timings of the last semantic search this thread ran.
-    pub(crate) static LAST_SEMANTIC_TIMINGS: std::cell::Cell<SemanticTimings> =
-        std::cell::Cell::new(SemanticTimings::default());
 }
 
 #[cfg(feature = "semantic-integration")]
@@ -7820,8 +7834,6 @@ impl SearchEngine {
             timings.page_ms = elapsed_ms(page_started);
             timings.total_ms = elapsed_ms(started);
             debug!("semantic page at {offset} of {limit}: {timings:?}");
-            #[cfg(test)]
-            LAST_SEMANTIC_TIMINGS.set(timings);
             Ok(SemanticSearchResponse {
                 results,
                 // The last expansion's candidate-set counts: stable across the pages it
@@ -7840,6 +7852,7 @@ impl SearchEngine {
                 truncated: state.truncated,
                 has_more,
                 session_restarted,
+                timings: Some(timings),
             })
         }
 
@@ -8582,6 +8595,7 @@ impl SearchEngine {
                 truncated: count.truncated,
                 has_more: false,
                 session_restarted: false,
+                timings: None,
             });
         }
 
@@ -8681,6 +8695,7 @@ impl SearchEngine {
             truncated: page.truncated,
             has_more,
             session_restarted: false,
+            timings: None,
         })
     }
 

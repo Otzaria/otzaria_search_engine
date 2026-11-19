@@ -751,7 +751,7 @@ const PAGE_STEPS: &[(&str, u32)] = &[
 fn semantic_pages() -> Result<()> {
     use crate::api::search_engine::{
         SemanticCancellationToken, SemanticLexicalMode, SemanticRankingOptions,
-        SemanticRetrievalMode, SemanticTimings, LAST_SEMANTIC_TIMINGS,
+        SemanticRetrievalMode, SemanticTimings,
     };
     let groups: Option<Vec<String>> = std::env::var("OTZ_GROUPS").ok().map(|groups| {
         groups
@@ -791,7 +791,12 @@ fn semantic_pages() -> Result<()> {
             ranking.clone(),
             &SemanticCancellationToken::new(),
         );
-        (response, LAST_SEMANTIC_TIMINGS.get())
+        let timings = response
+            .as_ref()
+            .ok()
+            .and_then(|response| response.timings)
+            .unwrap_or_default();
+        (response, timings)
     };
 
     let plan_ms = engine.plan_semantic_for_bench()?;

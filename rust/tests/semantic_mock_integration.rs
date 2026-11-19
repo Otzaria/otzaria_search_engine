@@ -258,6 +258,33 @@ fn hybrid_fuses_real_bm25_candidates_with_semantic_ones() {
 }
 
 #[test]
+fn a_served_search_reports_its_stage_timings_and_a_fallback_none() {
+    let lines = one_line_corpus();
+    let (mut engine, _root) = fixture(&lines);
+
+    let served = exact(&engine, "בראשית ברא", SemanticRetrievalMode::Hybrid);
+    let timings = served.timings.expect("a served search has timings");
+    assert!(timings.expansions >= 1);
+    for stage in [
+        timings.lexical_ms,
+        timings.semantic_ms,
+        timings.embed_ms,
+        timings.scan_ms,
+        timings.resolve_ms,
+        timings.fuse_ms,
+        timings.hydrate_ms,
+        timings.page_ms,
+    ] {
+        assert!(stage >= 0.0 && stage <= timings.total_ms, "{timings:?}");
+    }
+
+    engine.disable_semantic();
+    let fallback = exact(&engine, "בראשית ברא", SemanticRetrievalMode::Hybrid);
+    assert_eq!(fallback.executed_mode, SemanticExecutedMode::LexicalOnly);
+    assert_eq!(fallback.timings, None);
+}
+
+#[test]
 fn lexical_only_through_the_sidecar_is_a_choice_not_a_degradation() {
     let lines = one_line_corpus();
     let (engine, _root) = fixture(&lines);
