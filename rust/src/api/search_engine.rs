@@ -13087,7 +13087,7 @@ impl SearchEngine {
             self.economy_indexing,
             crate::memory_budget::system_memory(),
         );
-        debug!("writer: {budget:?}");
+        info!("writer: {budget:?}");
         let writer = self.index.writer_with_options(
             tantivy::indexer::IndexWriterOptions::builder()
                 .num_worker_threads(budget.threads)
@@ -13119,7 +13119,25 @@ impl SearchEngine {
             let sized_metas = sized_segment_metas(&self.index_path, metas)?;
             let max_docs =
                 crate::memory_budget::merge_doc_limit(crate::memory_budget::system_memory());
-            let Some(merge_ids) = select_segments_to_compact(&sized_metas, max_docs) else {
+            let bounded = select_segments_to_compact(&sized_metas, max_docs);
+            let unbounded = select_segments_to_compact(&sized_metas, u64::MAX);
+            if bounded != unbounded && (self.bulk_indexing || bounded.is_none()) {
+                // A release build (bulk) has the memory and needs the full compaction.
+                warn!(
+                    "optimize: the next merge exceeds the memory limit of {max_docs} docs; {}",
+                    if self.bulk_indexing {
+                        "bulk indexing merges it anyway"
+                    } else {
+                        "stopping with more segments"
+                    }
+                );
+            }
+            let choice = if self.bulk_indexing {
+                unbounded
+            } else {
+                bounded
+            };
+            let Some(merge_ids) = choice else {
                 debug!(
                     "optimize: {} segments, nothing to compact within {max_docs} docs",
                     sized_metas.len()

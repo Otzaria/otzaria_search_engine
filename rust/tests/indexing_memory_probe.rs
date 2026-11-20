@@ -202,8 +202,12 @@ fn probe_library_build_memory() {
     let commit_books = env("OTZARIA_PROBE_COMMIT_BOOKS", 40);
     let bulk = std::env::var_os("OTZARIA_PROBE_BULK").is_some();
     let economy = std::env::var_os("OTZARIA_PROBE_ECONOMY").is_some();
-    let root =
-        tempfile::tempdir_in(std::env::var("OTZARIA_PROBE_DIR").unwrap_or(".".into())).unwrap();
+    let root = tempfile::tempdir_in(
+        std::env::var_os("OTZARIA_PROBE_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir),
+    )
+    .unwrap();
     let real = std::env::var_os("OTZARIA_PROBE_SOURCE_DB").map(std::path::PathBuf::from);
     let database = real
         .clone()
