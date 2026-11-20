@@ -4,10 +4,9 @@
 //! host process (`handle_alloc_error`, 0xc0000409 on Windows). The engine cannot catch that,
 //! so it must not start work whose footprint the machine cannot back.
 
-/// Physical memory and what the process can still allocate, in bytes.
+/// What the process can still allocate, in bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SystemMemory {
-    pub total: u64,
     pub available: u64,
 }
 
@@ -89,171 +88,214 @@ pub(crate) fn preparation_workers(
 }
 
 #[cfg(windows)]
-pub(crate) fn system_memory() -> Option<SystemMemory> {
-    #[repr(C)]
-    struct MemoryStatusEx {
-        length: u32,
-        memory_load: u32,
-        total_phys: u64,
-        avail_phys: u64,
-        total_page_file: u64,
-        avail_page_file: u64,
-        total_virtual: u64,
-        avail_virtual: u64,
-        avail_extended_virtual: u64,
-    }
-    extern "system" {
-        fn GlobalMemoryStatusEx(buffer: *mut MemoryStatusEx) -> i32;
-    }
-    let mut status = MemoryStatusEx {
-        length: std::mem::size_of::<MemoryStatusEx>() as u32,
-        memory_load: 0,
-        total_phys: 0,
-        avail_phys: 0,
-        total_page_file: 0,
-        avail_page_file: 0,
-        total_virtual: 0,
-        avail_virtual: 0,
-        avail_extended_virtual: 0,
-    };
-    // SAFETY: `status` is a properly sized MEMORYSTATUSEX with `length` set.
-    if unsafe { GlobalMemoryStatusEx(&mut status) } == 0 || status.total_phys == 0 {
-        return None;
-    }
-    // An allocation fails when the commit limit is reached, not when RAM is full.
-    let mut memory = SystemMemory {
-        total: status.total_phys,
-        available: status.avail_phys.min(status.avail_page_file),
-    };
-    if let Some(limit) = job_commit_limit() {
-        let used = process_commit().unwrap_or(0);
-        memory.total = memory.total.min(limit);
-        memory.available = memory.available.min(limit.saturating_sub(used));
-    }
-    Some(memory)
-}
+mod windows {
+    use std::ffi::c_void;
 
-/// The commit limit of the job object this process runs in, if it sets one: the
-/// Windows counterpart of a cgroup's `memory.max`.
-#[cfg(windows)]
-fn job_commit_limit() -> Option<u64> {
     #[repr(C)]
     #[derive(Default)]
-    struct ExtendedLimit {
-        per_process_user_time_limit: i64,
-        per_job_user_time_limit: i64,
-        limit_flags: u32,
-        minimum_working_set_size: usize,
-        maximum_working_set_size: usize,
-        active_process_limit: u32,
-        affinity: usize,
-        priority_class: u32,
-        scheduling_class: u32,
-        io_counters: [u64; 6],
-        process_memory_limit: usize,
-        job_memory_limit: usize,
-        peak_process_memory_used: usize,
-        peak_job_memory_used: usize,
+    pub(super) struct MemoryStatusEx {
+        pub length: u32,
+        pub memory_load: u32,
+        pub total_phys: u64,
+        pub avail_phys: u64,
+        pub total_page_file: u64,
+        pub avail_page_file: u64,
+        pub total_virtual: u64,
+        pub avail_virtual: u64,
+        pub avail_extended_virtual: u64,
     }
-    const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION: i32 = 9;
-    const JOB_OBJECT_LIMIT_PROCESS_MEMORY: u32 = 0x100;
-    const JOB_OBJECT_LIMIT_JOB_MEMORY: u32 = 0x200;
+
+    #[repr(C)]
+    #[derive(Default)]
+    pub(super) struct ExtendedLimit {
+        pub per_process_user_time_limit: i64,
+        pub per_job_user_time_limit: i64,
+        pub limit_flags: u32,
+        pub minimum_working_set_size: usize,
+        pub maximum_working_set_size: usize,
+        pub active_process_limit: u32,
+        pub affinity: usize,
+        pub priority_class: u32,
+        pub scheduling_class: u32,
+        pub io_counters: [u64; 6],
+        pub process_memory_limit: usize,
+        pub job_memory_limit: usize,
+        pub peak_process_memory_used: usize,
+        pub peak_job_memory_used: usize,
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    pub(super) struct JobMemoryUsage {
+        pub job_memory: u64,
+        pub peak_job_memory_used: u64,
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    pub(super) struct Counters {
+        pub cb: u32,
+        pub page_fault_count: u32,
+        pub peak_working_set_size: usize,
+        pub working_set_size: usize,
+        pub quota_peak_paged_pool_usage: usize,
+        pub quota_paged_pool_usage: usize,
+        pub quota_peak_non_paged_pool_usage: usize,
+        pub quota_non_paged_pool_usage: usize,
+        pub pagefile_usage: usize,
+        pub peak_pagefile_usage: usize,
+        pub private_usage: usize,
+    }
+
+    #[link(name = "kernel32")]
     extern "system" {
-        fn QueryInformationJobObject(
-            job: isize,
+        pub(super) fn GlobalMemoryStatusEx(buffer: *mut MemoryStatusEx) -> i32;
+        pub(super) fn QueryInformationJobObject(
+            job: *mut c_void,
             class: i32,
-            info: *mut ExtendedLimit,
+            info: *mut c_void,
             length: u32,
             returned: *mut u32,
         ) -> i32;
+        pub(super) fn GetCurrentProcess() -> *mut c_void;
+        pub(super) fn K32GetProcessMemoryInfo(
+            process: *mut c_void,
+            counters: *mut Counters,
+            cb: u32,
+        ) -> i32;
     }
-    let mut info = ExtendedLimit::default();
-    // SAFETY: a null job handle queries the caller's own job; `info` is correctly sized.
-    let ok = unsafe {
-        QueryInformationJobObject(
-            0,
-            JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
-            &mut info,
-            std::mem::size_of::<ExtendedLimit>() as u32,
-            std::ptr::null_mut(),
-        )
+
+    /// Queries the caller's own job object (a null handle); false when it has none.
+    pub(super) fn query_job<T>(class: i32, info: &mut T) -> bool {
+        // SAFETY: `info` is a correctly sized, writable struct of the class's layout.
+        unsafe {
+            QueryInformationJobObject(
+                std::ptr::null_mut(),
+                class,
+                (info as *mut T).cast(),
+                std::mem::size_of::<T>() as u32,
+                std::ptr::null_mut(),
+            ) != 0
+        }
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn system_memory() -> Option<SystemMemory> {
+    let mut status = windows::MemoryStatusEx {
+        length: std::mem::size_of::<windows::MemoryStatusEx>() as u32,
+        ..Default::default()
     };
-    if ok == 0 {
+    // SAFETY: `status` is a properly sized MEMORYSTATUSEX with `length` set.
+    if unsafe { windows::GlobalMemoryStatusEx(&mut status) } == 0 || status.total_phys == 0 {
         return None;
     }
-    let mut limit = None::<u64>;
-    if info.limit_flags & JOB_OBJECT_LIMIT_PROCESS_MEMORY != 0 {
-        limit = Some(info.process_memory_limit as u64);
+    // An allocation fails when the commit limit is reached, not when RAM is full.
+    let mut available = status.avail_phys.min(status.avail_page_file);
+    if let Some(job_room) = job_commit_room() {
+        available = available.min(job_room);
     }
-    if info.limit_flags & JOB_OBJECT_LIMIT_JOB_MEMORY != 0 {
-        let job = info.job_memory_limit as u64;
-        limit = Some(limit.map_or(job, |process| process.min(job)));
+    Some(SystemMemory { available })
+}
+
+/// What the limits of this process's job object still leave it: the Windows
+/// counterpart of a cgroup's `memory.max`. `None` when no job limits memory.
+#[cfg(windows)]
+fn job_commit_room() -> Option<u64> {
+    const EXTENDED_LIMIT_INFORMATION: i32 = 9;
+    const MEMORY_USAGE_INFORMATION: i32 = 28;
+    const LIMIT_PROCESS_MEMORY: u32 = 0x100;
+    const LIMIT_JOB_MEMORY: u32 = 0x200;
+    let mut limits = windows::ExtendedLimit::default();
+    if !windows::query_job(EXTENDED_LIMIT_INFORMATION, &mut limits) {
+        return None;
     }
-    limit
+    let process_used = process_commit().unwrap_or(0);
+    let mut room = None::<u64>;
+    if limits.limit_flags & LIMIT_PROCESS_MEMORY != 0 {
+        room = Some((limits.process_memory_limit as u64).saturating_sub(process_used));
+    }
+    if limits.limit_flags & LIMIT_JOB_MEMORY != 0 {
+        // The whole job's commit; older Windows without class 28 report only this process's.
+        let mut usage = windows::JobMemoryUsage::default();
+        let job_used = if windows::query_job(MEMORY_USAGE_INFORMATION, &mut usage) {
+            usage.job_memory
+        } else {
+            process_used
+        };
+        let job_room = (limits.job_memory_limit as u64).saturating_sub(job_used);
+        room = Some(room.map_or(job_room, |process_room| process_room.min(job_room)));
+    }
+    room
 }
 
 #[cfg(windows)]
 fn process_commit() -> Option<u64> {
-    use std::ffi::c_void;
-    #[repr(C)]
-    #[derive(Default)]
-    struct Counters {
-        cb: u32,
-        page_fault_count: u32,
-        peak_working_set_size: usize,
-        working_set_size: usize,
-        quota_peak_paged_pool_usage: usize,
-        quota_paged_pool_usage: usize,
-        quota_peak_non_paged_pool_usage: usize,
-        quota_non_paged_pool_usage: usize,
-        pagefile_usage: usize,
-        peak_pagefile_usage: usize,
-        private_usage: usize,
-    }
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn GetCurrentProcess() -> *mut c_void;
-        fn K32GetProcessMemoryInfo(process: *mut c_void, counters: *mut Counters, cb: u32) -> i32;
-    }
-    let mut counters = Counters {
-        cb: std::mem::size_of::<Counters>() as u32,
+    let mut counters = windows::Counters {
+        cb: std::mem::size_of::<windows::Counters>() as u32,
         ..Default::default()
     };
     // SAFETY: `counters` is a PROCESS_MEMORY_COUNTERS_EX with `cb` set.
-    let ok = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) };
+    let ok = unsafe {
+        windows::K32GetProcessMemoryInfo(windows::GetCurrentProcess(), &mut counters, counters.cb)
+    };
     (ok != 0).then_some(counters.private_usage as u64)
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub(crate) fn system_memory() -> Option<SystemMemory> {
     let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
-    let kib = |key: &str| -> Option<u64> {
-        meminfo
-            .lines()
-            .find_map(|line| line.strip_prefix(key)?.strip_prefix(':'))?
-            .split_whitespace()
-            .next()?
-            .parse::<u64>()
-            .ok()
-            .map(|value| value << 10)
+    let mut available = meminfo_available(&meminfo)?;
+    let group = std::fs::read_to_string("/proc/self/cgroup")
+        .ok()
+        .and_then(|text| cgroup_v2_path(&text).map(str::to_owned))
+        .unwrap_or_default();
+    let read = |name: &str| {
+        std::fs::read_to_string(format!("/sys/fs/cgroup{group}/{name}")).unwrap_or_default()
     };
-    let mut memory = SystemMemory {
-        total: kib("MemTotal")?,
-        available: kib("MemAvailable")?,
-    };
-    let cgroup = |name: &str| -> Option<u64> {
-        std::fs::read_to_string(format!("/sys/fs/cgroup/{name}"))
-            .ok()?
-            .trim()
-            .parse()
-            .ok()
-    };
-    if let Some(limit) = cgroup("memory.max") {
-        memory.total = memory.total.min(limit);
-        let used = cgroup("memory.current").unwrap_or(0);
-        memory.available = memory.available.min(limit.saturating_sub(used));
+    if let Some(room) = cgroup_room(
+        &read("memory.max"),
+        &read("memory.current"),
+        &read("memory.stat"),
+    ) {
+        available = available.min(room);
     }
-    Some(memory)
+    Some(SystemMemory { available })
+}
+
+#[cfg(any(target_os = "linux", target_os = "android", test))]
+fn meminfo_available(meminfo: &str) -> Option<u64> {
+    meminfo
+        .lines()
+        .find_map(|line| line.strip_prefix("MemAvailable:"))?
+        .split_whitespace()
+        .next()?
+        .parse::<u64>()
+        .ok()
+        .map(|kib| kib << 10)
+}
+
+/// The process's cgroup v2 path (the `0::` line of `/proc/self/cgroup`), "" for the root.
+#[cfg(any(target_os = "linux", target_os = "android", test))]
+fn cgroup_v2_path(proc_self_cgroup: &str) -> Option<&str> {
+    proc_self_cgroup
+        .lines()
+        .find_map(|line| line.strip_prefix("0::"))
+        .map(|path| path.trim().trim_end_matches('/'))
+}
+
+/// Room left under `memory.max`. Reclaimable page cache (`inactive_file`, as Docker
+/// counts it) is not usage: reading the library would otherwise leave no room at all.
+#[cfg(any(target_os = "linux", target_os = "android", test))]
+fn cgroup_room(max: &str, current: &str, stat: &str) -> Option<u64> {
+    let limit: u64 = max.trim().parse().ok()?;
+    let current: u64 = current.trim().parse().unwrap_or(0);
+    let inactive_file = stat
+        .lines()
+        .find_map(|line| line.strip_prefix("inactive_file "))
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    Some(limit.saturating_sub(current.saturating_sub(inactive_file)))
 }
 
 #[cfg(not(any(windows, target_os = "linux", target_os = "android")))]
@@ -268,10 +310,7 @@ mod tests {
     const GIB: u64 = 1 << 30;
 
     fn memory(available: u64) -> Option<SystemMemory> {
-        Some(SystemMemory {
-            total: 8 * GIB,
-            available,
-        })
+        Some(SystemMemory { available })
     }
 
     #[test]
@@ -354,7 +393,36 @@ mod tests {
     #[test]
     fn the_running_system_reports_plausible_memory() {
         if let Some(memory) = system_memory() {
-            assert!(memory.total > 0);
+            assert!(memory.available > 0);
         }
+    }
+
+    #[test]
+    fn cgroup_room_does_not_count_reclaimable_page_cache() {
+        let stat = "anon 104857600\nfile 3221225472\ninactive_file 3000000000\nactive_file 1\n";
+        // 4GB limit, 3.3GB charged, of which 3GB is the library's inactive page cache.
+        assert_eq!(
+            cgroup_room("4294967296\n", "3326083072\n", stat),
+            Some(4_294_967_296 - (3_326_083_072 - 3_000_000_000))
+        );
+        assert_eq!(cgroup_room("max\n", "3326083072\n", stat), None);
+        assert_eq!(cgroup_room("", "", ""), None);
+        assert_eq!(cgroup_room("1000", "5000", ""), Some(0));
+        assert_eq!(cgroup_room("1000", "", ""), Some(1000));
+    }
+
+    #[test]
+    fn cgroup_v2_path_and_meminfo_are_parsed() {
+        assert_eq!(
+            cgroup_v2_path("0::/system.slice/otzaria.service\n"),
+            Some("/system.slice/otzaria.service")
+        );
+        assert_eq!(cgroup_v2_path("0::/\n"), Some(""));
+        assert_eq!(cgroup_v2_path("12:memory:/legacy\n"), None);
+        assert_eq!(
+            meminfo_available("MemTotal:  8000000 kB\nMemAvailable:  2048 kB\n"),
+            Some(2048 << 10)
+        );
+        assert_eq!(meminfo_available("MemTotal:  8000000 kB\n"), None);
     }
 }
