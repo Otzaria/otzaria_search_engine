@@ -10209,10 +10209,16 @@ impl SearchEngine {
     }
 
     pub(crate) fn library_preparation_policy(&self) -> crate::indexing_buffers::PreparationPolicy {
-        crate::indexing_buffers::PreparationPolicy::new(
+        let mut policy = crate::indexing_buffers::PreparationPolicy::new(
             self.economy_indexing,
             std::thread::available_parallelism().map_or(1, |n| n.get()),
-        )
+        );
+        policy.book_workers = crate::memory_budget::preparation_workers(
+            policy.book_workers,
+            policy.reservation(),
+            crate::memory_budget::system_memory(),
+        );
+        policy
     }
 
     /// Economy mode uses one preparation and one writer thread, small spilling buffers
@@ -13073,9 +13079,22 @@ impl SearchEngine {
             std::thread::available_parallelism().map_or(1, |n| n.get()),
             cfg!(any(target_os = "android", target_os = "ios")),
         );
-        let writer = self
-            .index
-            .writer_with_num_threads(threads, self.writer_heap_size)?;
+        // The heap is a ceiling: on a machine short of committable memory the writer
+        // shrinks it, its threads and its concurrent merges instead of aborting the host.
+        let budget = crate::memory_budget::writer_budget(
+            self.writer_heap_size,
+            threads,
+            self.economy_indexing,
+            crate::memory_budget::system_memory(),
+        );
+        debug!("writer: {budget:?}");
+        let writer = self.index.writer_with_options(
+            tantivy::indexer::IndexWriterOptions::builder()
+                .num_worker_threads(budget.threads)
+                .memory_budget_per_thread(budget.heap_bytes / budget.threads)
+                .num_merge_threads(budget.merge_threads)
+                .build(),
+        )?;
         crate::indexing_buffers::cleanup_abandoned(&self.index_path);
         if self.bulk_indexing {
             writer.set_merge_policy(Box::new(NoMergePolicy));
@@ -13098,9 +13117,11 @@ impl SearchEngine {
         loop {
             let metas = self.index.searchable_segment_metas()?;
             let sized_metas = sized_segment_metas(&self.index_path, metas)?;
-            let Some(merge_ids) = select_segments_to_compact(&sized_metas) else {
+            let max_docs =
+                crate::memory_budget::merge_doc_limit(crate::memory_budget::system_memory());
+            let Some(merge_ids) = select_segments_to_compact(&sized_metas, max_docs) else {
                 debug!(
-                    "optimize: {} segments, nothing to compact",
+                    "optimize: {} segments, nothing to compact within {max_docs} docs",
                     sized_metas.len()
                 );
                 break;
@@ -19809,19 +19830,48 @@ impl MergePolicy for SizeAwareMergePolicy {
                 return Vec::new();
             }
         };
+        let max_docs = crate::memory_budget::merge_doc_limit(crate::memory_budget::system_memory());
         select_smallest_level(&sized)
+            .and_then(|ids| within_doc_limit(&sized, ids, max_docs))
             .map(|ids| vec![MergeCandidate(ids)])
             .unwrap_or_default()
     }
 }
 
+/// The leading segments of `ids` (smallest first) whose documents fit in `max_docs`, or
+/// `None` when fewer than two do: a merge's heap grows with its document count.
+fn within_doc_limit(
+    sized_metas: &[(u64, SegmentMeta)],
+    ids: Vec<SegmentId>,
+    max_docs: u64,
+) -> Option<Vec<SegmentId>> {
+    let mut docs = 0u64;
+    let kept: Vec<SegmentId> = ids
+        .into_iter()
+        .take_while(|id| {
+            let meta_docs = sized_metas
+                .iter()
+                .find(|(_, meta)| meta.id() == *id)
+                .map_or(0, |(_, meta)| u64::from(meta.max_doc()));
+            docs = docs.saturating_add(meta_docs);
+            docs <= max_docs
+        })
+        .collect();
+    (kept.len() >= 2).then_some(kept)
+}
+
 /// Pick one merge at a time. Reclaim a delete-heavy segment on its own, then
 /// combine the smallest healthy segments only if their byte sizes are close.
-fn select_segments_to_compact(sized_metas: &[(u64, SegmentMeta)]) -> Option<Vec<SegmentId>> {
+/// Nothing is chosen whose documents exceed `max_docs`.
+fn select_segments_to_compact(
+    sized_metas: &[(u64, SegmentMeta)],
+    max_docs: u64,
+) -> Option<Vec<SegmentId>> {
     if let Some((_, meta)) = sized_metas
         .iter()
         .filter(|(_, meta)| {
             meta.max_doc() > 0
+                && u64::from(meta.max_doc()) <= max_docs
                 && f64::from(meta.num_deleted_docs()) / f64::from(meta.max_doc())
                     > OPTIMIZE_COMPACT_DELETE_RATIO
         })
@@ -19831,6 +19881,7 @@ fn select_segments_to_compact(sized_metas: &[(u64, SegmentMeta)]) -> Option<Vec<
     }
 
     select_level_to_compact(sized_metas)
+        .and_then(|ids| within_doc_limit(sized_metas, ids, max_docs))
 }
 
 fn sorted_by_size(sized_metas: &[(u64, SegmentMeta)]) -> Vec<&(u64, SegmentMeta)> {

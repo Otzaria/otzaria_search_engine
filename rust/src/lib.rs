@@ -67,6 +67,7 @@ pub mod indexing_diagnostics;
 mod library_indexing;
 #[cfg(test)]
 mod library_indexing_tests;
+mod memory_budget;
 mod sqlite_host;
 // רג'קס מהמשתמש (`/…/`): ניתוח, קמפול מוגבל-גודל וחיפוש שורות — מחוץ ל-crate::api כדי ש-FRB
 // לא ינסה לגזור לו bindings.

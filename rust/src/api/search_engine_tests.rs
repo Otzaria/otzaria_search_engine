@@ -3162,6 +3162,41 @@ fn the_background_writer_merges_only_the_smallest_level() {
 }
 
 #[test]
+fn a_merge_never_combines_more_documents_than_memory_allows() {
+    let (engine, _dir) = make_engine();
+    // שנים-עשר סגמנטים דומים, מיליון מסמכים כל אחד: optimize בלי מגבלה ממזג חמישה.
+    let metas: Vec<(u64, SegmentMeta)> = (0..12)
+        .map(|offset| {
+            (
+                100 + offset,
+                engine
+                    .index
+                    .new_segment_meta(SegmentId::generate_random(), 1_000_000),
+            )
+        })
+        .collect();
+    assert_eq!(chosen(select_segments_to_compact(&metas, u64::MAX)), 5);
+    assert_eq!(chosen(select_segments_to_compact(&metas, 3_500_000)), 3);
+    assert_eq!(chosen(select_segments_to_compact(&metas, 2_000_000)), 2);
+    // סגמנט יחיד אינו מיזוג: כשרק אחד נכנס במגבלה — לא ממזגים כלל.
+    assert_eq!(chosen(select_segments_to_compact(&metas, 1_999_999)), 0);
+    assert_eq!(chosen(select_segments_to_compact(&metas, 0)), 0);
+    let kept = within_doc_limit(
+        &metas,
+        metas.iter().map(|(_, meta)| meta.id()).collect(),
+        4_000_000,
+    )
+    .unwrap();
+    assert_eq!(
+        kept,
+        metas[..4]
+            .iter()
+            .map(|(_, meta)| meta.id())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn neither_selector_merges_at_or_below_the_target() {
     let (engine, _dir) = make_engine();
     for count in 0..=MAX_SEGMENTS_AFTER_OPTIMIZE {
