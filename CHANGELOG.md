@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`semanticNearest`** finds the live lines nearest several points in one pass
+  over the installed vector set: up to 64 texts (embedded as queries or as
+  stored passages) or vectors. Lines are resolved as `searchSemantic` resolves
+  them, under its penalties, pooled into one list or returned per point, with
+  an optional score of every line against every point. For tools beside the
+  reader, such as parallels to the section being read.
+- **`semanticQueryTokens`** counts texts as queries, with the cap a query is
+  cut at, so a caller can cut a long passage into windows that fit.
+
+### Changed
+
+- The semantic sidecar is pinned to the revision with several-query scans
+  (Otzaria/otzaria-semantic-search#36) and the coordinator's direct vector
+  API (Otzaria/otzaria-semantic-search#38).
+
 ## 7.4.0 – 2026-11-22
 
 ### Added

@@ -5345,3 +5345,380 @@ fn retiring_the_generation_a_session_serves_moves_it_onto_the_live_one() {
         Some(&(GENESIS.to_string(), PROBE_LINE.to_string(), 3))
     );
 }
+
+use search_engine::api::search_engine::{
+    SemanticLineSpan, SemanticNearestHit, SemanticNearestInput, SemanticNearestResponse,
+    SemanticPoint, SemanticPool, MAX_NEAREST_POINTS, MAX_NEAREST_TOP_K, MAX_QUERY_TOKEN_TEXTS,
+};
+
+/// The first line of Genesis, which a query repeating it finds first.
+const FIRST_LINE: &str = "בראשית ברא אלהים את השמים ואת הארץ";
+
+fn text_point(text: &str) -> SemanticPoint {
+    SemanticPoint {
+        text: Some(text.to_string()),
+        as_passage: false,
+        vector: None,
+    }
+}
+
+fn vector_point(vector: Vec<f32>) -> SemanticPoint {
+    SemanticPoint {
+        text: None,
+        as_passage: false,
+        vector: Some(vector),
+    }
+}
+
+fn nearest_input(points: Vec<SemanticPoint>, pool: SemanticPool) -> SemanticNearestInput {
+    SemanticNearestInput {
+        points,
+        top_k: 10,
+        facets: Vec::new(),
+        exclude: Vec::new(),
+        min_score: None,
+        pool,
+        max_candidates: 100,
+        rescore: false,
+    }
+}
+
+fn nearest(engine: &SearchEngine, input: SemanticNearestInput) -> SemanticNearestResponse {
+    engine
+        .semantic_nearest(input, &SemanticCancellationToken::new())
+        .unwrap()
+}
+
+fn nearest_refusal(engine: &SearchEngine, input: SemanticNearestInput) -> SemanticErrorKind {
+    engine
+        .semantic_nearest(input, &SemanticCancellationToken::new())
+        .expect_err("refused")
+        .kind
+}
+
+/// (book, ordinal) of each hit, in order.
+fn placed(hits: &[SemanticNearestHit]) -> Vec<(String, u64)> {
+    hits.iter()
+        .map(|hit| (hit.file_path.clone(), hit.segment))
+        .collect()
+}
+
+/// One text point finds the line a semantic-only search finds first, scored as its own
+/// text, with the line's id, place and title read from this index.
+#[test]
+fn nearest_from_one_text_finds_what_semantic_only_search_finds_first() {
+    let library = build_library();
+    let engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+
+    let response = nearest(
+        &engine,
+        nearest_input(vec![text_point(PROBE_LINE)], SemanticPool::Best),
+    );
+    let searched = semantic_lines(&engine, PROBE_LINE, &[]);
+    let top = response.hits.first().expect("a hit");
+    assert_eq!(
+        (top.file_path.as_str(), top.segment),
+        (searched[0].0.as_str(), searched[0].2)
+    );
+    assert_eq!((top.file_path.as_str(), top.segment), (GENESIS, 3));
+    assert_eq!(top.title, "בראשית");
+    assert_eq!(
+        engine.get_document_by_id(top.id).unwrap().unwrap().text,
+        PROBE_LINE
+    );
+    assert!(response
+        .hits
+        .iter()
+        .all(|hit| hit.point == 0 && hit.point_scores.is_empty()));
+    assert!(response.per_point.is_empty());
+    assert_eq!(response.vectors_library_version, LIBRARY_VERSION);
+    assert!(!response.truncated);
+    let lines: BTreeSet<(String, u64)> = placed(&response.hits).into_iter().collect();
+    assert_eq!(lines.len(), response.hits.len(), "each line once");
+    assert!(response
+        .hits
+        .windows(2)
+        .all(|pair| pair[0].score >= pair[1].score));
+}
+
+/// Pooled, each line comes once, for the point it is nearest; rescored, each carries its
+/// score for every point, and its own point's is its score.
+#[test]
+fn pooled_points_keep_each_line_once_and_rescore_it_against_every_point() {
+    let library = build_library();
+    let engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+
+    let mut input = nearest_input(
+        vec![text_point(PROBE_LINE), text_point(FIRST_LINE)],
+        SemanticPool::Best,
+    );
+    input.rescore = true;
+    let response = nearest(&engine, input);
+    let find = |segment| {
+        response
+            .hits
+            .iter()
+            .find(|hit| hit.file_path == GENESIS && hit.segment == segment)
+            .expect("found")
+    };
+    assert_eq!(find(3).point, 0);
+    assert_eq!(find(0).point, 1);
+    for hit in &response.hits {
+        assert_eq!(hit.point_scores.len(), 2);
+        let own = hit.point_scores[hit.point as usize];
+        assert!((own - hit.score).abs() < 1e-4, "{hit:?}");
+        assert!(hit.point_scores.iter().all(|score| *score <= own + 1e-4));
+    }
+    assert!(find(3).point_scores[1] < find(3).point_scores[0]);
+    let lines: BTreeSet<(String, u64)> = placed(&response.hits).into_iter().collect();
+    assert_eq!(lines.len(), response.hits.len(), "each line once");
+
+    // Kept to one vector, the pool keeps the best of them and says so.
+    let best = placed(&response.hits)[0].clone();
+    let mut input = nearest_input(
+        vec![text_point(PROBE_LINE), text_point(FIRST_LINE)],
+        SemanticPool::Best,
+    );
+    input.max_candidates = 1;
+    let response = nearest(&engine, input);
+    assert!(response.truncated);
+    assert_eq!(placed(&response.hits), vec![best]);
+}
+
+/// Per point, each point has its own list, in the order the points were given.
+#[test]
+fn per_point_lists_follow_the_points() {
+    let library = build_library();
+    let engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+
+    let response = nearest(
+        &engine,
+        nearest_input(
+            vec![text_point(FIRST_LINE), text_point(PROBE_LINE)],
+            SemanticPool::PerPoint,
+        ),
+    );
+    assert!(response.hits.is_empty());
+    assert_eq!(response.per_point.len(), 2);
+    assert_eq!(
+        placed(&response.per_point[0].hits)[0],
+        (GENESIS.to_string(), 0)
+    );
+    assert_eq!(
+        placed(&response.per_point[1].hits)[0],
+        (GENESIS.to_string(), 3)
+    );
+    for (point, list) in response.per_point.iter().enumerate() {
+        assert!(list.hits.iter().all(|hit| hit.point == point as u32));
+    }
+}
+
+/// Excluded lines, books outside the facets and lines under `min_score` are not returned.
+#[test]
+fn excluded_lines_other_books_and_low_scores_are_left_out() {
+    let library = build_library();
+    let engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+
+    let mut input = nearest_input(vec![text_point(PROBE_LINE)], SemanticPool::Best);
+    input.exclude = vec![SemanticLineSpan {
+        file_path: GENESIS.to_string(),
+        from_segment: 2,
+        to_segment: 3,
+    }];
+    let lines = placed(&nearest(&engine, input).hits);
+    assert!(!lines.is_empty());
+    assert!(!lines.contains(&(GENESIS.to_string(), 3)));
+    assert!(!lines.contains(&(GENESIS.to_string(), 2)));
+
+    let mut input = nearest_input(vec![text_point(PROBE_LINE)], SemanticPool::Best);
+    input.facets = vec!["/משנה/זרעים".to_string()];
+    let hits = nearest(&engine, input).hits;
+    assert!(!hits.is_empty());
+    assert!(hits.iter().all(|hit| hit.file_path == BERACHOT));
+
+    // Only the line its own text found best scores as high as that.
+    let top = nearest(
+        &engine,
+        nearest_input(vec![text_point(PROBE_LINE)], SemanticPool::Best),
+    )
+    .hits[0]
+        .score;
+    let mut input = nearest_input(vec![text_point(PROBE_LINE)], SemanticPool::Best);
+    input.min_score = Some(top - 1e-4);
+    assert_eq!(
+        placed(&nearest(&engine, input).hits),
+        vec![(GENESIS.to_string(), 3)]
+    );
+}
+
+/// A text two books hold is one vector, and both its lines are found.
+#[test]
+fn a_text_in_two_books_is_found_in_both_by_one_point() {
+    let mut books = default_books();
+    books.push((
+        "בראשית, עותק",
+        "/מקרא/תורה",
+        "/books/genesis-copy.txt",
+        2,
+        GENESIS_TEXT.to_string(),
+    ));
+    let library = build_library_of(&books, false);
+    let engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+
+    let top = nearest(
+        &engine,
+        nearest_input(vec![text_point(PROBE_LINE)], SemanticPool::Best),
+    )
+    .hits[0]
+        .score;
+    let mut input = nearest_input(vec![text_point(PROBE_LINE)], SemanticPool::Best);
+    input.min_score = Some(top - 1e-4);
+    let found: BTreeSet<(String, u64)> =
+        placed(&nearest(&engine, input).hits).into_iter().collect();
+    assert_eq!(
+        found,
+        BTreeSet::from([
+            (GENESIS.to_string(), 3),
+            ("/books/genesis-copy.txt".to_string(), 3)
+        ])
+    );
+}
+
+/// A vector point is scaled to unit length, so any multiple of it finds the same lines at
+/// the same scores; one of another width, all zeros or not finite is refused, and so is a
+/// point that is both a text and a vector, or neither. A passage point is embedded too.
+#[test]
+fn vector_points_are_scaled_and_checked() {
+    let library = build_library();
+    let engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    let dim = library.model.embedding_dim as usize;
+
+    let vector: Vec<f32> = (0..dim).map(|i| ((i * 7 % 13) as f32) - 6.0).collect();
+    let once = nearest(
+        &engine,
+        nearest_input(vec![vector_point(vector.clone())], SemanticPool::Best),
+    );
+    let scaled = nearest(
+        &engine,
+        nearest_input(
+            vec![vector_point(vector.iter().map(|x| x * 7.5).collect())],
+            SemanticPool::Best,
+        ),
+    );
+    assert!(!once.hits.is_empty());
+    assert_eq!(placed(&once.hits), placed(&scaled.hits));
+    for (a, b) in once.hits.iter().zip(&scaled.hits) {
+        assert!((a.score - b.score).abs() < 1e-5);
+    }
+
+    for bad in [
+        vector_point(vec![1.0; dim + 1]),
+        vector_point(vec![0.0; dim]),
+        vector_point(vec![f32::NAN; dim]),
+        SemanticPoint {
+            text: Some(PROBE_LINE.to_string()),
+            as_passage: false,
+            vector: Some(vec![1.0; dim]),
+        },
+        SemanticPoint {
+            text: None,
+            as_passage: false,
+            vector: None,
+        },
+    ] {
+        assert_eq!(
+            nearest_refusal(&engine, nearest_input(vec![bad], SemanticPool::Best)),
+            SemanticErrorKind::InvalidInput
+        );
+    }
+
+    let passage = SemanticPoint {
+        text: Some(PROBE_LINE.to_string()),
+        as_passage: true,
+        vector: None,
+    };
+    assert!(
+        !nearest(&engine, nearest_input(vec![passage], SemanticPool::Best))
+            .hits
+            .is_empty()
+    );
+}
+
+/// Limits out of range are refused as invalid input, a search with no set open as not
+/// configured, and a cancelled one as cancelled.
+#[test]
+fn nearest_refuses_what_it_cannot_serve() {
+    let library = build_library();
+    let engine = library.engine();
+    let input = || nearest_input(vec![text_point(PROBE_LINE)], SemanticPool::Best);
+    assert_eq!(
+        nearest_refusal(&engine, input()),
+        SemanticErrorKind::NotConfigured
+    );
+    engine.open_semantic_artifact(library.input()).unwrap();
+
+    let mut none = input();
+    none.points.clear();
+    let mut many = input();
+    many.points = vec![text_point(PROBE_LINE); MAX_NEAREST_POINTS + 1];
+    let mut zero_k = input();
+    zero_k.top_k = 0;
+    let mut large_k = input();
+    large_k.top_k = MAX_NEAREST_TOP_K + 1;
+    let mut no_pool = input();
+    no_pool.max_candidates = 0;
+    for refused in [none, many, zero_k, large_k, no_pool] {
+        assert_eq!(
+            nearest_refusal(&engine, refused),
+            SemanticErrorKind::InvalidInput
+        );
+    }
+    // `max_candidates` is the pool's: a per-point search does not read it.
+    let mut per_point = input();
+    per_point.pool = SemanticPool::PerPoint;
+    per_point.max_candidates = 0;
+    assert_eq!(nearest(&engine, per_point).per_point.len(), 1);
+
+    let cancelled = SemanticCancellationToken::new();
+    cancelled.cancel();
+    assert_eq!(
+        engine
+            .semantic_nearest(input(), &cancelled)
+            .expect_err("cancelled")
+            .kind,
+        SemanticErrorKind::Cancelled
+    );
+}
+
+/// Token counts need an open session and a backend with a tokenizer, and take a bounded
+/// number of texts.
+#[test]
+fn query_tokens_are_refused_without_a_session_or_past_the_limit() {
+    let library = build_library();
+    let engine = library.engine();
+    assert_eq!(
+        engine
+            .semantic_query_tokens(vec![PROBE_LINE.to_string()])
+            .expect_err("no session")
+            .kind,
+        SemanticErrorKind::NotConfigured
+    );
+    engine.open_semantic_artifact(library.input()).unwrap();
+    assert_eq!(
+        engine
+            .semantic_query_tokens(vec![String::new(); MAX_QUERY_TOKEN_TEXTS + 1])
+            .expect_err("too many")
+            .kind,
+        SemanticErrorKind::InvalidInput
+    );
+    // The stand-in embeds without a tokenizer, so it has nothing to count with.
+    assert!(engine
+        .semantic_query_tokens(vec![PROBE_LINE.to_string()])
+        .is_err());
+}
