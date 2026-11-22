@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Writer activity can reclaim space after book removal without waiting for
+  `optimize`. The writer schedules one reclamation at a time on Tantivy's merge
+  pool, choosing the largest estimated saving among committed segments up to
+  128 MiB and one million documents. A segment qualifies above 30% deleted
+  documents or at least 16 MiB in estimated savings. Files still mapped on
+  Windows are eligible for deferred cleanup after readers release them.
+  The estimate uses document counts. Opening an index for search alone does not
+  start maintenance, and larger delete-heavy segments still require explicit
+  `optimize` for standalone compaction.
+
 ## 7.3.0 – 2026-11-19
 
 ### Added

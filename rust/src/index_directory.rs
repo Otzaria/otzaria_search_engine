@@ -18,6 +18,9 @@ use tantivy::directory::{
     WatchHandle, WritePtr,
 };
 
+#[cfg(any(windows, test))]
+mod retired_segments;
+
 /// 1,888 ms in all: outlasts a scanner holding the file, and bounds a refusal that is not
 /// transient.
 const REPLACE_RETRY_DELAYS: [Duration; 14] = [
@@ -63,10 +66,20 @@ impl Directory for IndexDirectory {
         self.inner.open_read(path)
     }
 
-    // Not retried: a file a reader still maps stays undeletable until it is released, and
-    // tantivy's garbage collection already tries again on its next pass.
     fn delete(&self, path: &Path) -> Result<(), DeleteError> {
-        self.inner.delete(path)
+        let result = self.inner.delete(path);
+        #[cfg(windows)]
+        if let Err(DeleteError::IoError { io_error, .. }) = &result {
+            // Tantivy already established that this file is unreachable. Move it out of
+            // Tantivy's namespace before retrying so a later writer can reuse its old name.
+            if retired_segments::is_transient_delete_error(io_error)
+                && retired_segments::is_segment_file(path)
+                && retired_segments::retire(&self.root, path).is_ok()
+            {
+                return Ok(());
+            }
+        }
+        result
     }
 
     fn exists(&self, path: &Path) -> Result<bool, OpenReadError> {
@@ -106,6 +119,11 @@ impl Directory for IndexDirectory {
     fn watch(&self, watch_callback: WatchCallback) -> tantivy::Result<WatchHandle> {
         self.inner.watch(watch_callback)
     }
+}
+
+#[cfg(windows)]
+pub(crate) fn retry_retired_segments(index_path: &Path) {
+    retired_segments::retry_pending(index_path);
 }
 
 /// A lock file locked as `MmapDirectory` locks it, and unlocked before it is closed.
@@ -543,6 +561,23 @@ mod tests {
         assert_eq!(replace(&target, b"new").unwrap(), 0);
         drop(held);
         assert_eq!(fs::read(&target).unwrap(), b"new");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_mapped_segment_can_be_retired_before_the_reader_releases_it() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let directory = IndexDirectory::open(dir.path()).unwrap();
+        let name = Path::new("a5c4dfcbdfe645089129e308e26d5523.idx");
+        let original = dir.path().join(name);
+        fs::write(&original, b"old segment").unwrap();
+        let mmap = directory.open_read(name).unwrap();
+        directory.delete(name).unwrap();
+        assert!(!original.exists());
+        assert_eq!(mmap.read_bytes().unwrap().as_slice(), b"old segment");
+        drop(mmap);
+        fs::write(&original, b"new segment").unwrap();
+        assert_eq!(fs::read(original).unwrap(), b"new segment");
     }
 
     #[cfg(windows)]
