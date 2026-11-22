@@ -4,11 +4,15 @@
 
 ### Changed
 
-- The writer reclaims deleted documents in the background. After a commit, the
-  delete-heavy segment (over 30% deleted, at most 128 MiB) holding the most
-  deleted bytes is rewritten on the merge thread pool, so books removed from the
-  library free their disk space without `optimize` and without blocking
-  searches or commits. Larger segments are still left to `optimize`.
+- Writer activity can reclaim space after book removal without waiting for
+  `optimize`. The writer schedules one reclamation at a time on Tantivy's merge
+  pool, choosing the largest estimated saving among committed segments up to
+  128 MiB and one million documents. A segment qualifies above 30% deleted
+  documents or at least 16 MiB in estimated savings. Files still mapped on
+  Windows are eligible for deferred cleanup after readers release them.
+  The estimate uses document counts. Opening an index for search alone does not
+  start maintenance, and larger delete-heavy segments still require explicit
+  `optimize` for standalone compaction.
 
 ## 7.3.0 – 2026-11-19
 
