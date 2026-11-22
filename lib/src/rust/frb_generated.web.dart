@@ -327,6 +327,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SemanticTimings dco_decode_box_autoadd_semantic_timings(dynamic raw);
+
+  @protected
   SemanticVectorsInstallInput
   dco_decode_box_autoadd_semantic_vectors_install_input(dynamic raw);
 
@@ -576,6 +579,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SemanticTimings? dco_decode_opt_box_autoadd_semantic_timings(dynamic raw);
+
+  @protected
   TextStorage? dco_decode_opt_box_autoadd_text_storage(dynamic raw);
 
   @protected
@@ -731,6 +737,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SemanticStatus dco_decode_semantic_status(dynamic raw);
+
+  @protected
+  SemanticTimings dco_decode_semantic_timings(dynamic raw);
 
   @protected
   SemanticVectorsInfo dco_decode_semantic_vectors_info(dynamic raw);
@@ -1093,6 +1102,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SemanticTimings sse_decode_box_autoadd_semantic_timings(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SemanticVectorsInstallInput
   sse_decode_box_autoadd_semantic_vectors_install_input(
     SseDeserializer deserializer,
@@ -1408,6 +1422,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SemanticTimings? sse_decode_opt_box_autoadd_semantic_timings(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   TextStorage? sse_decode_opt_box_autoadd_text_storage(
     SseDeserializer deserializer,
   );
@@ -1625,6 +1644,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SemanticStatus sse_decode_semantic_status(SseDeserializer deserializer);
+
+  @protected
+  SemanticTimings sse_decode_semantic_timings(SseDeserializer deserializer);
 
   @protected
   SemanticVectorsInfo sse_decode_semantic_vectors_info(
@@ -2058,6 +2080,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_semantic_timings(
+    SemanticTimings self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_semantic_vectors_install_input(
     SemanticVectorsInstallInput self,
     SseSerializer serializer,
@@ -2450,6 +2478,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_semantic_timings(
+    SemanticTimings? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_text_storage(
     TextStorage? self,
     SseSerializer serializer,
@@ -2719,6 +2753,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_semantic_status(
     SemanticStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_timings(
+    SemanticTimings self,
     SseSerializer serializer,
   );
 

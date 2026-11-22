@@ -7,10 +7,10 @@ import '../frb_generated.dart';
 import 'library_indexing.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `accumulate_section_counts`, `acronym_alternatives`, `add_entry`, `add_pdf_pages`, `add_stored_text`, `add_text_book_impl`, `add`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms_complete`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `book_fingerprint`, `book_number`, `bounded_display_snippet`, `bounded_plain_snippet`, `bounded_snippet_source`, `build_advanced_query_ranked`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query_with`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results_with_generator`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `build_smart_exact_query`, `build_smart_fuzzy_alternatives`, `build_smart_fuzzy_query`, `build_vocalized_exact_patterns`, `cancelled`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `chunk_key_recipe`, `clear`, `collect_garbage_after_optimize`, `collect_grouped`, `collect_ranked`, `combine_fingerprint`, `compatibility`, `compute_index_fuzzy_highlight_pattern`, `compute_index_highlight_pattern`, `compute_index_smart_highlight_pattern`, `content_fingerprint`, `convert_highlight_matches`, `count_on`, `count_smart_exact`, `count_smart_fuzzy`, `crop_around_first_occurrence`, `cross_line_next_lines`, `cross_line_snippet_html`, `current_schema`, `default`, `display_notes`, `document_at`, `enqueue`, `ensure_current_index_metadata`, `ensure_write_access`, `ensure_writer`, `exact_highlight_plan`, `exact_phrase_boost`, `exact_phrase`, `exact_rank_clauses`, `facet_filter_query`, `feed_field`, `feed_metadata`, `feed`, `feed`, `fetch_merged_sibling`, `finalize_grouped`, `finish`, `finish`, `first`, `flush`, `from_api`, `from_library_row`, `from_read_only_index`, `fuzzy_automaton`, `fuzzy_highlight_plan`, `get`, `glued_punctuation`, `group_cache_key`, `group_sort`, `id_base`, `index_metadata_path`, `index_metadata`, `index_schema_of_version`, `index_schema`, `index_token_texts_with`, `index_token_texts`, `indexed_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `insert_group`, `lenient`, `lexical_fuzzy_phrase_query`, `lexical_fuzzy_phrase_terms`, `lexical_phrase_per_word_terms`, `library_preparation_policy`, `library_storage_or_fallback`, `line_count`, `line_dedup_hash`, `line_source_book`, `live_chunk_key_field`, `make_snippet_generator`, `materialize_term_set`, `metadata_fingerprint`, `min_words`, `new_index_settings`, `new`, `new`, `new`, `new`, `new`, `new`, `none`, `normal_fast_preparation`, `of`, `of`, `open_or_create_index`, `open_semantic_artifact_impl`, `open_with`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `order_epoch`, `order_sort`, `order_tables`, `paint_ranges`, `pdf_pages_from_bytes`, `phrase_exceeds_max_expansions`, `phrase_filtered_snippet`, `phrase_occurrences`, `phrase_per_word_terms`, `phrase_query_with_degrade`, `preparation_directory`, `prepare_text_book_buffer`, `prepare_text_book_fast`, `prepare_text_book_reader`, `prepare_text_book`, `push_limited_unique`, `push`, `put`, `quoted_phrase_token_groups`, `quoteless_variant`, `ranked_page`, `ranked_term_query`, `read_index_metadata`, `read`, `readable_schema_version`, `refresh_book_order`, `refuse_library_storage`, `register_hebrew_tokenizers_with`, `require_library_book_id`, `resolve_highlight`, `resolve_hit_texts`, `resolve`, `restore_writer`, `result_chunks`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `schema_of_version`, `scoped_words_query`, `search_and_count_smart_exact`, `search_and_count_smart_fuzzy`, `search_executor_threads`, `search_text_field`, `segment_disk_bytes`, `select_level_to_compact`, `select_segments_to_compact`, `select_smallest_level`, `semantic_closed_status`, `semantic_disabled_diff`, `semantic_disabled_status`, `semantic_lexical_fallback_response`, `semantic_not_in_build`, `set_chunk_key`, `set_economy_indexing_with_reload`, `set_search_executor`, `single_input`, `single_regex_term_query`, `size_levels`, `sized_segment_metas`, `slice`, `smart_exact_highlight_plan`, `smart_fuzzy_highlight_plan`, `snippet_html`, `sorted_by_size`, `stamp_book`, `stored_schema_mismatch`, `stored_text_fields`, `surface_stream_error`, `take_from_level`, `take_hits`, `take_writer`, `term_list_phrase_query`, `terms_query_from_word_sets`, `text_index_analyzer`, `to_api`, `translation_alternatives`, `unavailable`, `update_reference_trail`, `user_regex_checked`, `user_regex_line_outcome`, `user_regex_line_search`, `user_regex_stream_into`, `user_regex_term_query`, `user_regex_term_stream`, `user_regex`, `variants`, `vocalized_variant_branches`, `whole_query_quoted`, `with_cross_line`, `with_field`, `write_index_metadata`, `write_inputs_with`, `write_inputs`, `writer_mut`
+// These functions are ignored because they are not marked as `pub`: `accumulate_section_counts`, `acronym_alternatives`, `add_entry`, `add_pdf_pages`, `add_stored_text`, `add_text_book_impl`, `add`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms_complete`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `book_fingerprint`, `book_number`, `bounded_display_snippet`, `bounded_plain_snippet`, `bounded_snippet_source`, `build_advanced_query_ranked`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query_with`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results_with_generator`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `build_smart_exact_query`, `build_smart_fuzzy_alternatives`, `build_smart_fuzzy_query`, `build_vocalized_exact_patterns`, `cancelled`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `chunk_key_recipe`, `clear`, `collect_garbage_after_optimize`, `collect_grouped`, `collect_ranked`, `combine_fingerprint`, `compatibility`, `compute_index_fuzzy_highlight_pattern`, `compute_index_highlight_pattern`, `compute_index_smart_highlight_pattern`, `content_fingerprint`, `convert_highlight_matches`, `count_on`, `count_smart_exact`, `count_smart_fuzzy`, `crop_around_first_occurrence`, `cross_line_next_lines`, `cross_line_snippet_html`, `current_schema`, `default`, `display_notes`, `document_at`, `enqueue`, `ensure_current_index_metadata`, `ensure_write_access`, `ensure_writer`, `exact_highlight_plan`, `exact_phrase_boost`, `exact_phrase`, `exact_rank_clauses`, `facet_filter_query`, `feed_field`, `feed_metadata`, `feed`, `feed`, `fetch_merged_sibling`, `finalize_grouped`, `finish`, `finish`, `first`, `flush`, `from_api`, `from_library_row`, `from_read_only_index`, `fuzzy_automaton`, `fuzzy_highlight_plan`, `get`, `glued_punctuation`, `group_cache_key`, `group_sort`, `has_pdf_layout_markers`, `id_base`, `index_metadata_path`, `index_metadata`, `index_schema_of_version`, `index_schema`, `index_token_texts_with`, `index_token_texts`, `indexed_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `insert_group`, `layout_line_starts`, `layout_lines_as_spaces`, `lenient`, `lexical_fuzzy_phrase_query`, `lexical_fuzzy_phrase_terms`, `lexical_phrase_per_word_terms`, `library_preparation_policy`, `library_storage_or_fallback`, `line_count`, `line_dedup_hash`, `line_source_book`, `live_chunk_key_field`, `make_snippet_generator`, `materialize_term_set`, `metadata_fingerprint`, `min_words`, `new_index_settings`, `new`, `new`, `new`, `new`, `new`, `new`, `none`, `normal_fast_preparation`, `of`, `of`, `open_or_create_index`, `open_semantic_artifact_impl`, `open_with`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `order_epoch`, `order_sort`, `order_tables`, `paint_ranges`, `pdf_page_snippet_html`, `pdf_pages_fingerprint`, `pdf_pages_from_bytes`, `phrase_exceeds_max_expansions`, `phrase_filtered_snippet`, `phrase_occurrences_in_layout`, `phrase_occurrences_with_layout`, `phrase_occurrences`, `phrase_per_word_terms`, `phrase_query_with_degrade`, `preparation_directory`, `prepare_text_book_buffer`, `prepare_text_book_fast`, `prepare_text_book_reader`, `prepare_text_book`, `push_limited_unique`, `push`, `put`, `query_word_ranges`, `quoted_phrase_token_groups`, `quoteless_variant`, `ranked_page`, `ranked_term_query`, `read_index_metadata`, `read`, `readable_schema_version`, `refresh_book_order`, `refuse_library_storage`, `register_hebrew_tokenizers_with`, `require_library_book_id`, `resolve_highlight`, `resolve_hit_texts`, `resolve`, `restore_writer`, `result_chunks`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `schema_of_version`, `scoped_words_query`, `search_and_count_smart_exact`, `search_and_count_smart_fuzzy`, `search_executor_threads`, `search_text_field`, `segment_disk_bytes`, `select_level_to_compact`, `select_segments_to_compact`, `select_smallest_level`, `semantic_closed_status`, `semantic_disabled_diff`, `semantic_disabled_status`, `semantic_lexical_fallback_response`, `semantic_not_in_build`, `semantic_texts`, `set_chunk_key`, `set_economy_indexing_with_reload`, `set_search_executor`, `single_input`, `single_regex_term_query`, `size_levels`, `sized_segment_metas`, `slice`, `smart_exact_highlight_plan`, `smart_fuzzy_highlight_plan`, `snippet_html`, `snippet_pieces`, `sorted_by_size`, `stamp_book`, `stored_schema_mismatch`, `stored_text_fields`, `surface_stream_error`, `take_from_level`, `take_hits`, `take_writer`, `term_list_phrase_query`, `terms_query_from_word_sets`, `text_index_analyzer`, `to_api`, `translation_alternatives`, `unavailable`, `update_reference_trail`, `user_regex_checked`, `user_regex_line_outcome`, `user_regex_line_search`, `user_regex_stream_into`, `user_regex_term_query`, `user_regex_term_stream`, `user_regex`, `variants`, `vocalized_variant_branches`, `whole_query_quoted`, `with_cross_line`, `with_exact_phrase_boost`, `with_field`, `with_pdf_layout`, `word_end_after`, `word_start_before`, `write_index_metadata`, `write_inputs_with`, `write_inputs`, `writer_mut`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `BookOrderState`, `BoundedGroups`, `CachedOrderTables`, `CachedTermSet`, `CallbackSink`, `Fnv`, `GroupAcc`, `GroupCache`, `GroupCollector`, `GroupKeyColumn`, `GroupSegmentCollector`, `GroupSort`, `GroupedHits`, `GroupedPage`, `GroupedRep`, `HighlightPlan`, `HitRendering`, `HitText`, `Ids`, `IndexMetadata`, `IndexedText`, `LineDedupHasher`, `PageCounts`, `PdfPageText`, `PhraseHighlight`, `PreparedTextBook`, `RankedPage`, `SharedGroupedAcc`, `SiblingFields`, `SingleBookFingerprintCollector`, `SingleBookFingerprintSegmentCollector`, `SizeAwareMergePolicy`, `StampFields`, `Stamping`, `Stamps`, `TermCacheKey`, `TextBookMeta`, `WordMatch`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `collect`, `compute_merge_candidates`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `for_segment`, `for_segment`, `for_segment`, `for_segment`, `from`, `from`, `harvest`, `harvest`, `harvest`, `harvest`, `hash`, `hash`, `hash`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `requires_scoring`
-// These functions are ignored (category: IgnoreBecauseExplicitAttribute): `default`, `default`, `default`, `open_read_only`, `refresh_line_source`, `refresh_reader`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `collect`, `compute_merge_candidates`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `for_segment`, `for_segment`, `for_segment`, `for_segment`, `from`, `from`, `harvest`, `harvest`, `harvest`, `harvest`, `hash`, `hash`, `hash`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `requires_scoring`
+// These functions are ignored (category: IgnoreBecauseExplicitAttribute): `default`, `default`, `default`, `default`, `open_read_only`, `refresh_line_source`, `refresh_reader`, `search_semantic`
 // These functions are ignored (category: IgnoreBecauseOwnerTyShouldIgnore): `default`
 
 /// Deliberately **not** `#[frb(sync)]` — this reads the index metadata file, and a
@@ -4019,6 +4019,9 @@ class SemanticSearchResponse {
   /// first page of a fresh search: replace the displayed list instead of appending.
   final bool sessionRestarted;
 
+  /// Where the time went, by stage; `None` when the search never reached the semantic sidecar.
+  final SemanticTimings? timings;
+
   const SemanticSearchResponse({
     required this.results,
     required this.totalCount,
@@ -4035,6 +4038,7 @@ class SemanticSearchResponse {
     required this.truncated,
     this.hasMore = false,
     this.sessionRestarted = false,
+    this.timings,
   });
 
   @override
@@ -4053,7 +4057,8 @@ class SemanticSearchResponse {
       candidateWindowTruncated.hashCode ^
       truncated.hashCode ^
       hasMore.hashCode ^
-      sessionRestarted.hashCode;
+      sessionRestarted.hashCode ^
+      timings.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -4074,7 +4079,8 @@ class SemanticSearchResponse {
           candidateWindowTruncated == other.candidateWindowTruncated &&
           truncated == other.truncated &&
           hasMore == other.hasMore &&
-          sessionRestarted == other.sessionRestarted;
+          sessionRestarted == other.sessionRestarted &&
+          timings == other.timings;
 }
 
 class SemanticSearchResult {
@@ -4364,6 +4370,72 @@ class SemanticStatus {
           vectorsLibraryVersion == other.vectorsLibraryVersion &&
           vectorSegments == other.vectorSegments &&
           needsCompaction == other.needsCompaction;
+}
+
+/// Where a semantic search's time went, in milliseconds, summed over its expansions.
+/// The sidecar reports `embed`, `scan` and `resolve` for the stages it measures. These fields
+/// sum the reported measurements and are absent when none were reported. They are part of
+/// `semantic`, which runs beside `lexical`.
+/// `total` also holds the wait for the session; a page served from it has no expansion.
+class SemanticTimings {
+  final int expansions;
+
+  /// The lexical phase, on its own thread beside planning and the semantic half.
+  final double lexicalMs;
+
+  /// Planning, embedding, scanning and resolving.
+  final double semanticMs;
+  final double? embedMs;
+  final double? scanMs;
+  final double? resolveMs;
+  final double fuseMs;
+  final double hydrateMs;
+
+  /// Cutting the page, reading its texts and painting it.
+  final double pageMs;
+  final double totalMs;
+
+  const SemanticTimings({
+    required this.expansions,
+    required this.lexicalMs,
+    required this.semanticMs,
+    this.embedMs,
+    this.scanMs,
+    this.resolveMs,
+    required this.fuseMs,
+    required this.hydrateMs,
+    required this.pageMs,
+    required this.totalMs,
+  });
+
+  @override
+  int get hashCode =>
+      expansions.hashCode ^
+      lexicalMs.hashCode ^
+      semanticMs.hashCode ^
+      embedMs.hashCode ^
+      scanMs.hashCode ^
+      resolveMs.hashCode ^
+      fuseMs.hashCode ^
+      hydrateMs.hashCode ^
+      pageMs.hashCode ^
+      totalMs.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticTimings &&
+          runtimeType == other.runtimeType &&
+          expansions == other.expansions &&
+          lexicalMs == other.lexicalMs &&
+          semanticMs == other.semanticMs &&
+          embedMs == other.embedMs &&
+          scanMs == other.scanMs &&
+          resolveMs == other.resolveMs &&
+          fuseMs == other.fuseMs &&
+          hydrateMs == other.hydrateMs &&
+          pageMs == other.pageMs &&
+          totalMs == other.totalMs;
 }
 
 /// What a vector set's directory holds, as [`SearchEngine::semantic_vectors_info`] reads it.
