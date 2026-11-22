@@ -1,9 +1,17 @@
 # Changelog
 
-## Unreleased
+## 7.4.0 – 2026-11-22
+
+### Added
+
+- Semantic search responses expose stage timings. Sidecar measurements the
+  engine did not receive are represented as absent.
 
 ### Changed
 
+- Indexing sizes its writer heap, preparation workers, and merges using
+  available memory. Under memory pressure, preparation can switch to smaller
+  streaming buffers, and compaction selects eligible segments within budget.
 - Writer activity can reclaim space after book removal without waiting for
   `optimize`. The writer schedules one reclamation at a time on Tantivy's merge
   pool, choosing the largest estimated saving among committed segments up to
