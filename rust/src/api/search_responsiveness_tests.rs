@@ -712,9 +712,16 @@ fn failed_economy_reader_reload_restores_writer_and_explicit_mode() {
 fn normal_fast_preparation_has_byte_and_line_safety_caps_and_document_spill() {
     let dir = TempDir::new().unwrap();
     let mut engine = SearchEngine::new(dir.path().to_str().unwrap());
-    assert!(engine.normal_fast_preparation("a\nb\n"));
-    assert!(!engine.normal_fast_preparation(&"\n".repeat(65_536)));
-    assert!(!engine.normal_fast_preparation(&"x".repeat((32 << 20) + 1)));
+    let policy = engine.library_preparation_policy();
+    assert!(SearchEngine::normal_fast_preparation("a\nb\n", policy));
+    assert!(!SearchEngine::normal_fast_preparation(
+        &"\n".repeat(65_536),
+        policy
+    ));
+    assert!(!SearchEngine::normal_fast_preparation(
+        &"x".repeat((32 << 20) + 1),
+        policy
+    ));
     let meta = TextBookMeta {
         title: "ספר".into(),
         topics: "/root".into(),
@@ -725,12 +732,20 @@ fn normal_fast_preparation_has_byte_and_line_safety_caps_and_document_spill() {
     engine.open_index_writer().unwrap();
     let text = "<h1>פרק</h1>\nשלום עולם\n".repeat(200);
     let memory = engine
-        .prepare_text_book_fast(&meta, &text, TextStorage::InIndex, &[], usize::MAX, &|| {
-            false
-        })
+        .prepare_text_book_fast(&meta, &text, TextStorage::InIndex, &[], policy, &|| false)
         .unwrap();
     let mut spilled = engine
-        .prepare_text_book_fast(&meta, &text, TextStorage::InIndex, &[], 1, &|| false)
+        .prepare_text_book_fast(
+            &meta,
+            &text,
+            TextStorage::InIndex,
+            &[],
+            PreparationPolicy {
+                document_bytes: 1,
+                ..policy
+            },
+            &|| false,
+        )
         .unwrap();
     assert!(spilled.spooled_documents.is_some());
     let mut actual = Vec::new();
@@ -749,5 +764,8 @@ fn normal_fast_preparation_has_byte_and_line_safety_caps_and_document_spill() {
             .collect::<Vec<_>>()
     );
     engine.set_economy_indexing(true).unwrap();
-    assert!(!engine.normal_fast_preparation("a\nb"));
+    assert!(!SearchEngine::normal_fast_preparation(
+        "a\nb",
+        engine.library_preparation_policy()
+    ));
 }

@@ -2,7 +2,7 @@
 //!
 //! Tantivy's allocations are infallible: when the OS refuses one, Rust aborts the whole
 //! host process (`handle_alloc_error`, 0xc0000409 on Windows). The engine cannot catch that,
-//! so it must not start work whose footprint the machine cannot back.
+//! so the engine uses available memory to size work before starting it.
 
 /// What the process can still allocate, in bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,16 +21,16 @@ pub(crate) struct WriterBudget {
 /// The writer's arenas take at most this share of the available memory: segment
 /// serialization roughly doubles them, and searches, SQLite and the UI share the rest.
 const WRITER_SHARE_OF_AVAILABLE: u64 = 8;
-/// Never below the economy budget, which tantivy runs with on any machine.
-pub(crate) const MIN_WRITER_HEAP: usize = 50_000_000;
+/// The minimum per-thread memory budget accepted by Tantivy.
+const MIN_WRITER_HEAP: usize = 15_000_000;
 /// Smaller arenas flush tiny segments; tantivy itself needs 15MB per thread.
 const MIN_HEAP_PER_THREAD: usize = 25_000_000;
 /// Default merge concurrency in tantivy; each running merge needs its own memory.
 const MAX_MERGE_THREADS: usize = 4;
 const AVAILABLE_PER_MERGE_THREAD: u64 = 2 << 30;
-/// Heap a merge needs per document: doc-id maps and fieldnorms (measured 14-26 bytes,
-/// see `tests/indexing_memory_probe.rs`), with room for readers and bitsets.
-pub(crate) const MERGE_BYTES_PER_DOC: u64 = 64;
+/// Estimated heap per input document for doc-id maps, fieldnorms and related buffers.
+/// Merge memory also depends on the contents and number of the input segments.
+const MERGE_BYTES_PER_DOC: u64 = 64;
 /// One merge may take at most this share of the available memory.
 const MERGE_SHARE_OF_AVAILABLE: u64 = 4;
 
@@ -39,15 +39,18 @@ pub(crate) fn writer_budget(
     max_threads: usize,
     economy: bool,
     memory: Option<SystemMemory>,
-) -> WriterBudget {
+) -> Option<WriterBudget> {
     let heap_bytes = match memory {
         Some(memory) => {
             let share =
                 usize::try_from(memory.available / WRITER_SHARE_OF_AVAILABLE).unwrap_or(usize::MAX);
-            ceiling_heap.min(share.max(MIN_WRITER_HEAP))
+            ceiling_heap.min(share)
         }
         None => ceiling_heap,
     };
+    if heap_bytes < MIN_WRITER_HEAP {
+        return None;
+    }
     let threads = max_threads.min(heap_bytes / MIN_HEAP_PER_THREAD).max(1);
     let merge_threads = match memory {
         _ if economy => 1,
@@ -56,11 +59,11 @@ pub(crate) fn writer_budget(
             .clamp(1, MAX_MERGE_THREADS),
         None => MAX_MERGE_THREADS,
     };
-    WriterBudget {
+    Some(WriterBudget {
         heap_bytes,
         threads,
         merge_threads,
-    }
+    })
 }
 
 /// The most documents one merge may combine now; `u64::MAX` when memory is unknown.
@@ -79,9 +82,7 @@ pub(crate) fn preparation_workers(
     match memory {
         Some(memory) if reservation > 0 => {
             let fit = memory.available / 4 / reservation as u64;
-            workers
-                .min(usize::try_from(fit).unwrap_or(usize::MAX))
-                .max(1)
+            workers.min(usize::try_from(fit).unwrap_or(usize::MAX))
         }
         _ => workers,
     }
@@ -187,14 +188,10 @@ pub(crate) fn system_memory() -> Option<SystemMemory> {
         ..Default::default()
     };
     // SAFETY: `status` is a properly sized MEMORYSTATUSEX with `length` set.
-    if unsafe { windows::GlobalMemoryStatusEx(&mut status) } == 0 || status.total_phys == 0 {
-        return None;
-    }
-    // An allocation fails when the commit limit is reached, not when RAM is full.
-    let mut available = status.avail_phys.min(status.avail_page_file);
-    if let Some(job_room) = job_commit_room() {
-        available = available.min(job_room);
-    }
+    let ok = unsafe { windows::GlobalMemoryStatusEx(&mut status) } != 0;
+    let host =
+        (ok && status.total_phys != 0).then_some(status.avail_phys.min(status.avail_page_file));
+    let available = host.into_iter().chain(job_commit_room()).min()?;
     Some(SystemMemory { available })
 }
 
@@ -210,20 +207,21 @@ fn job_commit_room() -> Option<u64> {
     if !windows::query_job(EXTENDED_LIMIT_INFORMATION, &mut limits) {
         return None;
     }
-    let process_used = process_commit().unwrap_or(0);
     let mut room = None::<u64>;
     if limits.limit_flags & LIMIT_PROCESS_MEMORY != 0 {
-        room = Some((limits.process_memory_limit as u64).saturating_sub(process_used));
+        room = Some(process_commit().map_or(0, |used| {
+            (limits.process_memory_limit as u64).saturating_sub(used)
+        }));
     }
     if limits.limit_flags & LIMIT_JOB_MEMORY != 0 {
-        // The whole job's commit; older Windows without class 28 report only this process's.
+        // With a known job limit and unavailable usage, the other processes may have
+        // consumed all the headroom. Do not substitute this process's private commit.
         let mut usage = windows::JobMemoryUsage::default();
-        let job_used = if windows::query_job(MEMORY_USAGE_INFORMATION, &mut usage) {
-            usage.job_memory
+        let job_room = if windows::query_job(MEMORY_USAGE_INFORMATION, &mut usage) {
+            (limits.job_memory_limit as u64).saturating_sub(usage.job_memory)
         } else {
-            process_used
+            0
         };
-        let job_room = (limits.job_memory_limit as u64).saturating_sub(job_used);
         room = Some(room.map_or(job_room, |process_room| process_room.min(job_room)));
     }
     room
@@ -244,22 +242,18 @@ fn process_commit() -> Option<u64> {
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub(crate) fn system_memory() -> Option<SystemMemory> {
-    let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
-    let mut available = meminfo_available(&meminfo)?;
-    let group = std::fs::read_to_string("/proc/self/cgroup")
+    let host = std::fs::read_to_string("/proc/meminfo")
         .ok()
-        .and_then(|text| cgroup_v2_path(&text).map(str::to_owned))
-        .unwrap_or_default();
-    let read = |name: &str| {
-        std::fs::read_to_string(format!("/sys/fs/cgroup{group}/{name}")).unwrap_or_default()
-    };
-    if let Some(room) = cgroup_room(
-        &read("memory.max"),
-        &read("memory.current"),
-        &read("memory.stat"),
-    ) {
-        available = available.min(room);
-    }
+        .and_then(|meminfo| meminfo_available(&meminfo));
+    let cgroup = std::fs::read_to_string("/proc/self/cgroup")
+        .ok()
+        .and_then(|cgroup| {
+            let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
+            cgroup_v2_room(&cgroup, &mountinfo, |path| {
+                std::fs::read_to_string(path).ok()
+            })
+        });
+    let available = host.into_iter().chain(cgroup).min()?;
     Some(SystemMemory { available })
 }
 
@@ -275,27 +269,83 @@ fn meminfo_available(meminfo: &str) -> Option<u64> {
         .map(|kib| kib << 10)
 }
 
-/// The process's cgroup v2 path (the `0::` line of `/proc/self/cgroup`), "" for the root.
-#[cfg(any(target_os = "linux", target_os = "android", test))]
+/// The process's cgroup v2 path in its cgroup namespace.
+#[cfg(any(target_os = "linux", target_os = "android", all(test, unix)))]
 fn cgroup_v2_path(proc_self_cgroup: &str) -> Option<&str> {
     proc_self_cgroup
         .lines()
         .find_map(|line| line.strip_prefix("0::"))
-        .map(|path| path.trim().trim_end_matches('/'))
 }
 
-/// Room left under `memory.max`. Reclaimable page cache (`inactive_file`, as Docker
-/// counts it) is not usage: reading the library would otherwise leave no room at all.
+/// Translate the cgroup namespace path through each cgroup2 mount. A parent's
+/// charge includes siblings, so its remaining room can be less than the leaf's.
+#[cfg(any(target_os = "linux", target_os = "android", all(test, unix)))]
+fn cgroup_v2_room(
+    cgroup: &str,
+    mountinfo: &str,
+    read: impl Fn(&std::path::Path) -> Option<String>,
+) -> Option<u64> {
+    use std::path::{Component, Path, PathBuf};
+
+    fn valid(path: &Path) -> bool {
+        path.is_absolute() && !path.components().any(|part| part == Component::ParentDir)
+    }
+
+    fn mount_path(field: &str) -> PathBuf {
+        PathBuf::from(
+            field
+                .replace("\\040", " ")
+                .replace("\\011", "\t")
+                .replace("\\012", "\n")
+                .replace("\\134", "\\"),
+        )
+    }
+
+    let group = Path::new(cgroup_v2_path(cgroup)?);
+    if !valid(group) {
+        return None;
+    }
+    mountinfo
+        .lines()
+        .filter_map(|line| {
+            let (mount, filesystem) = line.split_once(" - ")?;
+            if filesystem.split_whitespace().next()? != "cgroup2" {
+                return None;
+            }
+            let mut fields = mount.split_whitespace().skip(3);
+            let root = mount_path(fields.next()?);
+            let point = mount_path(fields.next()?);
+            if !valid(&root) || !valid(&point) {
+                return None;
+            }
+            let leaf = point.join(group.strip_prefix(&root).ok()?);
+            leaf.ancestors()
+                .take_while(|dir| dir.starts_with(&point))
+                .filter_map(|dir| {
+                    let limit = read(&dir.join("memory.max"))?.trim().parse().ok()?;
+                    let Some(current) = read(&dir.join("memory.current"))
+                        .and_then(|value| value.trim().parse().ok())
+                    else {
+                        return Some(0);
+                    };
+                    let stat = read(&dir.join("memory.stat")).unwrap_or_default();
+                    Some(cgroup_room(limit, current, &stat))
+                })
+                .min()
+        })
+        .min()
+}
+
+/// Reclaimable page cache (`inactive_file`, as Docker counts it) is not usage.
 #[cfg(any(target_os = "linux", target_os = "android", test))]
-fn cgroup_room(max: &str, current: &str, stat: &str) -> Option<u64> {
-    let limit: u64 = max.trim().parse().ok()?;
-    let current: u64 = current.trim().parse().unwrap_or(0);
+fn cgroup_room(limit: u64, current: u64, stat: &str) -> u64 {
     let inactive_file = stat
         .lines()
         .find_map(|line| line.strip_prefix("inactive_file "))
         .and_then(|value| value.trim().parse::<u64>().ok())
         .unwrap_or(0);
-    Some(limit.saturating_sub(current.saturating_sub(inactive_file)))
+    // A cache measurement larger than the total charge is an inconsistent sample.
+    limit.saturating_sub(current.checked_sub(inactive_file).unwrap_or(current))
 }
 
 #[cfg(not(any(windows, target_os = "linux", target_os = "android")))]
@@ -314,60 +364,99 @@ mod tests {
     }
 
     #[test]
-    fn writer_heap_follows_available_memory_between_the_floor_and_ceiling() {
+    fn writer_heap_follows_available_memory_up_to_the_ceiling() {
         let ceiling = 300_000_000;
-        assert_eq!(writer_budget(ceiling, 5, false, None).heap_bytes, ceiling);
         assert_eq!(
-            writer_budget(ceiling, 5, false, memory(16 * GIB)).heap_bytes,
+            writer_budget(ceiling, 5, false, None).unwrap().heap_bytes,
             ceiling
         );
         assert_eq!(
-            writer_budget(ceiling, 5, false, memory(GIB)).heap_bytes,
+            writer_budget(ceiling, 5, false, memory(16 * GIB))
+                .unwrap()
+                .heap_bytes,
+            ceiling
+        );
+        assert_eq!(
+            writer_budget(ceiling, 5, false, memory(GIB))
+                .unwrap()
+                .heap_bytes,
             (GIB / 8) as usize
         );
+        assert_eq!(writer_budget(ceiling, 5, false, memory(0)), None);
+        assert_eq!(writer_budget(ceiling, 5, false, memory(100 << 20)), None);
         assert_eq!(
-            writer_budget(ceiling, 5, false, memory(100 << 20)).heap_bytes,
-            MIN_WRITER_HEAP
+            writer_budget(ceiling, 5, false, memory(8 * MIN_WRITER_HEAP as u64)).unwrap(),
+            WriterBudget {
+                heap_bytes: MIN_WRITER_HEAP,
+                threads: 1,
+                merge_threads: 1
+            }
         );
-        // The economy budget is already the floor; memory never raises it.
+        let economy_ceiling = 50_000_000;
         assert_eq!(
-            writer_budget(MIN_WRITER_HEAP, 1, true, memory(16 * GIB)).heap_bytes,
-            MIN_WRITER_HEAP
+            writer_budget(economy_ceiling, 1, true, memory(16 * GIB))
+                .unwrap()
+                .heap_bytes,
+            economy_ceiling
         );
     }
 
     #[test]
     fn writer_threads_keep_a_useful_arena_each() {
-        assert_eq!(writer_budget(300_000_000, 8, false, None).threads, 8);
-        assert_eq!(writer_budget(300_000_000, 5, false, memory(GIB)).threads, 5);
         assert_eq!(
-            writer_budget(300_000_000, 8, false, memory(512 << 20)).threads,
+            writer_budget(300_000_000, 8, false, None).unwrap().threads,
+            8
+        );
+        assert_eq!(
+            writer_budget(300_000_000, 5, false, memory(GIB))
+                .unwrap()
+                .threads,
+            5
+        );
+        assert_eq!(
+            writer_budget(300_000_000, 8, false, memory(512 << 20))
+                .unwrap()
+                .threads,
             2
         );
-        assert_eq!(writer_budget(MIN_WRITER_HEAP, 1, true, None).threads, 1);
-        for available in [0, 1 << 20, GIB, 64 * GIB] {
-            let budget = writer_budget(300_000_000, 8, false, memory(available));
-            assert!(budget.heap_bytes / budget.threads >= 15_000_000);
+        assert_eq!(writer_budget(50_000_000, 1, true, None).unwrap().threads, 1);
+        for available in [128 << 20, GIB, 64 * GIB] {
+            let budget = writer_budget(300_000_000, 8, false, memory(available)).unwrap();
+            assert!(budget.heap_bytes / budget.threads >= MIN_WRITER_HEAP);
+            assert!(budget.heap_bytes as u64 <= available / WRITER_SHARE_OF_AVAILABLE);
         }
     }
 
     #[test]
     fn merge_concurrency_shrinks_with_available_memory() {
-        assert_eq!(writer_budget(300_000_000, 5, false, None).merge_threads, 4);
         assert_eq!(
-            writer_budget(300_000_000, 5, false, memory(32 * GIB)).merge_threads,
+            writer_budget(300_000_000, 5, false, None)
+                .unwrap()
+                .merge_threads,
             4
         );
         assert_eq!(
-            writer_budget(300_000_000, 5, false, memory(5 * GIB)).merge_threads,
+            writer_budget(300_000_000, 5, false, memory(32 * GIB))
+                .unwrap()
+                .merge_threads,
+            4
+        );
+        assert_eq!(
+            writer_budget(300_000_000, 5, false, memory(5 * GIB))
+                .unwrap()
+                .merge_threads,
             2
         );
         assert_eq!(
-            writer_budget(300_000_000, 5, false, memory(GIB)).merge_threads,
+            writer_budget(300_000_000, 5, false, memory(GIB))
+                .unwrap()
+                .merge_threads,
             1
         );
         assert_eq!(
-            writer_budget(MIN_WRITER_HEAP, 1, true, None).merge_threads,
+            writer_budget(50_000_000, 1, true, None)
+                .unwrap()
+                .merge_threads,
             1
         );
     }
@@ -387,14 +476,7 @@ mod tests {
         assert_eq!(preparation_workers(4, reservation, None), 4);
         assert_eq!(preparation_workers(4, reservation, memory(8 * GIB)), 4);
         assert_eq!(preparation_workers(4, reservation, memory(GIB)), 2);
-        assert_eq!(preparation_workers(4, reservation, memory(0)), 1);
-    }
-
-    #[test]
-    fn the_running_system_reports_plausible_memory() {
-        if let Some(memory) = system_memory() {
-            assert!(memory.available > 0);
-        }
+        assert_eq!(preparation_workers(4, reservation, memory(0)), 0);
     }
 
     #[test]
@@ -402,23 +484,58 @@ mod tests {
         let stat = "anon 104857600\nfile 3221225472\ninactive_file 3000000000\nactive_file 1\n";
         // 4GB limit, 3.3GB charged, of which 3GB is the library's inactive page cache.
         assert_eq!(
-            cgroup_room("4294967296\n", "3326083072\n", stat),
-            Some(4_294_967_296 - (3_326_083_072 - 3_000_000_000))
+            cgroup_room(4_294_967_296, 3_326_083_072, stat),
+            4_294_967_296 - (3_326_083_072 - 3_000_000_000)
         );
-        assert_eq!(cgroup_room("max\n", "3326083072\n", stat), None);
-        assert_eq!(cgroup_room("", "", ""), None);
-        assert_eq!(cgroup_room("1000", "5000", ""), Some(0));
-        assert_eq!(cgroup_room("1000", "", ""), Some(1000));
+        assert_eq!(cgroup_room(1000, 5000, ""), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cgroup_budget_uses_the_restrictive_ancestor_and_cgroup_mount_root() {
+        let mountinfo = "21 0 0:6 / /unrelated rw - tmpfs tmpfs rw\n\
+                         22 0 0:8 /slice /mount\\040point rw - cgroup2 none rw\n";
+        let read = |path: &std::path::Path| {
+            match path.to_str()? {
+                "/mount point/parent/leaf/memory.max" => Some("max"),
+                "/mount point/parent/memory.max" => Some("536870912"),
+                "/mount point/parent/memory.current" => Some("503316480"),
+                "/mount point/memory.max" => Some("1073741824"),
+                "/mount point/memory.current" => Some("503316480"),
+                _ => None,
+            }
+            .map(str::to_owned)
+        };
+        assert_eq!(
+            cgroup_v2_room("0::/slice/parent/leaf", mountinfo, read),
+            Some(32 << 20)
+        );
+        assert_eq!(
+            cgroup_v2_room("0::/slice/parent/leaf", mountinfo, |path| {
+                if path.ends_with("memory.current") {
+                    None
+                } else {
+                    read(path)
+                }
+            }),
+            Some(0)
+        );
+        assert_eq!(
+            cgroup_v2_room("0::/slice/../leaf", mountinfo, |_| panic!()),
+            None
+        );
+        assert_eq!(
+            cgroup_v2_room("0::/different", mountinfo, |_| panic!()),
+            None
+        );
+        assert_eq!(
+            cgroup_v2_room("12:memory:/legacy", mountinfo, |_| panic!()),
+            None
+        );
     }
 
     #[test]
-    fn cgroup_v2_path_and_meminfo_are_parsed() {
-        assert_eq!(
-            cgroup_v2_path("0::/system.slice/otzaria.service\n"),
-            Some("/system.slice/otzaria.service")
-        );
-        assert_eq!(cgroup_v2_path("0::/\n"), Some(""));
-        assert_eq!(cgroup_v2_path("12:memory:/legacy\n"), None);
+    fn meminfo_is_parsed() {
         assert_eq!(
             meminfo_available("MemTotal:  8000000 kB\nMemAvailable:  2048 kB\n"),
             Some(2048 << 10)

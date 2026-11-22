@@ -56,6 +56,7 @@ use crate::highlight_cache::{DisplayPattern, HighlightCache};
 use crate::highlight_matcher as display_highlight_matcher;
 use crate::id_lookup::IdSetQuery;
 use crate::index_directory::{atomic_replace, IndexDirectory};
+use crate::indexing_buffers::PreparationPolicy;
 use crate::lexical_cancellation::LexicalCancellations;
 #[cfg(any(feature = "flutter-bridge", test))]
 use crate::lexical_cancellation::LexicalRequest;
@@ -9133,13 +9134,14 @@ impl SearchEngine {
         text_storage: TextStorage,
         stored_lines: &[u32],
     ) -> Result<PreparedTextBook> {
-        if self.normal_fast_preparation(text) {
+        let policy = self.admit_indexing_preparation()?;
+        if Self::normal_fast_preparation(text, policy) {
             return self.prepare_text_book_fast(
                 book,
                 text,
                 text_storage,
                 stored_lines,
-                self.library_preparation_policy().document_bytes,
+                policy,
                 &|| false,
             );
         }
@@ -9162,7 +9164,7 @@ impl SearchEngine {
             content_fingerprint(text),
             text_storage,
             &mut stored,
-            self.library_preparation_policy().document_bytes,
+            policy,
             &|| false,
         )
     }
@@ -9173,19 +9175,19 @@ impl SearchEngine {
         text: &mut crate::indexing_buffers::TextBuffer,
         text_storage: TextStorage,
         stored_lines: &mut crate::indexing_buffers::OrdinalBuffer,
-        document_budget: usize,
+        policy: PreparationPolicy,
         stop: &dyn Fn() -> bool,
     ) -> Result<PreparedTextBook> {
         use std::io::Read;
         if let Some(source) = text.as_str()? {
-            if self.normal_fast_preparation(source) {
+            if Self::normal_fast_preparation(source, policy) {
                 let stored: Vec<u32> = stored_lines.iter()?.collect::<Result<_>>()?;
                 return self.prepare_text_book_fast(
                     book,
                     source,
                     text_storage,
                     &stored,
-                    document_budget,
+                    policy,
                     stop,
                 );
             }
@@ -9227,16 +9229,16 @@ impl SearchEngine {
             text_hash.finish(),
             text_storage,
             &mut stored,
-            document_budget,
+            policy,
             stop,
         )
     }
 
     // Bound the original full-book parallel preparation by both bytes and rows.
     // Oversized books retain the streaming safety path; economy always streams.
-    fn normal_fast_preparation(&self, text: &str) -> bool {
-        !self.economy_indexing
-            && text.len() <= self.library_preparation_policy().text_bytes
+    fn normal_fast_preparation(text: &str, policy: PreparationPolicy) -> bool {
+        policy.allow_full_book
+            && text.len() <= policy.text_bytes
             && text
                 .bytes()
                 .filter(|byte| *byte == b'\n')
@@ -9251,7 +9253,7 @@ impl SearchEngine {
         text: &str,
         text_storage: TextStorage,
         stored_lines: &[u32],
-        document_budget: usize,
+        policy: PreparationPolicy,
         stop: &dyn Fn() -> bool,
     ) -> Result<PreparedTextBook> {
         anyhow::ensure!(!stop(), "indexing preparation interrupted");
@@ -9363,9 +9365,8 @@ impl SearchEngine {
                 notes
             })
             .collect::<Result<Vec<_>>>()?;
-        let normalized: Vec<Prepared> = crate::indexing_buffers::preparation_cpu(
-            self.library_preparation_policy().cpu_threads,
-            || {
+        let normalized: Vec<Prepared> =
+            crate::indexing_buffers::preparation_cpu(policy.cpu_threads, || {
                 lines
                     .par_iter()
                     .enumerate()
@@ -9392,8 +9393,7 @@ impl SearchEngine {
                         },
                     )
                     .collect()
-            },
-        )?;
+            })?;
         let prepare_time = prepare_started.elapsed();
 
         // The key each line's vector is stored under: the production recipe over the text
@@ -9402,9 +9402,8 @@ impl SearchEngine {
         // absent.
         anyhow::ensure!(!stop(), "indexing preparation interrupted");
         let keys_started = Instant::now();
-        let chunk_keys: Vec<u64> = crate::indexing_buffers::preparation_cpu(
-            self.library_preparation_policy().cpu_threads,
-            || match chunk_key_f {
+        let chunk_keys: Vec<u64> =
+            crate::indexing_buffers::preparation_cpu(policy.cpu_threads, || match chunk_key_f {
                 Some(_) if semantic_keys::production_chunking().embedding_text_version != 4 => {
                     let lines: Vec<_> = normalized
                         .iter()
@@ -9442,8 +9441,7 @@ impl SearchEngine {
                     semantic_keys::column_values_with_notes(&lines, &notes)
                 }
                 None => Vec::new(),
-            },
-        )?;
+            })?;
         let keys_time = keys_started.elapsed();
         anyhow::ensure!(!stop(), "indexing preparation interrupted");
 
@@ -9503,7 +9501,8 @@ impl SearchEngine {
             let bytes = document.node_data.capacity()
                 + document.len() * 16
                 + std::mem::size_of::<TantivyDocument>();
-            if spooled_documents.is_none() && document_bytes.saturating_add(bytes) > document_budget
+            if spooled_documents.is_none()
+                && document_bytes.saturating_add(bytes) > policy.document_bytes
             {
                 let mut spool =
                     crate::indexing_buffers::DocumentSpool::new(&self.schema, &self.index_path)?;
@@ -9548,7 +9547,7 @@ impl SearchEngine {
         text_hash: u64,
         text_storage: TextStorage,
         stored_lines: &mut dyn Iterator<Item = Result<u32>>,
-        document_budget: usize,
+        policy: PreparationPolicy,
         stop: &dyn Fn() -> bool,
     ) -> Result<PreparedTextBook> {
         use rayon::prelude::*;
@@ -9616,7 +9615,6 @@ impl SearchEngine {
         let mut finished = false;
         let mut keys_time = std::time::Duration::ZERO;
         let reach = semantic_keys::production_chunking().context_window_lines;
-        let policy = self.library_preparation_policy();
         while !finished || previous < window.len() {
             anyhow::ensure!(!stop(), "indexing preparation interrupted");
             let mut raw_lines = Vec::new();
@@ -9780,7 +9778,7 @@ impl SearchEngine {
                     + document.len() * 16
                     + std::mem::size_of::<TantivyDocument>();
                 if spooled_documents.is_none()
-                    && document_bytes.saturating_add(bytes) > document_budget
+                    && document_bytes.saturating_add(bytes) > policy.document_bytes
                 {
                     let mut spool = crate::indexing_buffers::DocumentSpool::new(
                         &self.schema,
@@ -9838,9 +9836,9 @@ impl SearchEngine {
     ///
     /// Takes the engine by shared reference, so searches are not held up while the batch
     /// prepares; it needs an open writer ([`Self::open_index_writer`]). `cancel` stops the
-    /// batch before its next book. One result per input book, in order. An `Err` means
-    /// the writer failed: books of this batch may be in it, as after a failed
-    /// `add_text_book_bytes`.
+    /// batch before its next book. One result per input book, in order. Insufficient
+    /// memory can reject the batch before preparation. On a later writer error,
+    /// books of this batch may be in the writer, as after a failed `add_text_book_bytes`.
     pub fn add_library_books(
         &self,
         books: Vec<LibraryBookInput>,
@@ -9955,7 +9953,7 @@ impl SearchEngine {
         let stored_fields = self.stored_text_fields()?;
         let edge_fields = cross_line::EdgeFields::from_schema(&self.schema)?;
         let edge_analyzer = self.text_index_analyzer()?;
-        let preparation_threads = self.library_preparation_policy().cpu_threads;
+        let preparation_threads = self.admit_indexing_preparation()?.cpu_threads;
         let writer = self.writer_mut()?;
 
         // Normalize on the bounded indexing pool, then enqueue sequentially.
@@ -10276,24 +10274,23 @@ impl SearchEngine {
         &self.index_path
     }
 
-    pub(crate) fn library_preparation_policy(&self) -> crate::indexing_buffers::PreparationPolicy {
-        let mut policy = crate::indexing_buffers::PreparationPolicy::new(
+    pub(crate) fn library_preparation_policy(&self) -> PreparationPolicy {
+        PreparationPolicy::new(
             self.economy_indexing,
             std::thread::available_parallelism().map_or(1, |n| n.get()),
-        );
-        policy.book_workers = crate::memory_budget::preparation_workers(
-            policy.book_workers,
-            policy.reservation(),
-            crate::memory_budget::system_memory(),
-        );
-        policy
+        )
     }
 
-    /// Economy mode uses one preparation and one writer thread, small spilling buffers
-    /// and a 50MB writer. Normal mode limits CPU concurrency for foreground work and
-    /// adapts preparation workers to available CPUs and platform. At most four workers
-    /// reserve 384 MiB of source/document buffers, excluding normalized text, SQLite
-    /// and the writer; this is not a process RSS limit. Bulk merge policy is independent.
+    pub(crate) fn admit_indexing_preparation(&self) -> Result<PreparationPolicy> {
+        self.library_preparation_policy()
+            .limited_by(crate::memory_budget::system_memory())
+            .context("not enough available memory to prepare books for indexing")
+    }
+
+    /// Economy mode uses one preparation, writer and merge thread, small spilling buffers
+    /// and a writer budget of up to 50MB. Normal mode adapts preparation workers to the
+    /// available CPUs, platform and memory. At most four workers reserve 384 MiB of
+    /// source/document buffers, excluding normalized text, SQLite and the writer.
     /// Live writer changes commit pending documents before replacement.
     pub fn set_economy_indexing(&mut self, enabled: bool) -> Result<()> {
         self.ensure_write_access()?;
@@ -10310,7 +10307,7 @@ impl SearchEngine {
         } else {
             DEFAULT_WRITER_HEAP_SIZE
         };
-        if target != self.writer_heap_size {
+        if enabled != self.economy_indexing {
             if let Some(mut writer) = self.index_writer.take() {
                 if let Err(error) = writer.commit() {
                     self.index_writer = Some(writer);
@@ -10780,8 +10777,9 @@ impl SearchEngine {
     /// first (only committed segments take part in manual merges); then the
     /// searchable segments are brought toward `MAX_SEGMENTS_AFTER_OPTIMIZE`
     /// by merging similarly sized small segments. The target may be exceeded
-    /// when its only alternative is rewriting a much larger healthy segment.
-    /// Segments with a high deleted-doc share are compacted independently.
+    /// when available memory is low or its only alternative is rewriting a much
+    /// larger healthy segment. Segments with a high deleted-doc share are compacted
+    /// independently when they fit the merge budget. Bulk indexing skips the merge budget.
     pub fn optimize(&mut self) -> Result<()> {
         self.ensure_write_access()?;
         let started = Instant::now();
@@ -13154,7 +13152,8 @@ impl SearchEngine {
             threads,
             self.economy_indexing,
             crate::memory_budget::system_memory(),
-        );
+        )
+        .context("not enough available memory to open the index writer")?;
         info!("writer: {budget:?}");
         let writer = self.index.writer_with_options(
             tantivy::indexer::IndexWriterOptions::builder()
@@ -13187,10 +13186,19 @@ impl SearchEngine {
             let sized_metas = sized_segment_metas(&self.index_path, metas)?;
             let max_docs =
                 crate::memory_budget::merge_doc_limit(crate::memory_budget::system_memory());
-            let bounded = select_segments_to_compact(&sized_metas, max_docs);
-            let unbounded = select_segments_to_compact(&sized_metas, u64::MAX);
-            if bounded != unbounded && (self.bulk_indexing || bounded.is_none()) {
-                // A release build (bulk) has the memory and needs the full compaction.
+            let selection_limit = if self.bulk_indexing {
+                u64::MAX
+            } else {
+                max_docs
+            };
+            let choice = select_segments_to_compact(&sized_metas, selection_limit);
+            let exceeded_budget = max_docs != u64::MAX
+                && if self.bulk_indexing {
+                    choice.is_some() && choice != select_segments_to_compact(&sized_metas, max_docs)
+                } else {
+                    choice.is_none() && select_segments_to_compact(&sized_metas, u64::MAX).is_some()
+                };
+            if exceeded_budget {
                 warn!(
                     "optimize: the next merge exceeds the memory limit of {max_docs} docs; {}",
                     if self.bulk_indexing {
@@ -13200,11 +13208,6 @@ impl SearchEngine {
                     }
                 );
             }
-            let choice = if self.bulk_indexing {
-                unbounded
-            } else {
-                bounded
-            };
             let Some(merge_ids) = choice else {
                 debug!(
                     "optimize: {} segments, nothing to compact within {max_docs} docs",
@@ -19917,33 +19920,10 @@ impl MergePolicy for SizeAwareMergePolicy {
             }
         };
         let max_docs = crate::memory_budget::merge_doc_limit(crate::memory_budget::system_memory());
-        select_smallest_level(&sized)
-            .and_then(|ids| within_doc_limit(&sized, ids, max_docs))
+        select_smallest_level(&sized, max_docs)
             .map(|ids| vec![MergeCandidate(ids)])
             .unwrap_or_default()
     }
-}
-
-/// The leading segments of `ids` (smallest first) whose documents fit in `max_docs`, or
-/// `None` when fewer than two do: a merge's heap grows with its document count.
-fn within_doc_limit(
-    sized_metas: &[(u64, SegmentMeta)],
-    ids: Vec<SegmentId>,
-    max_docs: u64,
-) -> Option<Vec<SegmentId>> {
-    let mut docs = 0u64;
-    let kept: Vec<SegmentId> = ids
-        .into_iter()
-        .take_while(|id| {
-            let meta_docs = sized_metas
-                .iter()
-                .find(|(_, meta)| meta.id() == *id)
-                .map_or(0, |(_, meta)| u64::from(meta.max_doc()));
-            docs = docs.saturating_add(meta_docs);
-            docs <= max_docs
-        })
-        .collect();
-    (kept.len() >= 2).then_some(kept)
 }
 
 /// Pick one merge at a time. Reclaim a delete-heavy segment on its own, then
@@ -19966,8 +19946,7 @@ fn select_segments_to_compact(
         return Some(vec![meta.id()]);
     }
 
-    select_level_to_compact(sized_metas)
-        .and_then(|ids| within_doc_limit(sized_metas, ids, max_docs))
+    select_level_to_compact(sized_metas, max_docs)
 }
 
 fn sorted_by_size(sized_metas: &[(u64, SegmentMeta)]) -> Vec<&(u64, SegmentMeta)> {
@@ -20002,15 +19981,45 @@ fn size_levels(by_size: &[&(u64, SegmentMeta)]) -> Vec<Range<usize>> {
 /// alternative is rewriting the same data over several rounds of the loop.
 fn take_from_level(
     total: usize,
-    by_size: &[&(u64, SegmentMeta)],
-    level: Range<usize>,
-) -> Vec<SegmentId> {
-    let room = total - MAX_SEGMENTS_AFTER_OPTIMIZE + 1;
-    let take = level.len().min(room);
-    by_size[level.start..level.start + take]
-        .iter()
-        .map(|(_, meta)| meta.id())
-        .collect()
+    level: &[&(u64, SegmentMeta)],
+    max_docs: u64,
+) -> Option<Vec<SegmentId>> {
+    if level.len() < 2 {
+        return None;
+    }
+    let max_segments = total - MAX_SEGMENTS_AFTER_OPTIMIZE + 1;
+    if max_docs == u64::MAX {
+        return Some(
+            level
+                .iter()
+                .take(max_segments)
+                .map(|(_, meta)| meta.id())
+                .collect(),
+        );
+    }
+
+    // Start with the smallest on-disk segment that has a feasible partner.
+    // Starting with any earlier segment could rule out every merge in this level.
+    let mut smallest_later_doc_count = u64::MAX;
+    let mut first = None;
+    for (offset, (_, meta)) in level.iter().enumerate().rev() {
+        let docs = u64::from(meta.max_doc());
+        if smallest_later_doc_count <= max_docs && docs <= max_docs - smallest_later_doc_count {
+            first = Some(offset);
+        }
+        smallest_later_doc_count = smallest_later_doc_count.min(docs);
+    }
+    let mut remaining = max_docs;
+    Some(
+        level[first?..]
+            .iter()
+            .filter_map(|(_, meta)| {
+                remaining = remaining.checked_sub(u64::from(meta.max_doc()))?;
+                Some(meta.id())
+            })
+            .take(max_segments)
+            .collect(),
+    )
 }
 
 /// What the writer merges on its own, in a background thread, while someone is
@@ -20018,13 +20027,16 @@ fn take_from_level(
 /// combine. Nothing above that level is ever rewritten unasked — a user who
 /// adds a book to a library of large segments would otherwise pay gigabytes of
 /// rewriting for it, which is the property #21 added.
-fn select_smallest_level(sized_metas: &[(u64, SegmentMeta)]) -> Option<Vec<SegmentId>> {
+fn select_smallest_level(
+    sized_metas: &[(u64, SegmentMeta)],
+    max_docs: u64,
+) -> Option<Vec<SegmentId>> {
     if sized_metas.len() <= MAX_SEGMENTS_AFTER_OPTIMIZE {
         return None;
     }
     let by_size = sorted_by_size(sized_metas);
     let smallest = size_levels(&by_size).into_iter().next()?;
-    (smallest.len() >= 2).then(|| take_from_level(sized_metas.len(), &by_size, smallest))
+    take_from_level(sized_metas.len(), &by_size[smallest], max_docs)
 }
 
 /// What `optimize` compacts when it is asked to, which is more than the
@@ -20039,7 +20051,10 @@ fn select_smallest_level(sized_metas: &[(u64, SegmentMeta)]) -> Option<Vec<Segme
 /// index can settle above the target. That is deliberate: the alternative is
 /// rewriting healthy large segments to retire one or two, and `optimize`
 /// documents its target as soft for exactly that reason.
-fn select_level_to_compact(sized_metas: &[(u64, SegmentMeta)]) -> Option<Vec<SegmentId>> {
+fn select_level_to_compact(
+    sized_metas: &[(u64, SegmentMeta)],
+    max_docs: u64,
+) -> Option<Vec<SegmentId>> {
     if sized_metas.len() <= MAX_SEGMENTS_AFTER_OPTIMIZE {
         return None;
     }
@@ -20051,7 +20066,9 @@ fn select_level_to_compact(sized_metas: &[(u64, SegmentMeta)]) -> Option<Vec<Seg
             level.len() > MAX_SEGMENTS_AFTER_OPTIMIZE
         };
         if worth_rewriting {
-            return Some(take_from_level(sized_metas.len(), &by_size, level));
+            if let Some(ids) = take_from_level(sized_metas.len(), &by_size[level], max_docs) {
+                return Some(ids);
+            }
         }
     }
     None

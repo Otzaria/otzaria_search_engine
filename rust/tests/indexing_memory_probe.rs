@@ -242,14 +242,14 @@ fn probe_library_build_memory() {
             .unwrap();
         engine.commit().unwrap();
     }
-    let build_peak = PEAK.load(Ordering::Relaxed) - base;
+    let build_peak = PEAK.load(Ordering::Relaxed).saturating_sub(base);
     let build_ms = started.elapsed().as_millis();
     let segments_before = engine.get_segment_count().unwrap();
 
     let base = phase_start();
     let started = Instant::now();
     engine.optimize().unwrap();
-    let optimize_peak = PEAK.load(Ordering::Relaxed) - base;
+    let optimize_peak = PEAK.load(Ordering::Relaxed).saturating_sub(base);
     let optimize_ms = started.elapsed().as_millis();
     let docs = engine.get_document_count();
     if let Some(expected) = expected_docs {
@@ -258,12 +258,11 @@ fn probe_library_build_memory() {
     println!(
         "OTZARIA_PROBE docs={} bulk={bulk} economy={economy} build_peak_mb={:.0} build_ms={build_ms} \
          segments={segments_before}->{} optimize_peak_mb={:.0} optimize_ms={optimize_ms} \
-         optimize_bytes_per_doc={:.1} process_peak_commit_mb={:.0} process_peak_ws_mb={:.0}",
+         process_peak_commit_mb={:.0} process_peak_ws_mb={:.0}",
         docs,
         mb(build_peak),
         engine.get_segment_count().unwrap(),
         mb(optimize_peak),
-        optimize_peak as f64 / docs as f64,
         mb(process_peaks().0),
         mb(process_peaks().1),
     );

@@ -73,7 +73,10 @@ fn spooled_text_book_is_enqueued_only_once() {
             &mut text,
             TextStorage::InIndex,
             &mut stored,
-            1,
+            PreparationPolicy {
+                document_bytes: 1,
+                ..engine.library_preparation_policy()
+            },
             &|| false,
         )
         .unwrap();
@@ -3136,12 +3139,15 @@ fn the_background_writer_merges_only_the_smallest_level() {
     // המדיניות הקיימות עוצרות סגמנט אחד לפניו, ובו נמדדת ההבטחה של #21
     // על מכונת המשתמש: ברקע לא נכתב כאן דבר מחדש.
     assert_eq!(
-        chosen(select_smallest_level(&nine_large_behind_one_tiny)),
+        chosen(select_smallest_level(&nine_large_behind_one_tiny, u64::MAX)),
         0
     );
     // optimize, כשמבקשים ממנו במפורש, כן מכווץ את אותה רמה.
     assert_eq!(
-        chosen(select_level_to_compact(&nine_large_behind_one_tiny)),
+        chosen(select_level_to_compact(
+            &nine_large_behind_one_tiny,
+            u64::MAX
+        )),
         3
     );
 
@@ -3154,8 +3160,8 @@ fn the_background_writer_merges_only_the_smallest_level() {
     ] {
         let metas = sized(&engine, &sizes);
         assert_eq!(
-            chosen(select_smallest_level(&metas)),
-            chosen(select_level_to_compact(&metas)),
+            chosen(select_smallest_level(&metas, u64::MAX)),
+            chosen(select_level_to_compact(&metas, u64::MAX)),
             "the two disagree on a smallest level that can merge: {sizes:?}"
         );
     }
@@ -3181,12 +3187,7 @@ fn a_merge_never_combines_more_documents_than_memory_allows() {
     // סגמנט יחיד אינו מיזוג: כשרק אחד נכנס במגבלה — לא ממזגים כלל.
     assert_eq!(chosen(select_segments_to_compact(&metas, 1_999_999)), 0);
     assert_eq!(chosen(select_segments_to_compact(&metas, 0)), 0);
-    let kept = within_doc_limit(
-        &metas,
-        metas.iter().map(|(_, meta)| meta.id()).collect(),
-        4_000_000,
-    )
-    .unwrap();
+    let kept = select_level_to_compact(&metas, 4_000_000).unwrap();
     assert_eq!(
         kept,
         metas[..4]
@@ -3197,12 +3198,46 @@ fn a_merge_never_combines_more_documents_than_memory_allows() {
 }
 
 #[test]
+fn merges_skip_segments_without_partners_inside_the_budget() {
+    let (engine, _dir) = make_engine();
+    let mut metas: Vec<_> = (0..12)
+        .map(|i| {
+            let docs = if i < 2 { 1_800_000 } else { 1_000_000 };
+            (
+                100 + i,
+                engine
+                    .index
+                    .new_segment_meta(SegmentId::generate_random(), docs),
+            )
+        })
+        .collect();
+    let expected = vec![metas[2].1.id(), metas[3].1.id()];
+    assert_eq!(
+        select_smallest_level(&metas, 2_000_000),
+        Some(expected.clone())
+    );
+    assert_eq!(
+        select_segments_to_compact(&metas, 2_000_000),
+        Some(expected.clone())
+    );
+
+    for (bytes, _) in &mut metas[2..] {
+        *bytes *= 5;
+    }
+    assert_eq!(select_smallest_level(&metas, 2_000_000), None);
+    assert_eq!(
+        select_segments_to_compact(&metas, 2_000_000),
+        Some(expected)
+    );
+}
+
+#[test]
 fn neither_selector_merges_at_or_below_the_target() {
     let (engine, _dir) = make_engine();
     for count in 0..=MAX_SEGMENTS_AFTER_OPTIMIZE {
         let metas = sized(&engine, &vec![100; count]);
-        assert_eq!(chosen(select_smallest_level(&metas)), 0);
-        assert_eq!(chosen(select_level_to_compact(&metas)), 0);
+        assert_eq!(chosen(select_smallest_level(&metas, u64::MAX)), 0);
+        assert_eq!(chosen(select_level_to_compact(&metas, u64::MAX)), 0);
     }
 }
 
@@ -3217,8 +3252,8 @@ fn a_compaction_never_takes_the_index_below_the_target() {
     ] {
         let metas = sized(&engine, &sizes);
         for candidate in [
-            select_smallest_level(&metas),
-            select_level_to_compact(&metas),
+            select_smallest_level(&metas, u64::MAX),
+            select_level_to_compact(&metas, u64::MAX),
         ] {
             let Some(ids) = candidate else { continue };
             // מיזוג של k סגמנטים מוריד k-1, ולעולם לא מתחת ליעד.
@@ -3267,7 +3302,7 @@ fn the_background_policy_leaves_nine_large_segments_behind_one_tiny_alone() {
     );
     // optimize, כשמבקשים ממנו במפורש, כן מכווץ את אותה רמה.
     assert_eq!(
-        select_level_to_compact(&sized).map_or(0, |ids| ids.len()),
+        select_level_to_compact(&sized, u64::MAX).map_or(0, |ids| ids.len()),
         3
     );
 }
@@ -3513,6 +3548,17 @@ fn economy_indexing_swaps_writer_without_losing_pending_docs() {
     assert_eq!(engine.writer_heap_size, DEFAULT_WRITER_HEAP_SIZE);
     engine.set_economy_indexing(false).unwrap();
     assert_eq!(engine.get_document_count(), 2);
+}
+
+#[test]
+fn economy_indexing_reopens_the_writer_with_an_unchanged_heap_ceiling() {
+    let (mut engine, _dir) = make_engine();
+    // Simulate the mobile heap ceiling in normal mode, too.
+    engine.writer_heap_size = ECONOMY_WRITER_HEAP_SIZE;
+    add(&mut engine, 1, "בראשית ברא", "/books/a.txt");
+    engine.set_economy_indexing(true).unwrap();
+    assert!(engine.economy_indexing);
+    assert_eq!(engine.get_document_count(), 1);
 }
 
 #[test]
