@@ -3307,6 +3307,70 @@ fn the_background_policy_leaves_nine_large_segments_behind_one_tiny_alone() {
     );
 }
 
+/// ספרים שהוסרו מהספרייה נמחקים ב-delete + commit בלבד, ובלי איחוד המסמכים
+/// המחוקים נשארים בדיסק. מדיניות הרקע של ה-writer צריכה להציע את הסגמנט
+/// שרובו נמחק, גם כשיש פחות משמונה סגמנטים — אחרת רק `optimize` (שמחזיק את
+/// המנוע בבלעדיות) יכול לפנות אותו.
+#[test]
+fn the_background_policy_reclaims_a_delete_heavy_segment() {
+    let (mut engine, _dir) = make_engine();
+    engine.set_bulk_indexing(true).unwrap();
+    for i in 0..20u64 {
+        add(&mut engine, i + 1, "בראשית ברא", "/books/gone.txt");
+    }
+    add(&mut engine, 100, "שלום עולם", "/books/kept.txt");
+    engine.commit().unwrap();
+    collapse_to_one_segment(&mut engine);
+    engine
+        .delete_documents_by_file_path("/books/gone.txt")
+        .unwrap();
+    engine.commit().unwrap();
+    let metas = engine.index.searchable_segment_metas().unwrap();
+    assert_eq!(metas.len(), 1);
+    assert_eq!(metas[0].num_deleted_docs(), 20);
+
+    let policy = SizeAwareMergePolicy {
+        index_path: engine.index_path.clone(),
+    };
+    let candidates = policy.compute_merge_candidates(&metas);
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].0, vec![metas[0].id()]);
+}
+
+/// המסלול המלא בלי `optimize`: מחיקה ו-commit מה-API הרגיל, וה-writer מאחד
+/// ברקע. החיפוש נשאר זמין לאורך כל הדרך — הוא קורא מה-reader ואינו צריך
+/// את ה-writer.
+#[test]
+fn deleting_books_reclaims_their_disk_space_without_optimize() {
+    let (mut engine, _dir) = make_engine();
+    engine.set_bulk_indexing(true).unwrap();
+    for i in 0..20u64 {
+        add(&mut engine, i + 1, "בראשית ברא", "/books/gone.txt");
+    }
+    add(&mut engine, 100, "שלום עולם", "/books/kept.txt");
+    engine.commit().unwrap();
+    collapse_to_one_segment(&mut engine);
+    engine.set_bulk_indexing(false).unwrap();
+    let heavy_id = engine.index.searchable_segment_ids().unwrap()[0];
+
+    engine
+        .delete_documents_by_file_path("/books/gone.txt")
+        .unwrap();
+    engine.commit().unwrap();
+    assert_eq!(count_hits(&engine, "שלום"), 1);
+    assert_eq!(count_hits(&engine, "בראשית"), 0);
+
+    let writer = engine.take_writer().unwrap();
+    writer.wait_merging_threads().unwrap();
+    engine.restore_writer().unwrap();
+    engine.index_reader.reload().unwrap();
+    let metas = engine.index.searchable_segment_metas().unwrap();
+    assert_eq!(metas.len(), 1);
+    assert_ne!(metas[0].id(), heavy_id);
+    assert_eq!(metas[0].num_deleted_docs(), 0);
+    assert_eq!(count_hits(&engine, "שלום"), 1);
+}
+
 #[test]
 fn normal_writer_does_not_merge_eight_large_segments_for_a_tiny_book() {
     let (mut engine, dir) = make_engine();
