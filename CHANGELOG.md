@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- The writer reclaims deleted documents in the background. After a commit, the
+  delete-heavy segment (over 30% deleted, at most 128 MiB) holding the most
+  deleted bytes is rewritten on the merge thread pool, so books removed from the
+  library free their disk space without `optimize` and without blocking
+  searches or commits. Larger segments are still left to `optimize`.
+
 ## 7.3.0 – 2026-11-19
 
 ### Added

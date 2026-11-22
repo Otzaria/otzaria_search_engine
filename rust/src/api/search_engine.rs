@@ -3302,6 +3302,10 @@ const MAX_SEGMENTS_AFTER_OPTIMIZE: usize = 8;
 const MAX_COMPACT_SIZE_RATIO: u64 = 4;
 /// A segment whose deleted-doc share exceeds this is compacted regardless of size.
 const OPTIMIZE_COMPACT_DELETE_RATIO: f64 = 0.3;
+/// The largest segment the writer rewrites on its own to drop deleted documents.
+/// It bounds one background merge; a larger delete-heavy segment waits for an
+/// explicit `optimize`, like every other rewrite of a large segment (#21).
+const BACKGROUND_RECLAIM_MAX_BYTES: u64 = 128 * 1024 * 1024;
 const INDEX_METADATA_FILE_NAME: &str = "otzaria_index_meta.json";
 const INDEX_FORMAT: &str = "otzaria-search-index";
 // גרסה 3 (טרם פורסמה): המעבר ל-HebrewTokenizer (גרשיים/גרש נשמרים
@@ -19909,7 +19913,7 @@ struct SizeAwareMergePolicy {
 
 impl MergePolicy for SizeAwareMergePolicy {
     fn compute_merge_candidates(&self, metas: &[SegmentMeta]) -> Vec<MergeCandidate> {
-        if metas.len() <= MAX_SEGMENTS_AFTER_OPTIMIZE {
+        if metas.len() <= MAX_SEGMENTS_AFTER_OPTIMIZE && !metas.iter().any(is_delete_heavy) {
             return Vec::new();
         }
         let sized = match sized_segment_metas(&self.index_path, metas.to_vec()) {
@@ -19920,10 +19924,38 @@ impl MergePolicy for SizeAwareMergePolicy {
             }
         };
         let max_docs = crate::memory_budget::merge_doc_limit(crate::memory_budget::system_memory());
-        select_smallest_level(&sized, max_docs)
+        select_deleted_to_reclaim(&sized, BACKGROUND_RECLAIM_MAX_BYTES, max_docs)
+            .or_else(|| select_smallest_level(&sized, max_docs))
             .map(|ids| vec![MergeCandidate(ids)])
             .unwrap_or_default()
     }
+}
+
+fn is_delete_heavy(meta: &SegmentMeta) -> bool {
+    meta.max_doc() > 0
+        && f64::from(meta.num_deleted_docs()) / f64::from(meta.max_doc())
+            > OPTIMIZE_COMPACT_DELETE_RATIO
+}
+
+/// The delete-heavy segment of at most [max_bytes] whose deleted documents
+/// take the most disk, rewritten on its own. The merge runs on the writer's
+/// merge thread pool and holds no engine lock: searches keep reading the
+/// committed segments, commits go on, and the compacted segment replaces the
+/// old one when the merge ends.
+fn select_deleted_to_reclaim(
+    sized_metas: &[(u64, SegmentMeta)],
+    max_bytes: u64,
+    max_docs: u64,
+) -> Option<Vec<SegmentId>> {
+    sized_metas
+        .iter()
+        .filter(|(bytes, meta)| {
+            *bytes <= max_bytes && u64::from(meta.max_doc()) <= max_docs && is_delete_heavy(meta)
+        })
+        .max_by_key(|(bytes, meta)| {
+            u128::from(*bytes) * u128::from(meta.num_deleted_docs()) / u128::from(meta.max_doc())
+        })
+        .map(|(_, meta)| vec![meta.id()])
 }
 
 /// Pick one merge at a time. Reclaim a delete-heavy segment on its own, then
@@ -19935,12 +19967,7 @@ fn select_segments_to_compact(
 ) -> Option<Vec<SegmentId>> {
     if let Some((_, meta)) = sized_metas
         .iter()
-        .filter(|(_, meta)| {
-            meta.max_doc() > 0
-                && u64::from(meta.max_doc()) <= max_docs
-                && f64::from(meta.num_deleted_docs()) / f64::from(meta.max_doc())
-                    > OPTIMIZE_COMPACT_DELETE_RATIO
-        })
+        .filter(|(_, meta)| u64::from(meta.max_doc()) <= max_docs && is_delete_heavy(meta))
         .min_by_key(|(bytes, _)| *bytes)
     {
         return Some(vec![meta.id()]);

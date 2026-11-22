@@ -3371,6 +3371,63 @@ fn deleting_books_reclaims_their_disk_space_without_optimize() {
     assert_eq!(count_hits(&engine, "שלום"), 1);
 }
 
+fn with_deletes(
+    engine: &SearchEngine,
+    bytes: u64,
+    max_doc: u32,
+    deleted: u32,
+) -> (u64, SegmentMeta) {
+    let meta = engine
+        .index
+        .new_segment_meta(SegmentId::generate_random(), max_doc);
+    let meta = if deleted == 0 {
+        meta
+    } else {
+        meta.with_delete_meta(deleted, 0)
+    };
+    (bytes, meta)
+}
+
+/// הבחירה לפי נפח המחיקות: בגודל הסגמנט כפול חלק המחוקים, ולא לפי הקטן
+/// ביותר; סגמנט בריא או כזה שמעל התקרה אינו נבחר לעולם.
+#[test]
+fn background_reclaim_picks_the_most_deleted_bytes_under_the_cap() {
+    let (engine, _dir) = make_engine();
+    let healthy = with_deletes(&engine, 50, 10, 0);
+    let small = with_deletes(&engine, 100, 10, 9);
+    let larger = with_deletes(&engine, 1_000, 10, 5);
+    let over_cap = with_deletes(&engine, 10_000, 10, 9);
+    let barely = with_deletes(&engine, 5_000, 10, 3);
+    let metas = vec![healthy, small, larger.clone(), over_cap, barely];
+
+    assert_eq!(
+        select_deleted_to_reclaim(&metas, 5_000, u64::MAX),
+        Some(vec![larger.1.id()])
+    );
+    assert_eq!(select_deleted_to_reclaim(&metas, 99, u64::MAX), None);
+    assert_eq!(
+        select_deleted_to_reclaim(&metas[..1], u64::MAX, u64::MAX),
+        None,
+        "a healthy segment is never rewritten in the background"
+    );
+}
+
+/// מעל התקרה המדיניות לא כותבת מחדש סגמנט גדול ברקע, גם כשרובו נמחק —
+/// זה נשאר ל-`optimize` מפורש, כמו כל שכתוב של סגמנט גדול (#21).
+#[test]
+fn the_background_policy_leaves_a_delete_heavy_segment_over_the_cap_alone() {
+    let (engine, _dir) = make_engine();
+    let metas = [
+        with_deletes(&engine, BACKGROUND_RECLAIM_MAX_BYTES + 1, 10, 9),
+        with_deletes(&engine, 10, 10, 0),
+    ];
+    assert_eq!(
+        select_deleted_to_reclaim(&metas, BACKGROUND_RECLAIM_MAX_BYTES, u64::MAX),
+        None
+    );
+    assert_eq!(select_smallest_level(&metas, u64::MAX), None);
+}
+
 #[test]
 fn normal_writer_does_not_merge_eight_large_segments_for_a_tiny_book() {
     let (mut engine, dir) = make_engine();
