@@ -17121,9 +17121,9 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   ///
   /// Takes the engine by shared reference, so searches are not held up while the batch
   /// prepares; it needs an open writer ([`Self::open_index_writer`]). `cancel` stops the
-  /// batch before its next book. One result per input book, in order. An `Err` means
-  /// the writer failed: books of this batch may be in it, as after a failed
-  /// `add_text_book_bytes`.
+  /// batch before its next book. One result per input book, in order. Insufficient
+  /// memory can reject the batch before preparation. On a later writer error,
+  /// books of this batch may be in the writer, as after a failed `add_text_book_bytes`.
   Future<List<LibraryBookResult>> addLibraryBooks({
     required List<LibraryBookInput> books,
     required IndexingCancellationToken cancel,
@@ -18343,8 +18343,9 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// first (only committed segments take part in manual merges); then the
   /// searchable segments are brought toward `MAX_SEGMENTS_AFTER_OPTIMIZE`
   /// by merging similarly sized small segments. The target may be exceeded
-  /// when its only alternative is rewriting a much larger healthy segment.
-  /// Segments with a high deleted-doc share are compacted independently.
+  /// when available memory is low or its only alternative is rewriting a much
+  /// larger healthy segment. Segments with a high deleted-doc share are compacted
+  /// independently when they fit the merge budget. Bulk indexing skips the merge budget.
   Future<void> optimize() =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineOptimize(that: this);
 
@@ -19234,11 +19235,10 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         enabled: enabled,
       );
 
-  /// Economy mode uses one preparation and one writer thread, small spilling buffers
-  /// and a 50MB writer. Normal mode limits CPU concurrency for foreground work and
-  /// adapts preparation workers to available CPUs and platform. At most four workers
-  /// reserve 384 MiB of source/document buffers, excluding normalized text, SQLite
-  /// and the writer; this is not a process RSS limit. Bulk merge policy is independent.
+  /// Economy mode uses one preparation, writer and merge thread, small spilling buffers
+  /// and a writer budget of up to 50MB. Normal mode adapts preparation workers to the
+  /// available CPUs, platform and memory. At most four workers reserve 384 MiB of
+  /// source/document buffers, excluding normalized text, SQLite and the writer.
   /// Live writer changes commit pending documents before replacement.
   Future<void> setEconomyIndexing({required bool enabled}) =>
       RustLib.instance.api.crateApiSearchEngineSearchEngineSetEconomyIndexing(

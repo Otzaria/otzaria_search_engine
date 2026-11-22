@@ -216,13 +216,12 @@ fn prepare_checked(
         extra_facets: book.extra_facets.clone().unwrap_or_default(),
         source_hash: book.source_hash.unwrap_or(0),
     };
-    let document_budget = policy.document_bytes;
     match engine.prepare_text_book_buffer(
         &meta,
         &mut text.text,
         text_storage,
         &mut text.data_uri_rows,
-        document_budget,
+        policy,
         stop,
     ) {
         Ok(mut prepared) => {
@@ -286,6 +285,10 @@ pub(crate) fn add_library_books(
     books: Vec<LibraryBookInput>,
     cancel: Option<&IndexingCancellationToken>,
 ) -> Result<Vec<LibraryBookResult>> {
+    if books.is_empty() {
+        return Ok(Vec::new());
+    }
+    let policy = engine.admit_indexing_preparation()?;
     let started = Instant::now();
     // In input order, before the workers race for them: the same batch numbers its books
     // the same way every time.
@@ -296,7 +299,6 @@ pub(crate) fn add_library_books(
     let abort = AtomicBool::new(false);
     let stop = || cancelled() || abort.load(Ordering::Relaxed);
     let next_book = AtomicUsize::new(0);
-    let policy = engine.library_preparation_policy();
     let reservation = policy.reservation();
     let budget = Budget {
         state: Mutex::new((0, 0)),

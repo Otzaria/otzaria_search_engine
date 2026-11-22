@@ -5,6 +5,8 @@ use tantivy::schema::document::ReferenceValueLeaf;
 use tantivy::schema::{Facet, Field, Schema, Value};
 use tantivy::TantivyDocument;
 
+use crate::memory_budget::{preparation_workers, SystemMemory};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PreparationPolicy {
     pub book_workers: usize,
@@ -13,6 +15,7 @@ pub(crate) struct PreparationPolicy {
     pub document_bytes: usize,
     pub window_lines: usize,
     pub window_bytes: usize,
+    pub allow_full_book: bool,
 }
 
 impl PreparationPolicy {
@@ -33,6 +36,7 @@ impl PreparationPolicy {
                 document_bytes: 2 << 20,
                 window_lines: 256,
                 window_bytes: 1 << 20,
+                allow_full_book: false,
             }
         } else {
             let cpu_threads = if mobile {
@@ -47,12 +51,22 @@ impl PreparationPolicy {
                 document_bytes: if mobile { 16 << 20 } else { 64 << 20 },
                 window_lines: if mobile { 2_048 } else { 16_384 },
                 window_bytes: if mobile { 2 << 20 } else { 16 << 20 },
+                allow_full_book: true,
             }
         }
     }
 
     pub(crate) fn reservation(self) -> usize {
         self.text_bytes + self.document_bytes
+    }
+
+    pub(crate) fn limited_by(mut self, memory: Option<SystemMemory>) -> Option<Self> {
+        self.book_workers = preparation_workers(self.book_workers, self.reservation(), memory);
+        if self.book_workers > 0 {
+            return Some(self);
+        }
+        let streaming = Self::new(true, 1);
+        (preparation_workers(1, streaming.reservation(), memory) > 0).then_some(streaming)
     }
 }
 
@@ -476,6 +490,20 @@ mod tests {
             assert_eq!(mobile.reservation(), 24 << 20);
             assert_eq!(writer_threads(false, cores, true), 1);
         }
+    }
+
+    #[test]
+    fn preparation_uses_streaming_or_refuses_to_start_when_memory_is_low() {
+        let normal = PreparationPolicy::for_platform(false, 16, false);
+        let streaming = PreparationPolicy::for_platform(true, 16, false);
+        let memory = |available| Some(SystemMemory { available });
+        assert_eq!(normal.limited_by(None), Some(normal));
+        let budget = normal.limited_by(memory(800 << 20)).unwrap();
+        assert_eq!(budget.book_workers, 2);
+        assert!(budget.allow_full_book);
+        assert_eq!(normal.limited_by(memory(64 << 20)), Some(streaming));
+        assert_eq!(normal.limited_by(memory(0)), None);
+        assert_eq!(streaming.limited_by(memory((12 << 20) - 1)), None);
     }
 
     #[test]

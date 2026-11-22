@@ -1310,7 +1310,10 @@ fn spooled_documents_preserve_every_field_and_neighbour_keys() {
             &mut buffer,
             TextStorage::LibraryDb,
             &mut stored,
-            1024,
+            crate::indexing_buffers::PreparationPolicy {
+                document_bytes: 1024,
+                ..engine.library_preparation_policy()
+            },
             &|| false,
         )
         .unwrap();
@@ -1409,7 +1412,10 @@ fn cancellation_during_preparation_discards_a_spooled_book() {
             &mut buffer,
             TextStorage::LibraryDb,
             &mut stored,
-            1024,
+            crate::indexing_buffers::PreparationPolicy {
+                document_bytes: 1024,
+                ..engine.library_preparation_policy()
+            },
             &|| checks.fetch_add(1, Ordering::Relaxed) > 300,
         )
         .err()
