@@ -9,7 +9,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `accumulate_section_counts`, `acronym_alternatives`, `add_entry`, `add_pdf_pages`, `add_stored_text`, `add_text_book_impl`, `add`, `admit_indexing_preparation`, `advanced_highlight_plan_for_scope`, `advanced_highlight_plan`, `all_fields`, `apply_advanced_negative_query`, `automaton_highlight_terms_complete`, `automaton_highlight_terms`, `automaton_terms_in_field`, `automaton_terms`, `book_fingerprint`, `book_number`, `bounded_display_snippet`, `bounded_plain_snippet`, `bounded_snippet_source`, `build_advanced_query_ranked`, `build_advanced_query`, `build_automaton_highlight_query`, `build_exact_query_vocalized`, `build_exact_query_with`, `build_exact_query`, `build_fuzzy_count_query`, `build_fuzzy_highlight_query`, `build_fuzzy_highlight`, `build_fuzzy_query_from_terms`, `build_fuzzy_query_vocalized`, `build_fuzzy_query`, `build_fuzzy_search_query`, `build_grouped_results_with_generator`, `build_grouped_results`, `build_lexical_fuzzy_highlight_query`, `build_lexical_fuzzy_query`, `build_query_from_patterns`, `build_query`, `build_results_with_generator`, `build_results`, `build_smart_exact_query`, `build_smart_fuzzy_alternatives`, `build_smart_fuzzy_query`, `build_vocalized_exact_patterns`, `can_reclaim_segment`, `cancelled`, `check_index_compatibility_path`, `check_legacy_tantivy_metadata`, `check_sidecar_metadata`, `chunk_key_recipe`, `claim_reclaim`, `clear`, `collect_garbage_after_optimize`, `collect_grouped`, `collect_ranked`, `combine_fingerprint`, `compatibility`, `compute_index_fuzzy_highlight_pattern`, `compute_index_highlight_pattern`, `compute_index_smart_highlight_pattern`, `content_fingerprint`, `convert_highlight_matches`, `count_on`, `count_smart_exact`, `count_smart_fuzzy`, `crop_around_first_occurrence`, `cross_line_next_lines`, `cross_line_snippet_html`, `current_schema`, `default`, `display_notes`, `document_at`, `enqueue`, `ensure_current_index_metadata`, `ensure_write_access`, `ensure_writer`, `estimated_deleted_bytes`, `exact_highlight_plan`, `exact_phrase_boost`, `exact_phrase`, `exact_rank_clauses`, `facet_filter_query`, `feed_field`, `feed_metadata`, `feed`, `feed`, `fetch_merged_sibling`, `finalize_grouped`, `finish`, `finish`, `first`, `flush`, `from_api`, `from_library_row`, `from_read_only_index`, `fuzzy_automaton`, `fuzzy_highlight_plan`, `get`, `glued_punctuation`, `group_cache_key`, `group_sort`, `has_pdf_layout_markers`, `id_base`, `index_metadata_path`, `index_metadata`, `index_schema_of_version`, `index_schema`, `index_token_texts_with`, `index_token_texts`, `indexed_texts`, `inferred_legacy_schema_version`, `init_engine_logger`, `insert_capped`, `insert_group`, `is_delete_heavy`, `layout_line_starts`, `layout_lines_as_spaces`, `lenient`, `lexical_fuzzy_phrase_query`, `lexical_fuzzy_phrase_terms`, `lexical_phrase_per_word_terms`, `library_preparation_policy`, `library_storage_or_fallback`, `line_count`, `line_dedup_hash`, `line_source_book`, `live_chunk_key_field`, `make_snippet_generator`, `materialize_term_set`, `metadata_fingerprint`, `min_words`, `new_index_settings`, `new`, `new`, `new`, `new`, `new`, `new`, `none`, `normal_fast_preparation`, `of`, `of`, `open_or_create_index`, `open_semantic_artifact_impl`, `open_with`, `open_writer_no_merge`, `open_writer`, `optimize_committed_segments`, `order_epoch`, `order_sort`, `order_tables`, `paint_ranges`, `pdf_page_snippet_html`, `pdf_pages_fingerprint`, `pdf_pages_from_bytes`, `phrase_exceeds_max_expansions`, `phrase_filtered_snippet`, `phrase_occurrences_in_layout`, `phrase_occurrences_with_layout`, `phrase_occurrences`, `phrase_per_word_terms`, `phrase_query_with_degrade`, `preparation_directory`, `prepare_text_book_buffer`, `prepare_text_book_fast`, `prepare_text_book_reader`, `prepare_text_book`, `push_limited_unique`, `push`, `put`, `query_word_ranges`, `quoted_phrase_token_groups`, `quoteless_variant`, `ranked_page`, `ranked_term_query`, `read_index_metadata`, `read`, `readable_schema_version`, `refresh_book_order`, `refuse_library_storage`, `register_hebrew_tokenizers_with`, `require_library_book_id`, `resolve_highlight`, `resolve_hit_texts`, `resolve`, `restore_writer`, `result_chunks`, `run_count_by_book`, `run_count`, `run_facet_counts`, `run_search_and_count`, `run_search_stream_with_counts`, `run_search_stream`, `run_search`, `schema_of_version`, `scoped_words_query`, `search_and_count_smart_exact`, `search_and_count_smart_fuzzy`, `search_executor_threads`, `search_text_field`, `segment_disk_bytes`, `select_deleted_to_reclaim`, `select_level_to_compact`, `select_segments_to_compact`, `select_smallest_level`, `semantic_closed_status`, `semantic_disabled_diff`, `semantic_disabled_status`, `semantic_lexical_fallback_response`, `semantic_not_in_build`, `semantic_texts`, `set_chunk_key`, `set_economy_indexing_with_reload`, `set_search_executor`, `single_input`, `single_regex_term_query`, `size_aware_merge_policy`, `size_levels`, `sized_segment_metas`, `slice`, `smart_exact_highlight_plan`, `smart_fuzzy_highlight_plan`, `snippet_html`, `snippet_pieces`, `sorted_by_size`, `stamp_book`, `stored_schema_mismatch`, `stored_text_fields`, `surface_stream_error`, `take_from_level`, `take_hits`, `take_writer`, `term_list_phrase_query`, `terms_query_from_word_sets`, `text_index_analyzer`, `to_api`, `translation_alternatives`, `unavailable`, `update_reference_trail`, `user_regex_checked`, `user_regex_line_outcome`, `user_regex_line_search`, `user_regex_stream_into`, `user_regex_term_query`, `user_regex_term_stream`, `user_regex`, `variants`, `vocalized_variant_branches`, `whole_query_quoted`, `with_cross_line`, `with_exact_phrase_boost`, `with_field`, `with_pdf_layout`, `word_end_after`, `word_start_before`, `write_index_metadata`, `write_inputs_with`, `write_inputs`, `writer_merge_policy`, `writer_mut`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `ActiveReclaim`, `BookCountCollector`, `BookCountSegmentCollector`, `BookFingerprintCollector`, `BookFingerprintSegmentCollector`, `BookOrderState`, `BoundedGroups`, `CachedOrderTables`, `CachedTermSet`, `CallbackSink`, `Fnv`, `GroupAcc`, `GroupCache`, `GroupCollector`, `GroupKeyColumn`, `GroupSegmentCollector`, `GroupSort`, `GroupedHits`, `GroupedPage`, `GroupedRep`, `HighlightPlan`, `HitRendering`, `HitText`, `Ids`, `IndexMetadata`, `IndexedText`, `LineDedupHasher`, `PageCounts`, `PdfPageText`, `PhraseHighlight`, `PreparedTextBook`, `RankedPage`, `SharedGroupedAcc`, `SiblingFields`, `SingleBookFingerprintCollector`, `SingleBookFingerprintSegmentCollector`, `SizeAwareMergePolicy`, `StampFields`, `Stamping`, `Stamps`, `TermCacheKey`, `TextBookMeta`, `WordMatch`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `collect`, `compute_merge_candidates`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `for_segment`, `for_segment`, `for_segment`, `for_segment`, `from`, `from`, `harvest`, `harvest`, `harvest`, `harvest`, `hash`, `hash`, `hash`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `requires_scoring`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `collect`, `collect`, `collect`, `collect`, `compute_merge_candidates`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `for_segment`, `for_segment`, `for_segment`, `for_segment`, `from`, `from`, `harvest`, `harvest`, `harvest`, `harvest`, `hash`, `hash`, `hash`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `merge_fruits`, `requires_scoring`, `requires_scoring`, `requires_scoring`, `requires_scoring`
 // These functions are ignored (category: IgnoreBecauseExplicitAttribute): `default`, `default`, `default`, `default`, `open_read_only`, `refresh_line_source`, `refresh_reader`, `search_semantic`
 // These functions are ignored (category: IgnoreBecauseOwnerTyShouldIgnore): `default`
 
@@ -1707,12 +1707,41 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// artifact it is refused as read-only, since nothing there is re-indexed.
   Future<SemanticIndexDiff> semanticIndexDiff();
 
+  /// The live lines nearest each of several points, in one pass over the installed vector
+  /// set: the passages a reader's tool shows beside a section, a group of sources, or a
+  /// vector the caller computed.
+  ///
+  /// Each point is embedded as `search_semantic` embeds a query (or, `as_passage`, as a
+  /// stored line), all of them are scanned together, and each vector found is resolved to
+  /// the live lines that hold its text in the books `facets` admits — the search screen's
+  /// resolution, under its window and alias penalties. No lexical half, no snippets: a
+  /// caller reads the text of the lines it shows.
+  ///
+  /// Fails `NotConfigured` with no session open, or with one built on this device, which
+  /// has no vector set; `InvalidInput` for a point that is neither one text nor one vector
+  /// of the set's width, or a limit out of range. Cancelling the token returns `Cancelled`
+  /// at the next checkpoint.
+  Future<SemanticNearestResponse> semanticNearest({
+    required SemanticNearestInput input,
+    required SemanticCancellationToken cancellation,
+  });
+
   /// Marks the clause of each target's line nearest `query`, one per target in order; a line
   /// that cannot be marked is not an error. Cancelled, it ends with a `Cancelled` error.
   Future<List<SemanticPassageHighlight>> semanticPassageHighlights({
     required String query,
     required List<SemanticHighlightTarget> targets,
     required SemanticCancellationToken cancellation,
+  });
+
+  /// How long each of `texts` is as a query to the open vector set's model, with the cap a
+  /// query is cut at: for a caller that cuts a long passage into windows that each fit.
+  /// Up to [`MAX_QUERY_TOKEN_TEXTS`] texts.
+  ///
+  /// Fails `NotConfigured` with no session open, and as the session's model fails when its
+  /// backend has no tokenizer to count with.
+  Future<SemanticQueryTokens> semanticQueryTokens({
+    required List<String> texts,
   });
 
   /// Deliberately **not** `#[frb(sync)]`. Reading the status takes the
@@ -3664,6 +3693,257 @@ class SemanticIndexingSummary {
 
 enum SemanticLexicalMode { exact, fuzzy }
 
+/// Lines of one book, from `from_segment` to `to_segment`, both included.
+class SemanticLineSpan {
+  final String filePath;
+  final BigInt fromSegment;
+  final BigInt toSegment;
+
+  const SemanticLineSpan({
+    required this.filePath,
+    required this.fromSegment,
+    required this.toSegment,
+  });
+
+  @override
+  int get hashCode =>
+      filePath.hashCode ^ fromSegment.hashCode ^ toSegment.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticLineSpan &&
+          runtimeType == other.runtimeType &&
+          filePath == other.filePath &&
+          fromSegment == other.fromSegment &&
+          toSegment == other.toSegment;
+}
+
+/// One live line [`SearchEngine::semantic_nearest`] found.
+class SemanticNearestHit {
+  /// The book's index key, as [`SemanticSearchResult::file_path`].
+  final String filePath;
+
+  /// The line's document id, for [`SearchEngine::get_document_by_id`].
+  final BigInt id;
+  final String title;
+  final String reference;
+
+  /// The line's ordinal in its book.
+  final BigInt segment;
+  final bool isPdf;
+
+  /// As [`SemanticSearchResult::matched_window`].
+  final int matchedWindow;
+
+  /// The line's similarity to the point that found it best, under the search screen's
+  /// window and alias penalties.
+  final double score;
+
+  /// Which point that is, by its index in [`SemanticNearestInput::points`].
+  final int point;
+
+  /// With `rescore`: the line's score for each point, in their order, under the same
+  /// penalties; NaN where the set no longer holds the line's vector. Empty otherwise.
+  final Float32List pointScores;
+
+  const SemanticNearestHit({
+    required this.filePath,
+    required this.id,
+    required this.title,
+    required this.reference,
+    required this.segment,
+    required this.isPdf,
+    required this.matchedWindow,
+    required this.score,
+    required this.point,
+    required this.pointScores,
+  });
+
+  @override
+  int get hashCode =>
+      filePath.hashCode ^
+      id.hashCode ^
+      title.hashCode ^
+      reference.hashCode ^
+      segment.hashCode ^
+      isPdf.hashCode ^
+      matchedWindow.hashCode ^
+      score.hashCode ^
+      point.hashCode ^
+      pointScores.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticNearestHit &&
+          runtimeType == other.runtimeType &&
+          filePath == other.filePath &&
+          id == other.id &&
+          title == other.title &&
+          reference == other.reference &&
+          segment == other.segment &&
+          isPdf == other.isPdf &&
+          matchedWindow == other.matchedWindow &&
+          score == other.score &&
+          point == other.point &&
+          pointScores == other.pointScores;
+}
+
+/// What [`SearchEngine::semantic_nearest`] searches for.
+class SemanticNearestInput {
+  /// 1 to [`MAX_NEAREST_POINTS`].
+  final List<SemanticPoint> points;
+
+  /// How many vectors each point's scan returns, 1 to [`MAX_NEAREST_TOP_K`]. A vector can
+  /// resolve to several lines, and lines are dropped by `exclude` and `min_score` after.
+  final int topK;
+
+  /// As `search_semantic`'s facets: empty for the whole library.
+  final List<String> facets;
+
+  /// Lines never returned, such as the passage the points were taken from.
+  final List<SemanticLineSpan> exclude;
+
+  /// Lines scoring under it are dropped.
+  final double? minScore;
+  final SemanticPool pool;
+
+  /// [`SemanticPool::Best`] only: the most vectors pooled before they are resolved, 1 to
+  /// [`MAX_NEAREST_CANDIDATES`]. The best-scored are kept.
+  final int maxCandidates;
+
+  /// [`SemanticPool::Best`] only: score every line against every point, in
+  /// [`SemanticNearestHit::point_scores`].
+  final bool rescore;
+
+  const SemanticNearestInput({
+    required this.points,
+    required this.topK,
+    required this.facets,
+    required this.exclude,
+    this.minScore,
+    required this.pool,
+    required this.maxCandidates,
+    required this.rescore,
+  });
+
+  @override
+  int get hashCode =>
+      points.hashCode ^
+      topK.hashCode ^
+      facets.hashCode ^
+      exclude.hashCode ^
+      minScore.hashCode ^
+      pool.hashCode ^
+      maxCandidates.hashCode ^
+      rescore.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticNearestInput &&
+          runtimeType == other.runtimeType &&
+          points == other.points &&
+          topK == other.topK &&
+          facets == other.facets &&
+          exclude == other.exclude &&
+          minScore == other.minScore &&
+          pool == other.pool &&
+          maxCandidates == other.maxCandidates &&
+          rescore == other.rescore;
+}
+
+/// One point's lines, for [`SemanticPool::PerPoint`].
+class SemanticNearestList {
+  final List<SemanticNearestHit> hits;
+
+  const SemanticNearestList({required this.hits});
+
+  @override
+  int get hashCode => hits.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticNearestList &&
+          runtimeType == other.runtimeType &&
+          hits == other.hits;
+}
+
+/// What [`SearchEngine::semantic_nearest`] found, and what it read.
+class SemanticNearestResponse {
+  /// [`SemanticPool::Best`]: every line found, best first. Empty for `PerPoint`.
+  final List<SemanticNearestHit> hits;
+
+  /// [`SemanticPool::PerPoint`]: one list per point, each best first. Empty for `Best`.
+  final List<SemanticNearestList> perPoint;
+
+  /// The vector set's generation the scan read.
+  final BigInt generation;
+
+  /// The library version the set stands at.
+  final int vectorsLibraryVersion;
+
+  /// Vectors found that no live line of the admitted books holds any more.
+  final int unresolved;
+
+  /// Lines resolved but gone from the index by the time they were read.
+  final int staleDropped;
+
+  /// [`SemanticPool::Best`] pooled more vectors than `max_candidates` and kept the best.
+  final bool truncated;
+  final BigInt embedMs;
+  final BigInt scanMs;
+  final BigInt resolveMs;
+  final BigInt rescoreMs;
+
+  const SemanticNearestResponse({
+    required this.hits,
+    required this.perPoint,
+    required this.generation,
+    required this.vectorsLibraryVersion,
+    required this.unresolved,
+    required this.staleDropped,
+    required this.truncated,
+    required this.embedMs,
+    required this.scanMs,
+    required this.resolveMs,
+    required this.rescoreMs,
+  });
+
+  @override
+  int get hashCode =>
+      hits.hashCode ^
+      perPoint.hashCode ^
+      generation.hashCode ^
+      vectorsLibraryVersion.hashCode ^
+      unresolved.hashCode ^
+      staleDropped.hashCode ^
+      truncated.hashCode ^
+      embedMs.hashCode ^
+      scanMs.hashCode ^
+      resolveMs.hashCode ^
+      rescoreMs.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticNearestResponse &&
+          runtimeType == other.runtimeType &&
+          hits == other.hits &&
+          perPoint == other.perPoint &&
+          generation == other.generation &&
+          vectorsLibraryVersion == other.vectorsLibraryVersion &&
+          unresolved == other.unresolved &&
+          staleDropped == other.staleDropped &&
+          truncated == other.truncated &&
+          embedMs == other.embedMs &&
+          scanMs == other.scanMs &&
+          resolveMs == other.resolveMs &&
+          rescoreMs == other.rescoreMs;
+}
+
 /// A target's line centred on its clause nearest the query, escaped, the clause in `<mark>`; empty
 /// when nothing is marked. Separate from the result, whose own snippet stays as it was.
 class SemanticPassageHighlight {
@@ -3701,6 +3981,75 @@ class SemanticPassageHighlight {
           snippetHtml == other.snippetHtml &&
           isHighlighted == other.isHighlighted &&
           spanScore == other.spanScore;
+}
+
+/// A point a [`SearchEngine::semantic_nearest`] search starts from: a text, or a vector of
+/// the set's width. Exactly one of `text` and `vector` is set.
+class SemanticPoint {
+  /// A text to embed. Embedded as `search_semantic` embeds a query, unless `as_passage`.
+  final String? text;
+
+  /// Embed `text` as a stored line is embedded, to compare a passage with passages.
+  final bool asPassage;
+
+  /// A vector of the set's width, such as a centroid the caller computed. Scaled to unit
+  /// length before the scan, so its scores are cosines like a text's.
+  final Float32List? vector;
+
+  const SemanticPoint({this.text, required this.asPassage, this.vector});
+
+  @override
+  int get hashCode => text.hashCode ^ asPassage.hashCode ^ vector.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticPoint &&
+          runtimeType == other.runtimeType &&
+          text == other.text &&
+          asPassage == other.asPassage &&
+          vector == other.vector;
+}
+
+/// How [`SearchEngine::semantic_nearest`] returns what its points found.
+enum SemanticPool {
+  /// One list: every line any point found, once, at its best score over the points.
+  best,
+
+  /// One list per point, in the order the points were given.
+  perPoint,
+}
+
+/// How long texts are as queries, as [`SearchEngine::semantic_query_tokens`] counts them.
+class SemanticQueryTokens {
+  /// Each text's count as the query sequence the model sees: normalized and marked as a
+  /// query, role prefix and special tokens included. 0 for a text with nothing to embed.
+  final Uint32List counts;
+
+  /// The cap a query is cut at. A text whose count is at most this is embedded whole.
+  final int queryMaxTokens;
+
+  /// What an empty query counts: the role prefix and the special tokens.
+  final int overheadTokens;
+
+  const SemanticQueryTokens({
+    required this.counts,
+    required this.queryMaxTokens,
+    required this.overheadTokens,
+  });
+
+  @override
+  int get hashCode =>
+      counts.hashCode ^ queryMaxTokens.hashCode ^ overheadTokens.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticQueryTokens &&
+          runtimeType == other.runtimeType &&
+          counts == other.counts &&
+          queryMaxTokens == other.queryMaxTokens &&
+          overheadTokens == other.overheadTokens;
 }
 
 /// The lexical weight `alpha` for each kind of query the sidecar tells apart, by the words
