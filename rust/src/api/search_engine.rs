@@ -2635,8 +2635,10 @@ struct Expanded {
     timings: SemanticTimings,
 }
 
-/// Where a semantic search's time went, in milliseconds, summed over its expansions; `embed`,
-/// `scan` and `resolve` are the sidecar's own share of `semantic`, which runs beside `lexical`.
+/// Where a semantic search's time went, in milliseconds, summed over its expansions.
+/// The sidecar reports `embed`, `scan` and `resolve` for the stages it measures. These fields
+/// sum the reported measurements and are absent when none were reported. They are part of
+/// `semantic`, which runs beside `lexical`.
 /// `total` also holds the wait for the session; a page served from it has no expansion.
 #[frb(non_opaque)]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -2646,9 +2648,9 @@ pub struct SemanticTimings {
     pub lexical_ms: f64,
     /// Planning, embedding, scanning and resolving.
     pub semantic_ms: f64,
-    pub embed_ms: f64,
-    pub scan_ms: f64,
-    pub resolve_ms: f64,
+    pub embed_ms: Option<f64>,
+    pub scan_ms: Option<f64>,
+    pub resolve_ms: Option<f64>,
     pub fuse_ms: f64,
     pub hydrate_ms: f64,
     /// Cutting the page, reading its texts and painting it.
@@ -2664,9 +2666,9 @@ impl Default for SemanticTimings {
             expansions: 0,
             lexical_ms: 0.0,
             semantic_ms: 0.0,
-            embed_ms: 0.0,
-            scan_ms: 0.0,
-            resolve_ms: 0.0,
+            embed_ms: None,
+            scan_ms: None,
+            resolve_ms: None,
             fuse_ms: 0.0,
             hydrate_ms: 0.0,
             page_ms: 0.0,
@@ -2678,13 +2680,17 @@ impl Default for SemanticTimings {
 #[cfg(feature = "semantic-integration")]
 impl SemanticTimings {
     fn plus(self, later: SemanticTimings) -> SemanticTimings {
+        let sum_reported = |first: Option<f64>, later: Option<f64>| match (first, later) {
+            (Some(first), Some(later)) => Some(first + later),
+            (first, later) => first.or(later),
+        };
         SemanticTimings {
             expansions: self.expansions + later.expansions,
             lexical_ms: self.lexical_ms + later.lexical_ms,
             semantic_ms: self.semantic_ms + later.semantic_ms,
-            embed_ms: self.embed_ms + later.embed_ms,
-            scan_ms: self.scan_ms + later.scan_ms,
-            resolve_ms: self.resolve_ms + later.resolve_ms,
+            embed_ms: sum_reported(self.embed_ms, later.embed_ms),
+            scan_ms: sum_reported(self.scan_ms, later.scan_ms),
+            resolve_ms: sum_reported(self.resolve_ms, later.resolve_ms),
             fuse_ms: self.fuse_ms + later.fuse_ms,
             hydrate_ms: self.hydrate_ms + later.hydrate_ms,
             page_ms: self.page_ms + later.page_ms,
@@ -7463,6 +7469,53 @@ impl SearchEngine {
     /// lexical fallback is looked at before it runs and once its page is ready. Required,
     /// since flutter_rust_bridge 2.13 cannot pass an optional borrowed opaque type: an
     /// application with nothing to cancel passes a fresh token, which changes nothing.
+    #[cfg(feature = "flutter-bridge")]
+    #[doc(hidden)]
+    #[frb(name = "searchSemantic")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_semantic_with_timings(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        limit: u32,
+        offset: u32,
+        lexical_mode: SemanticLexicalMode,
+        fuzzy_max_distance: u8,
+        retrieval_mode: SemanticRetrievalMode,
+        grouping: Option<SemanticGroupingMode>,
+        match_nikud: bool,
+        match_taamim: bool,
+        ranking: Option<SemanticRankingOptions>,
+        cancellation: &SemanticCancellationToken,
+    ) -> Result<SemanticSearchResponse, SemanticError> {
+        // FRB 2.13 hashes exported Rust function names, so this wire name makes an older
+        // library fail at initialization instead of decoding a shorter response at search time.
+        self.search_semantic(
+            query,
+            facets,
+            limit,
+            offset,
+            lexical_mode,
+            fuzzy_max_distance,
+            retrieval_mode,
+            grouping,
+            match_nikud,
+            match_taamim,
+            ranking,
+            cancellation,
+        )
+    }
+
+    /// Search through the sidecar, with lexical fallback and session-based paging.
+    /// Pages reuse the session's result order while it is cached. A commit, a library or
+    /// semantic change, expiry, eviction, or a changed page size starts a fresh search.
+    /// When a continuation loses its session, it returns the first page with
+    /// [`SemanticSearchResponse::session_restarted`] set so the caller replaces its results.
+    ///
+    /// If the semantic path cannot serve, the response reports the typed
+    /// [`SemanticSearchResponse::fallback_kind`]. Hybrid searches can then return lexical hits.
+    /// Cancelling the token returns [`SemanticErrorKind::Cancelled`] at the next checkpoint.
+    #[frb(ignore)]
     #[allow(clippy::too_many_arguments)]
     pub fn search_semantic(
         &self,
@@ -8242,10 +8295,10 @@ impl SearchEngine {
             .fuse_prepared(lexical_candidates, prepared, &params, cancel)
             .map_err(|err| semantic_errors::search_error(&err, open.call()))?;
         let fuse_ms = elapsed_ms(fuse_started);
-        let telemetry = result.telemetry.clone();
+        let telemetry = result.telemetry.as_ref();
         let sidecar_ms =
             |field: fn(&otzaria_semantic_search::telemetry::SearchTelemetry) -> Option<u64>| {
-                telemetry.as_ref().and_then(field).unwrap_or(0) as f64
+                telemetry.and_then(field).map(|ms| ms as f64)
             };
         // Hydration is a lookup per result, and nobody may be waiting for them.
         search_cancellation::look(cancel, SearchCheckpoint::Hydration)?;

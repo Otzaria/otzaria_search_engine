@@ -126,6 +126,7 @@ Future<void> main() async {
       expect(response.countsAreExact, isTrue);
       expect(response.candidateWindowTruncated, isFalse);
       expect(response.latencyMs, isA<BigInt>());
+      expect(response.timings, isNull);
     });
 
     test('a semantic-only request never poses as a lexical result', () async {
@@ -366,6 +367,11 @@ Future<void> main() async {
       expect(response.fallbackReason, isNull);
       expect(response.fallbackKind, isNull);
       expect(response.results, hasLength(1));
+      final timings = response.timings!;
+      expect(timings.expansions, greaterThanOrEqualTo(1));
+      expect(timings.embedMs, isNotNull);
+      expect(timings.scanMs, isNull);
+      expect(timings.resolveMs, isNull);
 
       final hit = response.results.single;
       expect(hit.id, lineId);
@@ -427,6 +433,11 @@ Future<void> main() async {
         expect(second.results, hasLength(2));
         expect(first.sessionRestarted, isFalse);
         expect(second.sessionRestarted, isFalse);
+        final cached = second.timings!;
+        expect(cached.expansions, 0);
+        expect(cached.embedMs, isNull);
+        expect(cached.scanMs, isNull);
+        expect(cached.resolveMs, isNull);
         expect(first.hasMore, isTrue);
         expect(
           second.results.map((hit) => hit.id),
@@ -876,6 +887,9 @@ Future<void> main() async {
       expect(response.executedMode, SemanticExecutedMode.semanticOnly);
       expect(response.semanticAvailable, isTrue);
       expect(response.fallbackKind, isNull);
+      final timings = response.timings!;
+      expect(timings.scanMs, isNotNull);
+      expect(timings.resolveMs, isNotNull);
       final hit = response.results.first;
       expect(hit.source, SemanticResultSource.semantic);
       expect(hit.needsHydration, isFalse);

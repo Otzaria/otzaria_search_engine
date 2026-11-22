@@ -42,7 +42,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1494882127;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 2073354395;
 
 // Section: executor
 
@@ -5854,7 +5854,7 @@ fn wire__crate__api__search_engine__SearchEngine_search_fuzzy_terms_impl(
         },
     )
 }
-fn wire__crate__api__search_engine__SearchEngine_search_semantic_impl(
+fn wire__crate__api__search_engine__SearchEngine_search_semantic_with_timings_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
@@ -5862,7 +5862,7 @@ fn wire__crate__api__search_engine__SearchEngine_search_semantic_impl(
 ) {
     FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
         flutter_rust_bridge::for_generated::TaskInfo {
-            debug_name: "SearchEngine_search_semantic",
+            debug_name: "SearchEngine_search_semantic_with_timings(dart_style=searchSemantic)",
             port: Some(port_),
             mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
         },
@@ -5929,21 +5929,22 @@ fn wire__crate__api__search_engine__SearchEngine_search_semantic_impl(
                     }
                     let api_that_guard = api_that_guard.unwrap();
                     let api_cancellation_guard = api_cancellation_guard.unwrap();
-                    let output_ok = crate::api::search_engine::SearchEngine::search_semantic(
-                        &*api_that_guard,
-                        api_query,
-                        api_facets,
-                        api_limit,
-                        api_offset,
-                        api_lexical_mode,
-                        api_fuzzy_max_distance,
-                        api_retrieval_mode,
-                        api_grouping,
-                        api_match_nikud,
-                        api_match_taamim,
-                        api_ranking,
-                        &*api_cancellation_guard,
-                    )?;
+                    let output_ok =
+                        crate::api::search_engine::SearchEngine::search_semantic_with_timings(
+                            &*api_that_guard,
+                            api_query,
+                            api_facets,
+                            api_limit,
+                            api_offset,
+                            api_lexical_mode,
+                            api_fuzzy_max_distance,
+                            api_retrieval_mode,
+                            api_grouping,
+                            api_match_nikud,
+                            api_match_taamim,
+                            api_ranking,
+                            &*api_cancellation_guard,
+                        )?;
                     std::result::Result::Ok(output_ok)
                 })(
                 ))
@@ -11013,9 +11014,9 @@ impl SseDecode for crate::api::search_engine::SemanticTimings {
         let mut var_expansions = <u32>::sse_decode(deserializer);
         let mut var_lexicalMs = <f64>::sse_decode(deserializer);
         let mut var_semanticMs = <f64>::sse_decode(deserializer);
-        let mut var_embedMs = <f64>::sse_decode(deserializer);
-        let mut var_scanMs = <f64>::sse_decode(deserializer);
-        let mut var_resolveMs = <f64>::sse_decode(deserializer);
+        let mut var_embedMs = <Option<f64>>::sse_decode(deserializer);
+        let mut var_scanMs = <Option<f64>>::sse_decode(deserializer);
+        let mut var_resolveMs = <Option<f64>>::sse_decode(deserializer);
         let mut var_fuseMs = <f64>::sse_decode(deserializer);
         let mut var_hydrateMs = <f64>::sse_decode(deserializer);
         let mut var_pageMs = <f64>::sse_decode(deserializer);
@@ -11408,7 +11409,7 @@ fn pde_ffi_dispatcher_primary_impl(
 96 => wire__crate__api__search_engine__SearchEngine_search_fuzzy_stream_impl(port, ptr, rust_vec_len, data_len),
 97 => wire__crate__api__search_engine__SearchEngine_search_fuzzy_stream_with_counts_impl(port, ptr, rust_vec_len, data_len),
 98 => wire__crate__api__search_engine__SearchEngine_search_fuzzy_terms_impl(port, ptr, rust_vec_len, data_len),
-99 => wire__crate__api__search_engine__SearchEngine_search_semantic_impl(port, ptr, rust_vec_len, data_len),
+99 => wire__crate__api__search_engine__SearchEngine_search_semantic_with_timings_impl(port, ptr, rust_vec_len, data_len),
 100 => wire__crate__api__search_engine__SearchEngine_search_smart_lexical_impl(port, ptr, rust_vec_len, data_len),
 101 => wire__crate__api__search_engine__SearchEngine_search_snapshot_impl(port, ptr, rust_vec_len, data_len),
 102 => wire__crate__api__search_engine__SearchEngine_search_stream_impl(port, ptr, rust_vec_len, data_len),
@@ -15364,9 +15365,9 @@ impl SseEncode for crate::api::search_engine::SemanticTimings {
         <u32>::sse_encode(self.expansions, serializer);
         <f64>::sse_encode(self.lexical_ms, serializer);
         <f64>::sse_encode(self.semantic_ms, serializer);
-        <f64>::sse_encode(self.embed_ms, serializer);
-        <f64>::sse_encode(self.scan_ms, serializer);
-        <f64>::sse_encode(self.resolve_ms, serializer);
+        <Option<f64>>::sse_encode(self.embed_ms, serializer);
+        <Option<f64>>::sse_encode(self.scan_ms, serializer);
+        <Option<f64>>::sse_encode(self.resolve_ms, serializer);
         <f64>::sse_encode(self.fuse_ms, serializer);
         <f64>::sse_encode(self.hydrate_ms, serializer);
         <f64>::sse_encode(self.page_ms, serializer);

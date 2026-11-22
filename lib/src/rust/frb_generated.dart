@@ -68,7 +68,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => 1494882127;
+  int get rustContentHash => 2073354395;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -994,7 +994,7 @@ abstract class RustLibApi extends BaseApi {
   });
 
   Future<SemanticSearchResponse>
-  crateApiSearchEngineSearchEngineSearchSemantic({
+  crateApiSearchEngineSearchEngineSearchSemanticWithTimings({
     required SearchEngine that,
     required String query,
     required List<String> facets,
@@ -7178,7 +7178,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @override
   Future<SemanticSearchResponse>
-  crateApiSearchEngineSearchEngineSearchSemantic({
+  crateApiSearchEngineSearchEngineSearchSemanticWithTimings({
     required SearchEngine that,
     required String query,
     required List<String> facets,
@@ -7233,7 +7233,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeSuccessData: sse_decode_semantic_search_response,
           decodeErrorData: sse_decode_semantic_error,
         ),
-        constMeta: kCrateApiSearchEngineSearchEngineSearchSemanticConstMeta,
+        constMeta:
+            kCrateApiSearchEngineSearchEngineSearchSemanticWithTimingsConstMeta,
         argValues: [
           that,
           query,
@@ -7254,9 +7255,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     );
   }
 
-  TaskConstMeta get kCrateApiSearchEngineSearchEngineSearchSemanticConstMeta =>
+  TaskConstMeta
+  get kCrateApiSearchEngineSearchEngineSearchSemanticWithTimingsConstMeta =>
       const TaskConstMeta(
-        debugName: "SearchEngine_search_semantic",
+        debugName:
+            "SearchEngine_search_semantic_with_timings(dart_style=searchSemantic)",
         argNames: [
           "that",
           "query",
@@ -11542,9 +11545,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       expansions: dco_decode_u_32(arr[0]),
       lexicalMs: dco_decode_f_64(arr[1]),
       semanticMs: dco_decode_f_64(arr[2]),
-      embedMs: dco_decode_f_64(arr[3]),
-      scanMs: dco_decode_f_64(arr[4]),
-      resolveMs: dco_decode_f_64(arr[5]),
+      embedMs: dco_decode_opt_box_autoadd_f_64(arr[3]),
+      scanMs: dco_decode_opt_box_autoadd_f_64(arr[4]),
+      resolveMs: dco_decode_opt_box_autoadd_f_64(arr[5]),
       fuseMs: dco_decode_f_64(arr[6]),
       hydrateMs: dco_decode_f_64(arr[7]),
       pageMs: dco_decode_f_64(arr[8]),
@@ -14222,9 +14225,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_expansions = sse_decode_u_32(deserializer);
     var var_lexicalMs = sse_decode_f_64(deserializer);
     var var_semanticMs = sse_decode_f_64(deserializer);
-    var var_embedMs = sse_decode_f_64(deserializer);
-    var var_scanMs = sse_decode_f_64(deserializer);
-    var var_resolveMs = sse_decode_f_64(deserializer);
+    var var_embedMs = sse_decode_opt_box_autoadd_f_64(deserializer);
+    var var_scanMs = sse_decode_opt_box_autoadd_f_64(deserializer);
+    var var_resolveMs = sse_decode_opt_box_autoadd_f_64(deserializer);
     var var_fuseMs = sse_decode_f_64(deserializer);
     var var_hydrateMs = sse_decode_f_64(deserializer);
     var var_pageMs = sse_decode_f_64(deserializer);
@@ -16687,9 +16690,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_u_32(self.expansions, serializer);
     sse_encode_f_64(self.lexicalMs, serializer);
     sse_encode_f_64(self.semanticMs, serializer);
-    sse_encode_f_64(self.embedMs, serializer);
-    sse_encode_f_64(self.scanMs, serializer);
-    sse_encode_f_64(self.resolveMs, serializer);
+    sse_encode_opt_box_autoadd_f_64(self.embedMs, serializer);
+    sse_encode_opt_box_autoadd_f_64(self.scanMs, serializer);
+    sse_encode_opt_box_autoadd_f_64(self.resolveMs, serializer);
     sse_encode_f_64(self.fuseMs, serializer);
     sse_encode_f_64(self.hydrateMs, serializer);
     sse_encode_f_64(self.pageMs, serializer);
@@ -18975,21 +18978,22 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required bool matchTaamim,
     SemanticRankingOptions? ranking,
     required SemanticCancellationToken cancellation,
-  }) => RustLib.instance.api.crateApiSearchEngineSearchEngineSearchSemantic(
-    that: this,
-    query: query,
-    facets: facets,
-    limit: limit,
-    offset: offset,
-    lexicalMode: lexicalMode,
-    fuzzyMaxDistance: fuzzyMaxDistance,
-    retrievalMode: retrievalMode,
-    grouping: grouping,
-    matchNikud: matchNikud,
-    matchTaamim: matchTaamim,
-    ranking: ranking,
-    cancellation: cancellation,
-  );
+  }) => RustLib.instance.api
+      .crateApiSearchEngineSearchEngineSearchSemanticWithTimings(
+        that: this,
+        query: query,
+        facets: facets,
+        limit: limit,
+        offset: offset,
+        lexicalMode: lexicalMode,
+        fuzzyMaxDistance: fuzzyMaxDistance,
+        retrievalMode: retrievalMode,
+        grouping: grouping,
+        matchNikud: matchNikud,
+        matchTaamim: matchTaamim,
+        ranking: ranking,
+        cancellation: cancellation,
+      );
 
   /// Smart lexical matching without a model or a ranked semantic candidate window.
   /// Pagination and ordering are applied after all literal quotation constraints.

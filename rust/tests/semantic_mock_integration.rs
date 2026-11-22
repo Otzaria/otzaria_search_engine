@@ -265,18 +265,26 @@ fn a_served_search_reports_its_stage_timings_and_a_fallback_none() {
     let served = exact(&engine, "בראשית ברא", SemanticRetrievalMode::Hybrid);
     let timings = served.timings.expect("a served search has timings");
     assert!(timings.expansions >= 1);
+    assert_eq!(served.executed_mode, SemanticExecutedMode::Hybrid);
+    assert_eq!(timings.scan_ms, None);
+    assert_eq!(timings.resolve_ms, None);
     for stage in [
         timings.lexical_ms,
         timings.semantic_ms,
-        timings.embed_ms,
-        timings.scan_ms,
-        timings.resolve_ms,
+        timings.embed_ms.expect("the first query embeds"),
         timings.fuse_ms,
         timings.hydrate_ms,
         timings.page_ms,
     ] {
         assert!(stage >= 0.0 && stage <= timings.total_ms, "{timings:?}");
     }
+
+    let cached = exact(&engine, "בראשית ברא", SemanticRetrievalMode::Hybrid);
+    let timings = cached.timings.expect("a cached page has timings");
+    assert_eq!(timings.expansions, 0);
+    assert_eq!(timings.embed_ms, None);
+    assert_eq!(timings.scan_ms, None);
+    assert_eq!(timings.resolve_ms, None);
 
     engine.disable_semantic();
     let fallback = exact(&engine, "בראשית ברא", SemanticRetrievalMode::Hybrid);
@@ -1120,6 +1128,9 @@ fn a_session_with_nothing_indexed_is_empty_and_its_searches_fall_back() {
     );
     assert_eq!(response.fallback_kind, Some(SemanticErrorKind::QueryFailed));
     assert_eq!(response.results.len(), 1);
+    let timings = response.timings.expect("the sidecar attempted the search");
+    assert!(timings.embed_ms.is_some());
+    assert_eq!(timings.scan_ms, None);
 
     index_books(&engine, &lines);
     assert_eq!(engine.semantic_status().state, SemanticState::Ready);
