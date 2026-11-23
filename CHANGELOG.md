@@ -1,5 +1,10 @@
 # Changelog
 
+## 7.2.1 – 2026-11-23
+
+- Expose semantic search stage timings on the 7.2 maintenance line for apps
+  using line-based PDF indexing and cross-line regex matching.
+
 ## 7.2.0 – 2026-11-14
 
 ### Added
