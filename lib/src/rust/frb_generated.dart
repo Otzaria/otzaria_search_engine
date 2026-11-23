@@ -68,7 +68,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => 954178265;
+  int get rustContentHash => 2061991729;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -988,7 +988,7 @@ abstract class RustLibApi extends BaseApi {
   });
 
   Future<SemanticSearchResponse>
-  crateApiSearchEngineSearchEngineSearchSemantic({
+  crateApiSearchEngineSearchEngineSearchSemanticWithTimings({
     required SearchEngine that,
     required String query,
     required List<String> facets,
@@ -7124,7 +7124,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @override
   Future<SemanticSearchResponse>
-  crateApiSearchEngineSearchEngineSearchSemantic({
+  crateApiSearchEngineSearchEngineSearchSemanticWithTimings({
     required SearchEngine that,
     required String query,
     required List<String> facets,
@@ -7179,7 +7179,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeSuccessData: sse_decode_semantic_search_response,
           decodeErrorData: sse_decode_semantic_error,
         ),
-        constMeta: kCrateApiSearchEngineSearchEngineSearchSemanticConstMeta,
+        constMeta:
+            kCrateApiSearchEngineSearchEngineSearchSemanticWithTimingsConstMeta,
         argValues: [
           that,
           query,
@@ -7200,9 +7201,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     );
   }
 
-  TaskConstMeta get kCrateApiSearchEngineSearchEngineSearchSemanticConstMeta =>
+  TaskConstMeta
+  get kCrateApiSearchEngineSearchEngineSearchSemanticWithTimingsConstMeta =>
       const TaskConstMeta(
-        debugName: "SearchEngine_search_semantic",
+        debugName:
+            "SearchEngine_search_semantic_with_timings(dart_style=searchSemantic)",
         argNames: [
           "that",
           "query",
@@ -10148,6 +10151,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SemanticTimings dco_decode_box_autoadd_semantic_timings(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_semantic_timings(raw);
+  }
+
+  @protected
   SemanticVectorsInstallInput
   dco_decode_box_autoadd_semantic_vectors_install_input(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
@@ -10780,6 +10789,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SemanticTimings? dco_decode_opt_box_autoadd_semantic_timings(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_semantic_timings(raw);
+  }
+
+  @protected
   TextStorage? dco_decode_opt_box_autoadd_text_storage(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_box_autoadd_text_storage(raw);
@@ -11289,8 +11304,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SemanticSearchResponse dco_decode_semantic_search_response(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 15)
-      throw Exception('unexpected arr length: expect 15 but see ${arr.length}');
+    if (arr.length != 16)
+      throw Exception('unexpected arr length: expect 16 but see ${arr.length}');
     return SemanticSearchResponse(
       results: dco_decode_list_semantic_search_result(arr[0]),
       totalCount: dco_decode_u_32(arr[1]),
@@ -11307,6 +11322,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       truncated: dco_decode_bool(arr[12]),
       hasMore: dco_decode_bool(arr[13]),
       sessionRestarted: dco_decode_bool(arr[14]),
+      timings: dco_decode_opt_box_autoadd_semantic_timings(arr[15]),
     );
   }
 
@@ -11385,6 +11401,26 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       vectorsLibraryVersion: dco_decode_opt_box_autoadd_u_32(arr[14]),
       vectorSegments: dco_decode_u_32(arr[15]),
       needsCompaction: dco_decode_bool(arr[16]),
+    );
+  }
+
+  @protected
+  SemanticTimings dco_decode_semantic_timings(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 10)
+      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
+    return SemanticTimings(
+      expansions: dco_decode_u_32(arr[0]),
+      lexicalMs: dco_decode_f_64(arr[1]),
+      semanticMs: dco_decode_f_64(arr[2]),
+      embedMs: dco_decode_opt_box_autoadd_f_64(arr[3]),
+      scanMs: dco_decode_opt_box_autoadd_f_64(arr[4]),
+      resolveMs: dco_decode_opt_box_autoadd_f_64(arr[5]),
+      fuseMs: dco_decode_f_64(arr[6]),
+      hydrateMs: dco_decode_f_64(arr[7]),
+      pageMs: dco_decode_f_64(arr[8]),
+      totalMs: dco_decode_f_64(arr[9]),
     );
   }
 
@@ -12220,6 +12256,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_semantic_ranking_options(deserializer));
+  }
+
+  @protected
+  SemanticTimings sse_decode_box_autoadd_semantic_timings(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_semantic_timings(deserializer));
   }
 
   @protected
@@ -13188,6 +13232,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SemanticTimings? sse_decode_opt_box_autoadd_semantic_timings(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_semantic_timings(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   TextStorage? sse_decode_opt_box_autoadd_text_storage(
     SseDeserializer deserializer,
   ) {
@@ -13854,6 +13911,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_truncated = sse_decode_bool(deserializer);
     var var_hasMore = sse_decode_bool(deserializer);
     var var_sessionRestarted = sse_decode_bool(deserializer);
+    var var_timings = sse_decode_opt_box_autoadd_semantic_timings(deserializer);
     return SemanticSearchResponse(
       results: var_results,
       totalCount: var_totalCount,
@@ -13870,6 +13928,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       truncated: var_truncated,
       hasMore: var_hasMore,
       sessionRestarted: var_sessionRestarted,
+      timings: var_timings,
     );
   }
 
@@ -13990,6 +14049,33 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       vectorsLibraryVersion: var_vectorsLibraryVersion,
       vectorSegments: var_vectorSegments,
       needsCompaction: var_needsCompaction,
+    );
+  }
+
+  @protected
+  SemanticTimings sse_decode_semantic_timings(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_expansions = sse_decode_u_32(deserializer);
+    var var_lexicalMs = sse_decode_f_64(deserializer);
+    var var_semanticMs = sse_decode_f_64(deserializer);
+    var var_embedMs = sse_decode_opt_box_autoadd_f_64(deserializer);
+    var var_scanMs = sse_decode_opt_box_autoadd_f_64(deserializer);
+    var var_resolveMs = sse_decode_opt_box_autoadd_f_64(deserializer);
+    var var_fuseMs = sse_decode_f_64(deserializer);
+    var var_hydrateMs = sse_decode_f_64(deserializer);
+    var var_pageMs = sse_decode_f_64(deserializer);
+    var var_totalMs = sse_decode_f_64(deserializer);
+    return SemanticTimings(
+      expansions: var_expansions,
+      lexicalMs: var_lexicalMs,
+      semanticMs: var_semanticMs,
+      embedMs: var_embedMs,
+      scanMs: var_scanMs,
+      resolveMs: var_resolveMs,
+      fuseMs: var_fuseMs,
+      hydrateMs: var_hydrateMs,
+      pageMs: var_pageMs,
+      totalMs: var_totalMs,
     );
   }
 
@@ -14921,6 +15007,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_semantic_timings(
+    SemanticTimings self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_semantic_timings(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_semantic_vectors_install_input(
     SemanticVectorsInstallInput self,
     SseSerializer serializer,
@@ -15775,6 +15870,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_opt_box_autoadd_semantic_timings(
+    SemanticTimings? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_semantic_timings(self, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_opt_box_autoadd_text_storage(
     TextStorage? self,
     SseSerializer serializer,
@@ -16306,6 +16414,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.truncated, serializer);
     sse_encode_bool(self.hasMore, serializer);
     sse_encode_bool(self.sessionRestarted, serializer);
+    sse_encode_opt_box_autoadd_semantic_timings(self.timings, serializer);
   }
 
   @protected
@@ -16378,6 +16487,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_box_autoadd_u_32(self.vectorsLibraryVersion, serializer);
     sse_encode_u_32(self.vectorSegments, serializer);
     sse_encode_bool(self.needsCompaction, serializer);
+  }
+
+  @protected
+  void sse_encode_semantic_timings(
+    SemanticTimings self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_32(self.expansions, serializer);
+    sse_encode_f_64(self.lexicalMs, serializer);
+    sse_encode_f_64(self.semanticMs, serializer);
+    sse_encode_opt_box_autoadd_f_64(self.embedMs, serializer);
+    sse_encode_opt_box_autoadd_f_64(self.scanMs, serializer);
+    sse_encode_opt_box_autoadd_f_64(self.resolveMs, serializer);
+    sse_encode_f_64(self.fuseMs, serializer);
+    sse_encode_f_64(self.hydrateMs, serializer);
+    sse_encode_f_64(self.pageMs, serializer);
+    sse_encode_f_64(self.totalMs, serializer);
   }
 
   @protected
@@ -18626,21 +18753,22 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required bool matchTaamim,
     SemanticRankingOptions? ranking,
     required SemanticCancellationToken cancellation,
-  }) => RustLib.instance.api.crateApiSearchEngineSearchEngineSearchSemantic(
-    that: this,
-    query: query,
-    facets: facets,
-    limit: limit,
-    offset: offset,
-    lexicalMode: lexicalMode,
-    fuzzyMaxDistance: fuzzyMaxDistance,
-    retrievalMode: retrievalMode,
-    grouping: grouping,
-    matchNikud: matchNikud,
-    matchTaamim: matchTaamim,
-    ranking: ranking,
-    cancellation: cancellation,
-  );
+  }) => RustLib.instance.api
+      .crateApiSearchEngineSearchEngineSearchSemanticWithTimings(
+        that: this,
+        query: query,
+        facets: facets,
+        limit: limit,
+        offset: offset,
+        lexicalMode: lexicalMode,
+        fuzzyMaxDistance: fuzzyMaxDistance,
+        retrievalMode: retrievalMode,
+        grouping: grouping,
+        matchNikud: matchNikud,
+        matchTaamim: matchTaamim,
+        ranking: ranking,
+        cancellation: cancellation,
+      );
 
   /// Smart lexical matching without a model or a ranked semantic candidate window.
   /// Pagination and ordering are applied after all literal quotation constraints.

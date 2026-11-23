@@ -751,7 +751,7 @@ const PAGE_STEPS: &[(&str, u32)] = &[
 fn semantic_pages() -> Result<()> {
     use crate::api::search_engine::{
         SemanticCancellationToken, SemanticLexicalMode, SemanticRankingOptions,
-        SemanticRetrievalMode, SemanticTimings, LAST_SEMANTIC_TIMINGS,
+        SemanticRetrievalMode, SemanticTimings,
     };
     let groups: Option<Vec<String>> = std::env::var("OTZ_GROUPS").ok().map(|groups| {
         groups
@@ -791,7 +791,12 @@ fn semantic_pages() -> Result<()> {
             ranking.clone(),
             &SemanticCancellationToken::new(),
         );
-        (response, LAST_SEMANTIC_TIMINGS.get())
+        let timings = response
+            .as_ref()
+            .ok()
+            .and_then(|response| response.timings)
+            .unwrap_or_default();
+        (response, timings)
     };
 
     let plan_ms = engine.plan_semantic_for_bench()?;
@@ -800,18 +805,21 @@ fn semantic_pages() -> Result<()> {
     let cold = cold.map_err(|error| anyhow::anyhow!("{error:?}"))?;
     engine.invalidate_semantic_sessions_for_bench();
     let (_, warm) = search(cold_query, 1, SemanticLexicalMode::Exact);
+    let stage_ms = |value: Option<f64>| value.map(|value| format!("{value:.0}"));
+    let display_ms = |value| stage_ms(value).unwrap_or_else(|| "n/a".to_owned());
+    let csv_ms = |value| stage_ms(value).unwrap_or_default();
     let cold_line = format!(
         "cold: open {open_ms:.0} ms, plan {plan_ms:.0} ms, first search {:.0} ms (lex {:.0} \
-         emb {:.0} scan {:.0} res {:.0}; same search warm {:.0} ms, scan {:.0} res {:.0}), \
+         emb {} scan {} res {}; same search warm {:.0} ms, scan {} res {}), \
          n={} {:?}  {cold_query}",
         timings.total_ms,
         timings.lexical_ms,
-        timings.embed_ms,
-        timings.scan_ms,
-        timings.resolve_ms,
+        display_ms(timings.embed_ms),
+        display_ms(timings.scan_ms),
+        display_ms(timings.resolve_ms),
         warm.total_ms,
-        warm.scan_ms,
-        warm.resolve_ms,
+        display_ms(warm.scan_ms),
+        display_ms(warm.resolve_ms),
         cold.results.len(),
         cold.executed_mode
     );
@@ -854,15 +862,15 @@ fn semantic_pages() -> Result<()> {
                         };
                         let _ = writeln!(
                             out,
-                            "{group},{},{lexical_label},{step},{run},{:.2},{},{:.2},{:.2},{:.0},{:.0},{:.0},{:.2},{:.2},{:.2},{},{},{:?},{},{}",
+                            "{group},{},{lexical_label},{step},{run},{:.2},{},{:.2},{:.2},{},{},{},{:.2},{:.2},{:.2},{},{},{:?},{},{}",
                             csv_field(query),
                             timings.total_ms,
                             timings.expansions,
                             timings.lexical_ms,
                             timings.semantic_ms,
-                            timings.embed_ms,
-                            timings.scan_ms,
-                            timings.resolve_ms,
+                            csv_ms(timings.embed_ms),
+                            csv_ms(timings.scan_ms),
+                            csv_ms(timings.resolve_ms),
                             timings.fuse_ms,
                             timings.hydrate_ms,
                             timings.page_ms,
@@ -890,14 +898,14 @@ fn semantic_pages() -> Result<()> {
                         }
                         if run == 0 {
                             println!(
-                                "{group:<8} {lexical_label:<6} {step:<6} {:>8.1} ms  x{} lex {:>7.1} sem {:>7.1} (emb {:>4.0} scan {:>5.0} res {:>5.0}) fuse {:>6.1} hyd {:>6.1} page {:>6.1}  n={} more={} {:?}  {query}",
+                                "{group:<8} {lexical_label:<6} {step:<6} {:>8.1} ms  x{} lex {:>7.1} sem {:>7.1} (emb {:>4} scan {:>5} res {:>5}) fuse {:>6.1} hyd {:>6.1} page {:>6.1}  n={} more={} {:?}  {query}",
                                 timings.total_ms,
                                 timings.expansions,
                                 timings.lexical_ms,
                                 timings.semantic_ms,
-                                timings.embed_ms,
-                                timings.scan_ms,
-                                timings.resolve_ms,
+                                display_ms(timings.embed_ms),
+                                display_ms(timings.scan_ms),
+                                display_ms(timings.resolve_ms),
                                 timings.fuse_ms,
                                 timings.hydrate_ms,
                                 timings.page_ms,
@@ -941,17 +949,21 @@ fn semantic_pages() -> Result<()> {
         let p50 = |field: fn(&SemanticTimings) -> f64| {
             percentile(&sorted(samples.iter().map(field).collect()), 50.0)
         };
+        let p50_reported = |field: fn(&SemanticTimings) -> Option<f64>| {
+            let measured = sorted(samples.iter().filter_map(field).collect());
+            display_ms((!measured.is_empty()).then(|| percentile(&measured, 50.0)))
+        };
         let total = sorted(samples.iter().map(|t| t.total_ms).collect());
         let _ = writeln!(
             table,
-            "{step:<6} {lexical:<7} {:>5} {:>9.2} {:>9.2} {:>8.2} {:>8.2} {:>8.0} {:>8.0} {:>8.2} {:>8.2} {:>8.2}",
+            "{step:<6} {lexical:<7} {:>5} {:>9.2} {:>9.2} {:>8.2} {:>8.2} {:>8} {:>8} {:>8.2} {:>8.2} {:>8.2}",
             samples.len(),
             percentile(&total, 50.0),
             percentile(&total, 95.0),
             p50(|t| t.lexical_ms),
             p50(|t| t.semantic_ms),
-            p50(|t| t.scan_ms),
-            p50(|t| t.resolve_ms),
+            p50_reported(|t| t.scan_ms),
+            p50_reported(|t| t.resolve_ms),
             p50(|t| t.fuse_ms),
             p50(|t| t.hydrate_ms),
             p50(|t| t.page_ms),

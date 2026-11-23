@@ -42,7 +42,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 954178265;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 2061991729;
 
 // Section: executor
 
@@ -5829,7 +5829,7 @@ fn wire__crate__api__search_engine__SearchEngine_search_fuzzy_terms_impl(
         },
     )
 }
-fn wire__crate__api__search_engine__SearchEngine_search_semantic_impl(
+fn wire__crate__api__search_engine__SearchEngine_search_semantic_with_timings_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
@@ -5837,7 +5837,7 @@ fn wire__crate__api__search_engine__SearchEngine_search_semantic_impl(
 ) {
     FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
         flutter_rust_bridge::for_generated::TaskInfo {
-            debug_name: "SearchEngine_search_semantic",
+            debug_name: "SearchEngine_search_semantic_with_timings(dart_style=searchSemantic)",
             port: Some(port_),
             mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
         },
@@ -5904,21 +5904,22 @@ fn wire__crate__api__search_engine__SearchEngine_search_semantic_impl(
                     }
                     let api_that_guard = api_that_guard.unwrap();
                     let api_cancellation_guard = api_cancellation_guard.unwrap();
-                    let output_ok = crate::api::search_engine::SearchEngine::search_semantic(
-                        &*api_that_guard,
-                        api_query,
-                        api_facets,
-                        api_limit,
-                        api_offset,
-                        api_lexical_mode,
-                        api_fuzzy_max_distance,
-                        api_retrieval_mode,
-                        api_grouping,
-                        api_match_nikud,
-                        api_match_taamim,
-                        api_ranking,
-                        &*api_cancellation_guard,
-                    )?;
+                    let output_ok =
+                        crate::api::search_engine::SearchEngine::search_semantic_with_timings(
+                            &*api_that_guard,
+                            api_query,
+                            api_facets,
+                            api_limit,
+                            api_offset,
+                            api_lexical_mode,
+                            api_fuzzy_max_distance,
+                            api_retrieval_mode,
+                            api_grouping,
+                            api_match_nikud,
+                            api_match_taamim,
+                            api_ranking,
+                            &*api_cancellation_guard,
+                        )?;
                     std::result::Result::Ok(output_ok)
                 })(
                 ))
@@ -9982,6 +9983,19 @@ impl SseDecode for Option<crate::api::search_engine::SemanticRankingOptions> {
     }
 }
 
+impl SseDecode for Option<crate::api::search_engine::SemanticTimings> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<crate::api::search_engine::SemanticTimings>::sse_decode(
+                deserializer,
+            ));
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<crate::api::search_engine::TextStorage> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -10714,6 +10728,8 @@ impl SseDecode for crate::api::search_engine::SemanticSearchResponse {
         let mut var_truncated = <bool>::sse_decode(deserializer);
         let mut var_hasMore = <bool>::sse_decode(deserializer);
         let mut var_sessionRestarted = <bool>::sse_decode(deserializer);
+        let mut var_timings =
+            <Option<crate::api::search_engine::SemanticTimings>>::sse_decode(deserializer);
         return crate::api::search_engine::SemanticSearchResponse {
             results: var_results,
             total_count: var_totalCount,
@@ -10730,6 +10746,7 @@ impl SseDecode for crate::api::search_engine::SemanticSearchResponse {
             truncated: var_truncated,
             has_more: var_hasMore,
             session_restarted: var_sessionRestarted,
+            timings: var_timings,
         };
     }
 }
@@ -10858,6 +10875,34 @@ impl SseDecode for crate::api::search_engine::SemanticStatus {
             vectors_library_version: var_vectorsLibraryVersion,
             vector_segments: var_vectorSegments,
             needs_compaction: var_needsCompaction,
+        };
+    }
+}
+
+impl SseDecode for crate::api::search_engine::SemanticTimings {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_expansions = <u32>::sse_decode(deserializer);
+        let mut var_lexicalMs = <f64>::sse_decode(deserializer);
+        let mut var_semanticMs = <f64>::sse_decode(deserializer);
+        let mut var_embedMs = <Option<f64>>::sse_decode(deserializer);
+        let mut var_scanMs = <Option<f64>>::sse_decode(deserializer);
+        let mut var_resolveMs = <Option<f64>>::sse_decode(deserializer);
+        let mut var_fuseMs = <f64>::sse_decode(deserializer);
+        let mut var_hydrateMs = <f64>::sse_decode(deserializer);
+        let mut var_pageMs = <f64>::sse_decode(deserializer);
+        let mut var_totalMs = <f64>::sse_decode(deserializer);
+        return crate::api::search_engine::SemanticTimings {
+            expansions: var_expansions,
+            lexical_ms: var_lexicalMs,
+            semantic_ms: var_semanticMs,
+            embed_ms: var_embedMs,
+            scan_ms: var_scanMs,
+            resolve_ms: var_resolveMs,
+            fuse_ms: var_fuseMs,
+            hydrate_ms: var_hydrateMs,
+            page_ms: var_pageMs,
+            total_ms: var_totalMs,
         };
     }
 }
@@ -11234,7 +11279,7 @@ fn pde_ffi_dispatcher_primary_impl(
 95 => wire__crate__api__search_engine__SearchEngine_search_fuzzy_stream_impl(port, ptr, rust_vec_len, data_len),
 96 => wire__crate__api__search_engine__SearchEngine_search_fuzzy_stream_with_counts_impl(port, ptr, rust_vec_len, data_len),
 97 => wire__crate__api__search_engine__SearchEngine_search_fuzzy_terms_impl(port, ptr, rust_vec_len, data_len),
-98 => wire__crate__api__search_engine__SearchEngine_search_semantic_impl(port, ptr, rust_vec_len, data_len),
+98 => wire__crate__api__search_engine__SearchEngine_search_semantic_with_timings_impl(port, ptr, rust_vec_len, data_len),
 99 => wire__crate__api__search_engine__SearchEngine_search_smart_lexical_impl(port, ptr, rust_vec_len, data_len),
 100 => wire__crate__api__search_engine__SearchEngine_search_snapshot_impl(port, ptr, rust_vec_len, data_len),
 101 => wire__crate__api__search_engine__SearchEngine_search_stream_impl(port, ptr, rust_vec_len, data_len),
@@ -12900,6 +12945,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticSearch
             self.truncated.into_into_dart().into_dart(),
             self.has_more.into_into_dart().into_dart(),
             self.session_restarted.into_into_dart().into_dart(),
+            self.timings.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -13036,6 +13082,35 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::search_engine::SemanticStatus
     for crate::api::search_engine::SemanticStatus
 {
     fn into_into_dart(self) -> crate::api::search_engine::SemanticStatus {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticTimings {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.expansions.into_into_dart().into_dart(),
+            self.lexical_ms.into_into_dart().into_dart(),
+            self.semantic_ms.into_into_dart().into_dart(),
+            self.embed_ms.into_into_dart().into_dart(),
+            self.scan_ms.into_into_dart().into_dart(),
+            self.resolve_ms.into_into_dart().into_dart(),
+            self.fuse_ms.into_into_dart().into_dart(),
+            self.hydrate_ms.into_into_dart().into_dart(),
+            self.page_ms.into_into_dart().into_dart(),
+            self.total_ms.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::search_engine::SemanticTimings
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::search_engine::SemanticTimings>
+    for crate::api::search_engine::SemanticTimings
+{
+    fn into_into_dart(self) -> crate::api::search_engine::SemanticTimings {
         self
     }
 }
@@ -14397,6 +14472,16 @@ impl SseEncode for Option<crate::api::search_engine::SemanticRankingOptions> {
     }
 }
 
+impl SseEncode for Option<crate::api::search_engine::SemanticTimings> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::search_engine::SemanticTimings>::sse_encode(value, serializer);
+        }
+    }
+}
+
 impl SseEncode for Option<crate::api::search_engine::TextStorage> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -14988,6 +15073,7 @@ impl SseEncode for crate::api::search_engine::SemanticSearchResponse {
         <bool>::sse_encode(self.truncated, serializer);
         <bool>::sse_encode(self.has_more, serializer);
         <bool>::sse_encode(self.session_restarted, serializer);
+        <Option<crate::api::search_engine::SemanticTimings>>::sse_encode(self.timings, serializer);
     }
 }
 
@@ -15071,6 +15157,22 @@ impl SseEncode for crate::api::search_engine::SemanticStatus {
         <Option<u32>>::sse_encode(self.vectors_library_version, serializer);
         <u32>::sse_encode(self.vector_segments, serializer);
         <bool>::sse_encode(self.needs_compaction, serializer);
+    }
+}
+
+impl SseEncode for crate::api::search_engine::SemanticTimings {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <u32>::sse_encode(self.expansions, serializer);
+        <f64>::sse_encode(self.lexical_ms, serializer);
+        <f64>::sse_encode(self.semantic_ms, serializer);
+        <Option<f64>>::sse_encode(self.embed_ms, serializer);
+        <Option<f64>>::sse_encode(self.scan_ms, serializer);
+        <Option<f64>>::sse_encode(self.resolve_ms, serializer);
+        <f64>::sse_encode(self.fuse_ms, serializer);
+        <f64>::sse_encode(self.hydrate_ms, serializer);
+        <f64>::sse_encode(self.page_ms, serializer);
+        <f64>::sse_encode(self.total_ms, serializer);
     }
 }
 
