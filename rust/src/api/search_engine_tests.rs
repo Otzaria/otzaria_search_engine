@@ -12381,15 +12381,38 @@ mod semantic_sessions {
         assert_ne!(after_top, after_last);
     }
 
-    /// The first page of a search takes no marks: they are on results already shown.
+    /// Marks carried into a search rank its first page: it starts a session of its own, the
+    /// same marks again keep that session, and a page without them is the query's own again.
     #[test]
-    fn the_first_page_ignores_marks() {
+    fn marks_carried_into_a_search_rank_its_first_page() {
         let _serial = serialized();
         let (engine, _index, _semantic) = sabbath();
-        let first = page(&engine, 5, 0);
-        let marked = voted_page(&engine, 5, 0, &[vote(&first.results[0], true)]);
-        assert_eq!(bits(&marked), bits(&first));
-        assert_eq!(expansions(&engine), 1);
+        let plain = page(&engine, 5, 0);
+        let carried = [vote(&plain.results[4], true)];
+        let steered = voted_page(&engine, 5, 0, &carried);
+        assert_eq!(
+            expansions(&engine),
+            2,
+            "other marks start a session of their own"
+        );
+        assert_ne!(lines(&steered), lines(&plain));
+        assert_eq!(bits(&voted_page(&engine, 5, 0, &carried)), bits(&steered));
+        assert_eq!(expansions(&engine), 2, "the same marks keep it");
+        assert_eq!(bits(&page(&engine, 5, 0)), bits(&plain));
+    }
+
+    /// A mark on a line the library does not have moves nothing.
+    #[test]
+    fn a_mark_on_a_missing_line_is_ignored() {
+        let _serial = serialized();
+        let (engine, _index, _semantic) = sabbath();
+        let plain = page(&engine, 5, 0);
+        let missing = [SemanticVote {
+            file_path: "no such book".to_string(),
+            id: 1,
+            relevant: true,
+        }];
+        assert_eq!(lines(&voted_page(&engine, 5, 0, &missing)), lines(&plain));
     }
 
     /// The query moves toward the mean of the relevant passages and away from the mean of

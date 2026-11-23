@@ -13,11 +13,11 @@
 - **`semanticQueryTokens`** counts texts as queries, with the cap a query is
   cut at, so a caller can cut a long passage into windows that fit.
 - **`searchSemantic` takes `votes`**: the user's marks (`SemanticVote`, relevant
-  or not) on results already shown. When they change, the next page ranks the
-  results not yet shown again, searching with the query moved toward the
-  passages marked relevant and away from those marked not (Rocchio). Pages
-  already shown keep their order; the first page of a search takes no marks.
-  Optional: omit it for none.
+  or not) on lines. The search runs with the query moved toward the passages
+  marked relevant and away from those marked not (Rocchio). When the marks of a
+  continuation change, the results not yet shown are ranked again and the pages
+  already shown keep their order; a first page with marks (marks carried into an
+  edited search) is ranked by them from the top. Optional: omit it for none.
 
 ### Changed
 

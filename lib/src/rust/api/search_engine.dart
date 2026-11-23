@@ -1548,9 +1548,9 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// replaces its displayed results. A changed page size also starts a new session.
   /// `has_more` says whether a page follows; the counts describe the last candidate window.
   ///
-  /// `votes` are the user's marks on results already shown (see
-  /// [`Self::search_semantic_voted`]): when they change, the next page ranks the results not
-  /// yet shown again, by the query moved toward what was marked relevant. `None` for none.
+  /// `votes` are the user's marks on lines (see [`Self::search_semantic_voted`]): the search
+  /// runs with the query moved toward what was marked relevant; when they change, the next
+  /// page ranks the results not yet shown again. `None` for none.
   ///
   /// Quoted words are looked up verbatim, with adjacency inside each quoted phrase.
   /// A single quotation covering the whole query uses `Exact`; words outside a quotation
@@ -5033,8 +5033,8 @@ class SemanticVectorsVerification {
           elapsedMs == other.elapsedMs;
 }
 
-/// A user's mark on a result a page showed, by its line as [`SemanticSearchResult`] names it:
-/// relevant or not. [`SearchEngine::search_semantic_voted`] ranks the results not yet shown by it.
+/// A user's mark on a line, as [`SemanticSearchResult`] names it: relevant or not.
+/// [`SearchEngine::search_semantic_voted`] ranks by it the results not yet shown.
 class SemanticVote {
   final String filePath;
   final BigInt id;

@@ -542,10 +542,11 @@ happen from the application, without a release of the engine.
 
 ### Marks on shown results
 
-`votes` carries the user's marks on results a page already showed. When they
-change, the next page ranks the results not yet shown again, searching with the
-query moved toward the passages marked relevant and away from those marked not;
-the pages shown keep their order. The first page of a search takes no marks.
+`votes` carries the user's marks on lines: the search runs with the query moved
+toward the passages marked relevant and away from those marked not. When the
+marks of a continuation change, the results not yet shown are ranked again and
+the pages shown keep their order. A first page with marks, such as marks
+carried into an edited search, is ranked by them from the top.
 
 ```dart
 final next = await engine.searchSemantic(

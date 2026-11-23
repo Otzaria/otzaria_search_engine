@@ -1445,8 +1445,8 @@ pub struct SemanticHighlightTarget {
     pub window: u8,
 }
 
-/// A user's mark on a result a page showed, by its line as [`SemanticSearchResult`] names it:
-/// relevant or not. [`SearchEngine::search_semantic_voted`] ranks the results not yet shown by it.
+/// A user's mark on a line, as [`SemanticSearchResult`] names it: relevant or not.
+/// [`SearchEngine::search_semantic_voted`] ranks by it the results not yet shown.
 #[frb(non_opaque)]
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SemanticVote {
@@ -8189,9 +8189,9 @@ impl SearchEngine {
     /// replaces its displayed results. A changed page size also starts a new session.
     /// `has_more` says whether a page follows; the counts describe the last candidate window.
     ///
-    /// `votes` are the user's marks on results already shown (see
-    /// [`Self::search_semantic_voted`]): when they change, the next page ranks the results not
-    /// yet shown again, by the query moved toward what was marked relevant. `None` for none.
+    /// `votes` are the user's marks on lines (see [`Self::search_semantic_voted`]): the search
+    /// runs with the query moved toward what was marked relevant; when they change, the next
+    /// page ranks the results not yet shown again. `None` for none.
     ///
     /// Quoted words are looked up verbatim, with adjacency inside each quoted phrase.
     /// A single quotation covering the whole query uses `Exact`; words outside a quotation
@@ -8299,11 +8299,12 @@ impl SearchEngine {
         )
     }
 
-    /// [`Self::search_semantic`], with the user's marks on results the session showed. A
-    /// continuation whose marks differ from those its session last ranked by ranks the results
-    /// not yet shown again, searching with the query moved toward the passages marked relevant
-    /// and away from those marked not; the pages shown keep their order. The first page of a
-    /// search takes no marks: a mark is on a result already shown.
+    /// [`Self::search_semantic`], with the user's marks on lines of the library: relevant or
+    /// not. The search runs with the query moved toward the passages marked relevant and away
+    /// from those marked not. A first page with marks starts a session of its own, ranked by
+    /// them from the top (marks carried into an edited search); a continuation whose marks
+    /// differ from those its session last ranked by ranks the results not yet shown again,
+    /// and the pages shown keep their order.
     #[frb(ignore)]
     #[allow(clippy::too_many_arguments)]
     pub fn search_semantic_voted(
@@ -8384,15 +8385,14 @@ impl SearchEngine {
                 self.semantic_sessions.epoch(),
                 limit,
             );
-            // A search whose semantic half failed is searched again, but its pages still page.
+            let mut votes = votes.to_vec();
+            votes.sort();
+            votes.dedup();
+            // A search whose semantic half failed is searched again, but its pages still page;
+            // a first page with marks other than its session's is ranked by them afresh.
             let kept = self.semantic_sessions.get(&key).filter(|kept| {
-                offset > 0
-                    || kept
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .state
-                        .fallback_reason
-                        .is_none()
+                let kept = kept.lock().unwrap_or_else(PoisonError::into_inner);
+                offset > 0 || (kept.state.fallback_reason.is_none() && kept.state.votes == votes)
             });
             let session_restarted = offset > 0 && kept.is_none();
             let offset = if session_restarted { 0 } else { offset };
@@ -8411,14 +8411,13 @@ impl SearchEngine {
             // resolver's caches follow, reads every address the session holds alike.
             session.searcher = searcher;
 
-            let mut votes = votes.to_vec();
-            votes.sort();
-            votes.dedup();
-            let mut revote = offset > 0 && votes != session.state.votes;
+            let changed = votes != session.state.votes;
+            // A new session fills from the top with the moved query; a used one ranks again.
+            let mut revote = changed && session.window > 0;
             // Set only once the page is served, so a cancelled search leaves the session as it was.
             let mut query_vector = session.state.query_vector.clone();
-            if revote {
-                query_vector = self.voted_query_vector(&open, &request, session, &votes, cancel)?;
+            if changed {
+                query_vector = self.voted_query_vector(&open, &request, &votes, cancel)?;
             }
 
             // One past the page, so that whether another page follows is known.
@@ -8476,10 +8475,8 @@ impl SearchEngine {
             session.commit(additions);
             session.window = window;
             session.exhausted = exhausted;
-            if offset > 0 {
-                session.state.votes = votes;
-                session.state.query_vector = query_vector;
-            }
+            session.state.votes = votes;
+            session.state.query_vector = query_vector;
             if let Some(expanded) = expanded {
                 session.state.absorb(expanded);
             }
@@ -8991,48 +8988,37 @@ impl SearchEngine {
 
     /// The query moved by `votes` (Rocchio): its vector, plus [`VOTE_RELEVANT_WEIGHT`] times the
     /// mean of the passages marked relevant, minus [`VOTE_IRRELEVANT_WEIGHT`] times the mean of
-    /// those marked not, at unit length. A mark on a line the session does not hold counts for
+    /// those marked not, at unit length. A mark on a line the library no longer has counts for
     /// nothing; `None` with no mark left, or when the model cannot embed (the query as typed).
     #[cfg(feature = "semantic-integration")]
     fn voted_query_vector(
         &self,
         open: &OpenSession,
         request: &SemanticRequest<'_>,
-        session: &SemanticSearchSession,
         votes: &[SemanticVote],
         cancel: &SearchCancellation,
     ) -> Result<Option<Vec<f32>>, SemanticError> {
-        let held = session.page(0, u32::try_from(session.len()).unwrap_or(u32::MAX));
-        let marked: Vec<(&SessionEntry, bool)> = votes
-            .iter()
-            .filter_map(|vote| {
-                held.iter()
-                    .find(|entry| {
-                        entry.item.file_path == vote.file_path && entry.item.id == vote.id
-                    })
-                    .map(|entry| (entry, vote.relevant))
-            })
-            .collect();
-        if marked.is_empty() {
+        if votes.is_empty() {
             return Ok(None);
         }
-        let addresses: Vec<DocAddress> = marked
-            .iter()
-            .filter_map(|(entry, _)| entry.hydrated.as_ref().map(|(address, _)| *address))
-            .collect();
-        let mut stored = self
-            .texts_at(&session.searcher, &addresses)
-            .map_err(|err| SemanticError::new(SemanticErrorKind::Internal, err.to_string()))?
-            .into_iter();
-        let mut texts = Vec::with_capacity(marked.len());
-        for (entry, relevant) in &marked {
-            let text = match entry.hydrated {
-                Some(_) => stored.next().map(|(text, _)| text.text).unwrap_or_default(),
-                None => entry.item.text.clone(),
-            };
-            if !text.trim().is_empty() {
-                texts.push((text, *relevant));
+        let searcher = self.index_reader.searcher();
+        let mut addresses = Vec::with_capacity(votes.len());
+        let mut relevance = Vec::with_capacity(votes.len());
+        for vote in votes {
+            if let Some(address) = self.address_in_book(&searcher, &vote.file_path, vote.id)? {
+                addresses.push(address);
+                relevance.push(vote.relevant);
             }
+        }
+        let texts: Vec<(String, bool)> = self
+            .texts_at(&searcher, &addresses)?
+            .into_iter()
+            .zip(relevance)
+            .filter(|((text, status), _)| *status == TextStatus::Ok && !text.text.trim().is_empty())
+            .map(|((text, _), relevant)| (text.text, relevant))
+            .collect();
+        if texts.is_empty() {
+            return Ok(None);
         }
         let inputs: Vec<&str> = texts.iter().map(|(text, _)| text.as_str()).collect();
         let embedded = open
