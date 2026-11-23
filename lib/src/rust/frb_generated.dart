@@ -1007,6 +1007,7 @@ abstract class RustLibApi extends BaseApi {
     required bool matchNikud,
     required bool matchTaamim,
     SemanticRankingOptions? ranking,
+    List<SemanticVote>? votes,
     required SemanticCancellationToken cancellation,
   });
 
@@ -7204,6 +7205,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required bool matchNikud,
     required bool matchTaamim,
     SemanticRankingOptions? ranking,
+    List<SemanticVote>? votes,
     required SemanticCancellationToken cancellation,
   }) {
     return handler.executeNormal(
@@ -7231,6 +7233,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             ranking,
             serializer,
           );
+          sse_encode_opt_list_semantic_vote(votes, serializer);
           sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken(
             cancellation,
             serializer,
@@ -7261,6 +7264,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           matchNikud,
           matchTaamim,
           ranking,
+          votes,
           cancellation,
         ],
         apiImpl: this,
@@ -7286,6 +7290,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "matchNikud",
           "matchTaamim",
           "ranking",
+          "votes",
           "cancellation",
         ],
       );
@@ -10872,6 +10877,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<SemanticVote> dco_decode_list_semantic_vote(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_semantic_vote).toList();
+  }
+
+  @protected
   List<TestCase> dco_decode_list_test_case(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_test_case).toList();
@@ -11072,6 +11083,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Uint32List? dco_decode_opt_list_prim_u_32_strict(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_list_prim_u_32_strict(raw);
+  }
+
+  @protected
+  List<SemanticVote>? dco_decode_opt_list_semantic_vote(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_list_semantic_vote(raw);
   }
 
   @protected
@@ -11897,6 +11914,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       segments: dco_decode_u_32(arr[1]),
       bytesChecked: dco_decode_u_64(arr[2]),
       elapsedMs: dco_decode_u_64(arr[3]),
+    );
+  }
+
+  @protected
+  SemanticVote dco_decode_semantic_vote(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return SemanticVote(
+      filePath: dco_decode_String(arr[0]),
+      id: dco_decode_u_64(arr[1]),
+      relevant: dco_decode_bool(arr[2]),
     );
   }
 
@@ -13441,6 +13471,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<SemanticVote> sse_decode_list_semantic_vote(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <SemanticVote>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_semantic_vote(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
   List<TestCase> sse_decode_list_test_case(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
@@ -13785,6 +13829,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
     if (sse_decode_bool(deserializer)) {
       return (sse_decode_list_prim_u_32_strict(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  List<SemanticVote>? sse_decode_opt_list_semantic_vote(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_list_semantic_vote(deserializer));
     } else {
       return null;
     }
@@ -14837,6 +14894,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       segments: var_segments,
       bytesChecked: var_bytesChecked,
       elapsedMs: var_elapsedMs,
+    );
+  }
+
+  @protected
+  SemanticVote sse_decode_semantic_vote(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_filePath = sse_decode_String(deserializer);
+    var var_id = sse_decode_u_64(deserializer);
+    var var_relevant = sse_decode_bool(deserializer);
+    return SemanticVote(
+      filePath: var_filePath,
+      id: var_id,
+      relevant: var_relevant,
     );
   }
 
@@ -16350,6 +16420,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_semantic_vote(
+    List<SemanticVote> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_semantic_vote(item, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_list_test_case(
     List<TestCase> self,
     SseSerializer serializer,
@@ -16683,6 +16765,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_list_prim_u_32_strict(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_list_semantic_vote(
+    List<SemanticVote>? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_list_semantic_vote(self, serializer);
     }
   }
 
@@ -17433,6 +17528,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_u_32(self.segments, serializer);
     sse_encode_u_64(self.bytesChecked, serializer);
     sse_encode_u_64(self.elapsedMs, serializer);
+  }
+
+  @protected
+  void sse_encode_semantic_vote(SemanticVote self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.filePath, serializer);
+    sse_encode_u_64(self.id, serializer);
+    sse_encode_bool(self.relevant, serializer);
   }
 
   @protected
@@ -19605,6 +19708,10 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// replaces its displayed results. A changed page size also starts a new session.
   /// `has_more` says whether a page follows; the counts describe the last candidate window.
   ///
+  /// `votes` are the user's marks on results already shown (see
+  /// [`Self::search_semantic_voted`]): when they change, the next page ranks the results not
+  /// yet shown again, by the query moved toward what was marked relevant. `None` for none.
+  ///
   /// Quoted words are looked up verbatim, with adjacency inside each quoted phrase.
   /// A single quotation covering the whole query uses `Exact`; words outside a quotation
   /// keep the requested lexical mode. An acronym's gershayim (רמב"ם) quotes nothing.
@@ -19641,6 +19748,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required bool matchNikud,
     required bool matchTaamim,
     SemanticRankingOptions? ranking,
+    List<SemanticVote>? votes,
     required SemanticCancellationToken cancellation,
   }) => RustLib.instance.api
       .crateApiSearchEngineSearchEngineSearchSemanticWithTimings(
@@ -19656,6 +19764,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         matchNikud: matchNikud,
         matchTaamim: matchTaamim,
         ranking: ranking,
+        votes: votes,
         cancellation: cancellation,
       );
 

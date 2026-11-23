@@ -379,7 +379,7 @@ Future<SemanticCoveredBooks> semanticCoveredBooks({required String vectorsDir, r
 Future<SemanticStatus> openSemanticArtifact({required SemanticArtifactInput config})
 Future<void> disableSemantic()
 Future<SemanticStatus> semanticStatus()
-Future<SemanticSearchResponse> searchSemantic({..., SemanticRankingOptions? ranking, required SemanticCancellationToken cancellation})
+Future<SemanticSearchResponse> searchSemantic({..., SemanticRankingOptions? ranking, required List<SemanticVote> votes, required SemanticCancellationToken cancellation})
 
 // Development and testing: vectors built on this device.
 Future<SemanticStatus> configureSemantic({required SemanticConfigInput config})

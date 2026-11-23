@@ -12302,6 +12302,114 @@ mod semantic_sessions {
         assert!(third.has_more);
     }
 
+    fn voted_page(
+        engine: &SearchEngine,
+        limit: u32,
+        offset: u32,
+        votes: &[SemanticVote],
+    ) -> SemanticSearchResponse {
+        engine
+            .search_semantic_voted(
+                "שבת".to_string(),
+                Vec::new(),
+                limit,
+                offset,
+                SemanticLexicalMode::Exact,
+                0,
+                SemanticRetrievalMode::Hybrid,
+                None,
+                false,
+                false,
+                None,
+                votes,
+                &SemanticCancellationToken::new(),
+            )
+            .unwrap()
+    }
+
+    fn vote(hit: &SemanticSearchResult, relevant: bool) -> SemanticVote {
+        SemanticVote {
+            file_path: hit.file_path.clone(),
+            id: hit.id,
+            relevant,
+        }
+    }
+
+    /// New marks rank again only the results not yet shown, once: the pages shown stand,
+    /// a page asked again with the same marks is the same page, and nothing is shown twice.
+    #[test]
+    fn marks_rank_again_only_what_was_not_shown() {
+        let _serial = serialized();
+        let (engine, _index, _semantic) = sabbath();
+        let first = page(&engine, 5, 0);
+        let liked = [vote(&first.results[0], true)];
+        let second = voted_page(&engine, 5, 5, &liked);
+        assert_eq!(expansions(&engine), 2, "new marks rank again");
+        assert_eq!(bits(&voted_page(&engine, 5, 5, &liked)), bits(&second));
+        assert_eq!(bits(&voted_page(&engine, 5, 0, &liked)), bits(&first));
+        assert_eq!(expansions(&engine), 2, "the same marks rank nothing again");
+
+        let mut both = liked.to_vec();
+        both.insert(0, vote(&first.results[1], false));
+        let third = voted_page(&engine, 5, 10, &both);
+        assert_eq!(expansions(&engine), 3);
+        assert_eq!(bits(&voted_page(&engine, 5, 5, &both)), bits(&second));
+        assert_eq!(bits(&page(&engine, 5, 0)), bits(&first));
+
+        let shown: Vec<_> = [&first, &second, &third]
+            .iter()
+            .flat_map(|response| lines(response))
+            .collect();
+        let unique: HashSet<_> = shown.iter().cloned().collect();
+        assert_eq!(unique.len(), shown.len(), "a result shown twice: {shown:?}");
+    }
+
+    /// A mark moves the query toward its passage: two engines that agree on the first page
+    /// and rank the rest again at the same depth part where the passages marked differ.
+    #[test]
+    fn the_passage_marked_decides_the_next_page() {
+        let _serial = serialized();
+        let next_after = |marked: usize| {
+            let (engine, _index, _semantic) = sabbath();
+            let first = page(&engine, 5, 0);
+            let next = voted_page(&engine, 5, 5, &[vote(&first.results[marked], true)]);
+            (bits(&first), lines(&next))
+        };
+        let (first, after_top) = next_after(0);
+        let (same_first, after_last) = next_after(4);
+        assert_eq!(first, same_first);
+        assert_ne!(after_top, after_last);
+    }
+
+    /// The first page of a search takes no marks: they are on results already shown.
+    #[test]
+    fn the_first_page_ignores_marks() {
+        let _serial = serialized();
+        let (engine, _index, _semantic) = sabbath();
+        let first = page(&engine, 5, 0);
+        let marked = voted_page(&engine, 5, 0, &[vote(&first.results[0], true)]);
+        assert_eq!(bits(&marked), bits(&first));
+        assert_eq!(expansions(&engine), 1);
+    }
+
+    /// The query moves toward the mean of the relevant passages and away from the mean of
+    /// the others, at the weights given, and stays a unit vector.
+    #[test]
+    fn the_moved_query_is_the_rocchio_sum_at_unit_length() {
+        assert_eq!(moved_query(&[1.0, 0.0], &[], &[]), None);
+        let moved = moved_query(&[1.0, 0.0], &[&[0.0, 2.0]], &[&[0.0, -1.0]]).unwrap();
+        let expected = [1.0, VOTE_RELEVANT_WEIGHT + VOTE_IRRELEVANT_WEIGHT];
+        let norm = (expected[0] * expected[0] + expected[1] * expected[1]).sqrt();
+        for (got, want) in moved.iter().zip(expected) {
+            assert!((got - want / norm).abs() < 1e-6, "{moved:?}");
+        }
+        let two = moved_query(&[1.0, 0.0], &[&[0.0, 1.0], &[0.0, -1.0]], &[]).unwrap();
+        assert!(
+            (two[0] - 1.0).abs() < 1e-6 && two[1].abs() < 1e-6,
+            "{two:?}"
+        );
+    }
+
     /// The counts keep their meaning: the lexical count is the corpus-wide count, and the
     /// candidate counts are a window's, the same on every page that window serves.
     #[test]

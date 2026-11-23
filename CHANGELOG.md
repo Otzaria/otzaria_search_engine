@@ -12,12 +12,19 @@
   reader, such as parallels to the section being read.
 - **`semanticQueryTokens`** counts texts as queries, with the cap a query is
   cut at, so a caller can cut a long passage into windows that fit.
+- **`searchSemantic` takes `votes`**: the user's marks (`SemanticVote`, relevant
+  or not) on results already shown. When they change, the next page ranks the
+  results not yet shown again, searching with the query moved toward the
+  passages marked relevant and away from those marked not (Rocchio). Pages
+  already shown keep their order; the first page of a search takes no marks.
+  Optional: omit it for none.
 
 ### Changed
 
 - The semantic sidecar is pinned to the revision with several-query scans
   (Otzaria/otzaria-semantic-search#36) and the coordinator's direct vector
   API (Otzaria/otzaria-semantic-search#38).
+- The `otzaria-semantic-search` pin includes `HybridSearchParams::query_vector`.
 
 ## 7.4.0 – 2026-11-22
 

@@ -540,6 +540,24 @@ either side's scores, then the alphas, BM25's `k`, the threshold and the
 bonuses. That is what this option is for: the runs, and the tuning after them,
 happen from the application, without a release of the engine.
 
+### Marks on shown results
+
+`votes` carries the user's marks on results a page already showed. When they
+change, the next page ranks the results not yet shown again, searching with the
+query moved toward the passages marked relevant and away from those marked not;
+the pages shown keep their order. The first page of a search takes no marks.
+
+```dart
+final next = await engine.searchSemantic(
+  query: query,
+  // ... the other parameters, offset past the shown pages ...
+  votes: [
+    SemanticVote(filePath: liked.filePath, id: liked.id, relevant: true),
+  ],
+  cancellation: token,
+);
+```
+
 ### The model
 
 The Meivin model the application uses is its INT8 graph,

@@ -5898,6 +5898,9 @@ fn wire__crate__api__search_engine__SearchEngine_search_semantic_with_timings_im
                 <Option<crate::api::search_engine::SemanticRankingOptions>>::sse_decode(
                     &mut deserializer,
                 );
+            let api_votes = <Option<Vec<crate::api::search_engine::SemanticVote>>>::sse_decode(
+                &mut deserializer,
+            );
             let api_cancellation = <RustOpaqueMoi<
                 flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SemanticCancellationToken>,
             >>::sse_decode(&mut deserializer);
@@ -5943,6 +5946,7 @@ fn wire__crate__api__search_engine__SearchEngine_search_semantic_with_timings_im
                             api_match_nikud,
                             api_match_taamim,
                             api_ranking,
+                            api_votes,
                             &*api_cancellation_guard,
                         )?;
                     std::result::Result::Ok(output_ok)
@@ -10028,6 +10032,20 @@ impl SseDecode for Vec<crate::api::search_engine::SemanticSegmentInfo> {
     }
 }
 
+impl SseDecode for Vec<crate::api::search_engine::SemanticVote> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::api::search_engine::SemanticVote>::sse_decode(
+                deserializer,
+            ));
+        }
+        return ans_;
+    }
+}
+
 impl SseDecode for Vec<crate::api::benchmark::TestCase> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -10356,6 +10374,19 @@ impl SseDecode for Option<Vec<u32>> {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         if (<bool>::sse_decode(deserializer)) {
             return Some(<Vec<u32>>::sse_decode(deserializer));
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<Vec<crate::api::search_engine::SemanticVote>> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<Vec<crate::api::search_engine::SemanticVote>>::sse_decode(
+                deserializer,
+            ));
         } else {
             return None;
         }
@@ -11493,6 +11524,20 @@ impl SseDecode for crate::api::search_engine::SemanticVectorsVerification {
             segments: var_segments,
             bytes_checked: var_bytesChecked,
             elapsed_ms: var_elapsedMs,
+        };
+    }
+}
+
+impl SseDecode for crate::api::search_engine::SemanticVote {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_filePath = <String>::sse_decode(deserializer);
+        let mut var_id = <u64>::sse_decode(deserializer);
+        let mut var_relevant = <bool>::sse_decode(deserializer);
+        return crate::api::search_engine::SemanticVote {
+            file_path: var_filePath,
+            id: var_id,
+            relevant: var_relevant,
         };
     }
 }
@@ -13965,6 +14010,28 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::search_engine::SemanticVector
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticVote {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.file_path.into_into_dart().into_dart(),
+            self.id.into_into_dart().into_dart(),
+            self.relevant.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::search_engine::SemanticVote
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::search_engine::SemanticVote>
+    for crate::api::search_engine::SemanticVote
+{
+    fn into_into_dart(self) -> crate::api::search_engine::SemanticVote {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::benchmark::TestCase {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -15050,6 +15117,16 @@ impl SseEncode for Vec<crate::api::search_engine::SemanticSegmentInfo> {
     }
 }
 
+impl SseEncode for Vec<crate::api::search_engine::SemanticVote> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::search_engine::SemanticVote>::sse_encode(item, serializer);
+        }
+    }
+}
+
 impl SseEncode for Vec<crate::api::benchmark::TestCase> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -15318,6 +15395,16 @@ impl SseEncode for Option<Vec<u32>> {
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <Vec<u32>>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<Vec<crate::api::search_engine::SemanticVote>> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <Vec<crate::api::search_engine::SemanticVote>>::sse_encode(value, serializer);
         }
     }
 }
@@ -16150,6 +16237,15 @@ impl SseEncode for crate::api::search_engine::SemanticVectorsVerification {
         <u32>::sse_encode(self.segments, serializer);
         <u64>::sse_encode(self.bytes_checked, serializer);
         <u64>::sse_encode(self.elapsed_ms, serializer);
+    }
+}
+
+impl SseEncode for crate::api::search_engine::SemanticVote {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.file_path, serializer);
+        <u64>::sse_encode(self.id, serializer);
+        <bool>::sse_encode(self.relevant, serializer);
     }
 }
 

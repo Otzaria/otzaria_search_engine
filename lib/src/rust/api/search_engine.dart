@@ -1548,6 +1548,10 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// replaces its displayed results. A changed page size also starts a new session.
   /// `has_more` says whether a page follows; the counts describe the last candidate window.
   ///
+  /// `votes` are the user's marks on results already shown (see
+  /// [`Self::search_semantic_voted`]): when they change, the next page ranks the results not
+  /// yet shown again, by the query moved toward what was marked relevant. `None` for none.
+  ///
   /// Quoted words are looked up verbatim, with adjacency inside each quoted phrase.
   /// A single quotation covering the whole query uses `Exact`; words outside a quotation
   /// keep the requested lexical mode. An acronym's gershayim (רמב"ם) quotes nothing.
@@ -1584,6 +1588,7 @@ abstract class SearchEngine implements RustOpaqueInterface {
     required bool matchNikud,
     required bool matchTaamim,
     SemanticRankingOptions? ranking,
+    List<SemanticVote>? votes,
     required SemanticCancellationToken cancellation,
   });
 
@@ -5026,6 +5031,32 @@ class SemanticVectorsVerification {
           segments == other.segments &&
           bytesChecked == other.bytesChecked &&
           elapsedMs == other.elapsedMs;
+}
+
+/// A user's mark on a result a page showed, by its line as [`SemanticSearchResult`] names it:
+/// relevant or not. [`SearchEngine::search_semantic_voted`] ranks the results not yet shown by it.
+class SemanticVote {
+  final String filePath;
+  final BigInt id;
+  final bool relevant;
+
+  const SemanticVote({
+    required this.filePath,
+    required this.id,
+    required this.relevant,
+  });
+
+  @override
+  int get hashCode => filePath.hashCode ^ id.hashCode ^ relevant.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SemanticVote &&
+          runtimeType == other.runtimeType &&
+          filePath == other.filePath &&
+          id == other.id &&
+          relevant == other.relevant;
 }
 
 /// Whether a result's text is the line its document was indexed from.

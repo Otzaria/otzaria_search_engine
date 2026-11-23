@@ -1445,6 +1445,16 @@ pub struct SemanticHighlightTarget {
     pub window: u8,
 }
 
+/// A user's mark on a result a page showed, by its line as [`SemanticSearchResult`] names it:
+/// relevant or not. [`SearchEngine::search_semantic_voted`] ranks the results not yet shown by it.
+#[frb(non_opaque)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SemanticVote {
+    pub file_path: String,
+    pub id: u64,
+    pub relevant: bool,
+}
+
 /// A target's line centred on its clause nearest the query, escaped, the clause in `<mark>`; empty
 /// when nothing is marked. Separate from the result, whose own snippet stays as it was.
 #[derive(Clone, Debug, PartialEq)]
@@ -2699,6 +2709,12 @@ struct SessionState {
     capped_request: Option<u64>,
     /// The library database's state the session is keyed by.
     library_generation: crate::semantic_resolver::LibraryGeneration,
+    /// The marks the results not yet shown were ranked by, sorted; not part of the key, so
+    /// that a mark re-ranks the session's next pages rather than starting another one.
+    votes: Vec<SemanticVote>,
+    /// The query moved by `votes`, which the session's expansions search with; `None`
+    /// searches with the query's own embedding.
+    query_vector: Option<Vec<f32>>,
 }
 
 #[cfg(feature = "semantic-integration")]
@@ -2718,6 +2734,8 @@ impl Default for SessionState {
             unverified: 0,
             capped_request: None,
             library_generation: Default::default(),
+            votes: Vec::new(),
+            query_vector: None,
         }
     }
 }
@@ -2993,6 +3011,37 @@ impl SemanticSnippetPainter {
             _ => (bounded_display_snippet(text, self.hl.max_chars), false),
         }
     }
+}
+
+/// `query` plus [`VOTE_RELEVANT_WEIGHT`] times the mean of `relevant`, minus
+/// [`VOTE_IRRELEVANT_WEIGHT`] times the mean of `irrelevant`, each vector at unit length and
+/// the sum too; `None` with neither, or for a sum of zero length.
+#[cfg(feature = "semantic-integration")]
+fn moved_query(query: &[f32], relevant: &[&[f32]], irrelevant: &[&[f32]]) -> Option<Vec<f32>> {
+    if relevant.is_empty() && irrelevant.is_empty() {
+        return None;
+    }
+    let unit = |vector: &[f32]| {
+        let norm = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+        vector
+            .iter()
+            .map(|x| x / norm.max(f32::EPSILON))
+            .collect::<Vec<f32>>()
+    };
+    let mut moved = unit(query);
+    for (weight, group) in [
+        (VOTE_RELEVANT_WEIGHT, relevant),
+        (-VOTE_IRRELEVANT_WEIGHT, irrelevant),
+    ] {
+        let share = weight / group.len().max(1) as f32;
+        for vector in group {
+            for (sum, x) in moved.iter_mut().zip(unit(vector)) {
+                *sum += share * x;
+            }
+        }
+    }
+    let norm = moved.iter().map(|x| x * x).sum::<f32>().sqrt();
+    (norm > f32::EPSILON).then(|| moved.iter().map(|x| x / norm).collect())
 }
 
 /// A shown line for `embedded_window_texts`: address, book, id, stored text, matched window.
@@ -5215,6 +5264,14 @@ const VOC_VARIANTS_PER_TOKEN: usize = 128;
 /// accidental `limit`/`offset` values from driving an unbounded allocation.
 #[cfg(feature = "semantic-integration")]
 const MAX_SEMANTIC_CANDIDATE_WINDOW: u32 = 10_000;
+
+/// How far the marks move the query (Rocchio, over unit vectors): the query, plus these
+/// weights times the mean of the passages marked relevant and minus the mean of those marked
+/// not. Offline on real queries a relevant mark helped up to about 1, and past it no more.
+#[cfg(feature = "semantic-integration")]
+const VOTE_RELEVANT_WEIGHT: f32 = 1.0;
+#[cfg(feature = "semantic-integration")]
+const VOTE_IRRELEVANT_WEIGHT: f32 = 0.3;
 
 pub struct SearchEngine {
     /// The schema of the index this engine opened, which is the one it was built with.
@@ -8132,6 +8189,10 @@ impl SearchEngine {
     /// replaces its displayed results. A changed page size also starts a new session.
     /// `has_more` says whether a page follows; the counts describe the last candidate window.
     ///
+    /// `votes` are the user's marks on results already shown (see
+    /// [`Self::search_semantic_voted`]): when they change, the next page ranks the results not
+    /// yet shown again, by the query moved toward what was marked relevant. `None` for none.
+    ///
     /// Quoted words are looked up verbatim, with adjacency inside each quoted phrase.
     /// A single quotation covering the whole query uses `Exact`; words outside a quotation
     /// keep the requested lexical mode. An acronym's gershayim (רמב"ם) quotes nothing.
@@ -8173,11 +8234,12 @@ impl SearchEngine {
         match_nikud: bool,
         match_taamim: bool,
         ranking: Option<SemanticRankingOptions>,
+        votes: Option<Vec<SemanticVote>>,
         cancellation: &SemanticCancellationToken,
     ) -> Result<SemanticSearchResponse, SemanticError> {
         // FRB 2.13 hashes exported Rust function names, so this wire name makes an older
         // library fail at initialization instead of decoding a shorter response at search time.
-        self.search_semantic(
+        self.search_semantic_voted(
             query,
             facets,
             limit,
@@ -8189,6 +8251,7 @@ impl SearchEngine {
             match_nikud,
             match_taamim,
             ranking,
+            votes.as_deref().unwrap_or_default(),
             cancellation,
         )
     }
@@ -8219,6 +8282,48 @@ impl SearchEngine {
         ranking: Option<SemanticRankingOptions>,
         cancellation: &SemanticCancellationToken,
     ) -> Result<SemanticSearchResponse, SemanticError> {
+        self.search_semantic_voted(
+            query,
+            facets,
+            limit,
+            offset,
+            lexical_mode,
+            fuzzy_max_distance,
+            retrieval_mode,
+            grouping,
+            match_nikud,
+            match_taamim,
+            ranking,
+            &[],
+            cancellation,
+        )
+    }
+
+    /// [`Self::search_semantic`], with the user's marks on results the session showed. A
+    /// continuation whose marks differ from those its session last ranked by ranks the results
+    /// not yet shown again, searching with the query moved toward the passages marked relevant
+    /// and away from those marked not; the pages shown keep their order. The first page of a
+    /// search takes no marks: a mark is on a result already shown.
+    #[frb(ignore)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_semantic_voted(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        limit: u32,
+        offset: u32,
+        lexical_mode: SemanticLexicalMode,
+        fuzzy_max_distance: u8,
+        retrieval_mode: SemanticRetrievalMode,
+        grouping: Option<SemanticGroupingMode>,
+        match_nikud: bool,
+        match_taamim: bool,
+        ranking: Option<SemanticRankingOptions>,
+        votes: &[SemanticVote],
+        cancellation: &SemanticCancellationToken,
+    ) -> Result<SemanticSearchResponse, SemanticError> {
+        #[cfg(not(feature = "semantic-integration"))]
+        let _ = votes;
         let started = Instant::now();
         let cancel = &cancellation.flag;
         // Before anything, the sidecar's own first look included: a search cancelled before
@@ -8306,26 +8411,39 @@ impl SearchEngine {
             // resolver's caches follow, reads every address the session holds alike.
             session.searcher = searcher;
 
+            let mut votes = votes.to_vec();
+            votes.sort();
+            votes.dedup();
+            let mut revote = offset > 0 && votes != session.state.votes;
+            // Set only once the page is served, so a cancelled search leaves the session as it was.
+            let mut query_vector = session.state.query_vector.clone();
+            if revote {
+                query_vector = self.voted_query_vector(&open, &request, session, &votes, cancel)?;
+            }
+
             // One past the page, so that whether another page follows is known.
             let wanted = (offset as usize)
                 .saturating_add(limit as usize)
                 .saturating_add(1);
             let mut window = session.window;
             let mut exhausted = session.exhausted;
-            let mut additions = if session.len() < wanted && !exhausted {
+            let mut additions = if revote || (session.len() < wanted && !exhausted) {
                 session.reopen()
             } else {
                 Additions::default()
             };
             let mut expanded: Option<Expanded> = None;
-            while session.len_with(&additions) < wanted && !exhausted {
+            while revote || (session.len_with(&additions) < wanted && !exhausted) {
                 // Doubling: a session asked for page after page fuses a logarithmic number
-                // of windows, and the first page's leaves room for the second.
+                // of windows, and the first page's leaves room for the second. New marks
+                // rank again at the depth already fused.
+                let deeper = if revote { 1 } else { 2 };
+                revote = false;
                 let requested_window = u64::from(offset)
                     .saturating_add(u64::from(limit))
                     .saturating_mul(2)
                     .saturating_add(1)
-                    .max(u64::from(window).saturating_mul(2));
+                    .max(u64::from(window).saturating_mul(deeper));
                 let capped = requested_window > u64::from(MAX_SEMANTIC_CANDIDATE_WINDOW);
                 window = requested_window.min(u64::from(MAX_SEMANTIC_CANDIDATE_WINDOW)) as u32;
                 let first = session.window == 0 && expanded.is_none();
@@ -8336,6 +8454,7 @@ impl SearchEngine {
                     &mut additions,
                     window,
                     first,
+                    query_vector.as_deref(),
                     cancel,
                 )?;
                 exhausted = step.exhausted;
@@ -8357,6 +8476,10 @@ impl SearchEngine {
             session.commit(additions);
             session.window = window;
             session.exhausted = exhausted;
+            if offset > 0 {
+                session.state.votes = votes;
+                session.state.query_vector = query_vector;
+            }
             if let Some(expanded) = expanded {
                 session.state.absorb(expanded);
             }
@@ -8866,6 +8989,82 @@ impl SearchEngine {
         Ok(words)
     }
 
+    /// The query moved by `votes` (Rocchio): its vector, plus [`VOTE_RELEVANT_WEIGHT`] times the
+    /// mean of the passages marked relevant, minus [`VOTE_IRRELEVANT_WEIGHT`] times the mean of
+    /// those marked not, at unit length. A mark on a line the session does not hold counts for
+    /// nothing; `None` with no mark left, or when the model cannot embed (the query as typed).
+    #[cfg(feature = "semantic-integration")]
+    fn voted_query_vector(
+        &self,
+        open: &OpenSession,
+        request: &SemanticRequest<'_>,
+        session: &SemanticSearchSession,
+        votes: &[SemanticVote],
+        cancel: &SearchCancellation,
+    ) -> Result<Option<Vec<f32>>, SemanticError> {
+        let held = session.page(0, u32::try_from(session.len()).unwrap_or(u32::MAX));
+        let marked: Vec<(&SessionEntry, bool)> = votes
+            .iter()
+            .filter_map(|vote| {
+                held.iter()
+                    .find(|entry| {
+                        entry.item.file_path == vote.file_path && entry.item.id == vote.id
+                    })
+                    .map(|entry| (entry, vote.relevant))
+            })
+            .collect();
+        if marked.is_empty() {
+            return Ok(None);
+        }
+        let addresses: Vec<DocAddress> = marked
+            .iter()
+            .filter_map(|(entry, _)| entry.hydrated.as_ref().map(|(address, _)| *address))
+            .collect();
+        let mut stored = self
+            .texts_at(&session.searcher, &addresses)
+            .map_err(|err| SemanticError::new(SemanticErrorKind::Internal, err.to_string()))?
+            .into_iter();
+        let mut texts = Vec::with_capacity(marked.len());
+        for (entry, relevant) in &marked {
+            let text = match entry.hydrated {
+                Some(_) => stored.next().map(|(text, _)| text.text).unwrap_or_default(),
+                None => entry.item.text.clone(),
+            };
+            if !text.trim().is_empty() {
+                texts.push((text, *relevant));
+            }
+        }
+        let inputs: Vec<&str> = texts.iter().map(|(text, _)| text.as_str()).collect();
+        let embedded = open
+            .coordinator
+            .embed_query_cached(&smart_query::canonical(request.query), cancel)
+            .and_then(|query| {
+                let passages = open.coordinator.embed_passages(&inputs, cancel)?;
+                Ok((query, passages))
+            });
+        let (query, passages) = match embedded {
+            Ok(embedded) => embedded,
+            Err(SemanticSearchError::Cancelled) => return Err(SemanticError::cancelled()),
+            Err(err) => {
+                warn!("the marked passages could not be embedded: {err}");
+                return Ok(None);
+            }
+        };
+        let relevant: Vec<&[f32]> = passages
+            .iter()
+            .zip(&texts)
+            .filter(|(_, (_, relevant))| *relevant)
+            .map(|(vector, _)| vector.as_slice())
+            .collect();
+        let irrelevant: Vec<&[f32]> = passages
+            .iter()
+            .zip(&texts)
+            .filter(|(_, (_, relevant))| !*relevant)
+            .map(|(vector, _)| vector.as_slice())
+            .collect();
+        Ok(moved_query(&query, &relevant, &irrelevant))
+    }
+
     /// Fuse `session`'s search over a `window`, its two halves side by side, and take every
     /// result the session lacks into `additions`; `first` also builds the highlight and count.
     #[cfg(feature = "semantic-integration")]
@@ -8878,6 +9077,7 @@ impl SearchEngine {
         additions: &mut Additions<SessionEntry>,
         window: u32,
         first: bool,
+        query_vector: Option<&[f32]>,
         cancel: &SearchCancellation,
     ) -> Result<Expanded, SemanticError> {
         #[cfg(test)]
@@ -8928,6 +9128,7 @@ impl SearchEngine {
             profile: None,
             feature_flags: None,
             ranking: Some(request.ranking.clone()),
+            query_vector: query_vector.map(<[f32]>::to_vec),
         };
 
         // The lexical phase on its own thread, the semantic half on this one, where a test's
