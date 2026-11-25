@@ -1,5 +1,12 @@
 # Changelog
 
+## 7.5.3 – 2026-11-26
+
+### Added
+
+- `SemanticNearestInput.bookPaths` limits candidate selection to exact index
+  keys before ranking, intersected with the requested facet filters.
+
 ## 7.5.2 – 2026-11-25
 
 ### Fixed
