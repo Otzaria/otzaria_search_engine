@@ -12488,7 +12488,7 @@ mod semantic_sessions {
         for (path, text) in [(BASE, "הספר הראשון"), (OTHER, "הספר השני")] {
             engine
                 .add_document_at(
-                    5, "title", "ref", "", text, 0, false, path, None, None, None,
+                    5, "title", "ref", "/book", text, 0, false, path, None, None, None,
                 )
                 .unwrap();
         }
