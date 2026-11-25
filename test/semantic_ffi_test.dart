@@ -459,6 +459,35 @@ Future<void> main() async {
       },
     );
 
+    test('a populated vote and the following token cross the bridge', () async {
+      final token = SemanticCancellationToken();
+      addTearDown(token.dispose);
+      Future<SemanticSearchResponse> search({List<SemanticVote>? votes}) =>
+          engine.searchSemantic(
+            query: 'בראשית ברא',
+            facets: const [],
+            limit: 10,
+            offset: 0,
+            lexicalMode: SemanticLexicalMode.exact,
+            fuzzyMaxDistance: 0,
+            retrievalMode: SemanticRetrievalMode.semanticOnly,
+            matchNikud: false,
+            matchTaamim: false,
+            votes: votes,
+            cancellation: token,
+          );
+
+      final plain = (await search()).results.single;
+      final voted = (await search(
+        votes: [
+          SemanticVote(filePath: plain.filePath, id: plain.id, relevant: true),
+        ],
+      )).results.single;
+      expect(voted.id, plain.id);
+      expect(voted.semanticScore!, greaterThan(plain.semanticScore!));
+      expect(token.isCancelled, isFalse);
+    });
+
     test('a semantic-only search returns a hydrated hit', () async {
       final response = await engine.searchSemantic(
         query: 'בראשית ברא',

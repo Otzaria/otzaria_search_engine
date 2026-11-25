@@ -546,7 +546,9 @@ happen from the application, without a release of the engine.
 toward the passages marked relevant and away from those marked not. When the
 marks of a continuation change, the results not yet shown are ranked again and
 the pages shown keep their order. A first page with marks, such as marks
-carried into an edited search, is ranked by them from the top.
+carried into an edited search, is ranked by them from the top. Send the full set
+of current marks on each request. Omit `votes` or pass an empty list to clear
+them. Lexical-only searches ignore marks.
 
 ```dart
 final next = await engine.searchSemantic(

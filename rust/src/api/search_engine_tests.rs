@@ -12352,7 +12352,12 @@ mod semantic_sessions {
         let mut both = liked.to_vec();
         both.insert(0, vote(&first.results[1], false));
         let third = voted_page(&engine, 5, 10, &both);
-        assert_eq!(expansions(&engine), 3);
+        assert_eq!(
+            third.timings.unwrap().expansions,
+            2,
+            "try the previous depth first, then widen for the third page"
+        );
+        assert_eq!(expansions(&engine), 4);
         assert_eq!(bits(&voted_page(&engine, 5, 5, &both)), bits(&second));
         assert_eq!(bits(&page(&engine, 5, 0)), bits(&first));
 
@@ -12362,6 +12367,137 @@ mod semantic_sessions {
             .collect();
         let unique: HashSet<_> = shown.iter().cloned().collect();
         assert_eq!(unique.len(), shown.len(), "a result shown twice: {shown:?}");
+    }
+
+    #[test]
+    fn a_revote_discards_unshown_results_below_the_new_threshold() {
+        let _serial = serialized();
+        let books = [
+            (BASE, "/base", (3..9).map(|n| "שבת ".repeat(n)).collect()),
+            (OTHER, "/other", vec!["חנוכה ".repeat(8)]),
+        ];
+        let (engine, _index, _semantic) = engine_over(&books, &[BASE, OTHER]);
+        let (fresh, _fresh_index, _fresh_semantic) = engine_over(&books, &[BASE, OTHER]);
+        let search = |engine: &SearchEngine, offset, votes: &[SemanticVote]| {
+            let ranking = SemanticRankingOptions {
+                semantic_threshold: 0.9,
+                alpha_override: Some(0.5),
+                ..SemanticRankingOptions::defaults()
+            };
+            engine
+                .search_semantic_voted(
+                    "שבת מזכרת".into(),
+                    Vec::new(),
+                    1,
+                    offset,
+                    SemanticLexicalMode::Exact,
+                    0,
+                    SemanticRetrievalMode::Hybrid,
+                    None,
+                    false,
+                    false,
+                    Some(ranking),
+                    votes,
+                    &SemanticCancellationToken::new(),
+                )
+                .unwrap()
+        };
+        let first = search(&engine, 0, &[]);
+        assert_eq!(first.lexical_total_count, 0);
+        assert!(first.has_more);
+        let votes = [SemanticVote {
+            file_path: OTHER.into(),
+            id: 7,
+            relevant: true,
+        }];
+        assert!(search(&fresh, 0, &votes).results.is_empty());
+        let continued = search(&engine, 1, &votes);
+        assert_eq!(continued.total_count, 0);
+        assert!(continued.results.is_empty());
+        assert!(!continued.has_more);
+        assert_eq!(bits(&search(&engine, 0, &votes)), bits(&first));
+    }
+
+    #[test]
+    fn adding_a_vote_reuses_the_embedding_even_if_its_mark_changes() {
+        let _serial = serialized();
+        let (engine, _index, _semantic) = sabbath();
+        let first = page(&engine, 5, 0);
+        let liked = vote(&first.results[0], true);
+        let other = vote(&first.results[1], true);
+        voted_page(&engine, 5, 5, std::slice::from_ref(&liked));
+        let embedding = || {
+            let cache = engine.vote_embeddings.lock().unwrap();
+            cache
+                .iter()
+                .find_map(|((_, (path, id)), vector)| {
+                    (path == &liked.file_path && *id == liked.id).then(|| Arc::clone(vector))
+                })
+                .unwrap()
+        };
+        let first_embedding = embedding();
+        let flipped = SemanticVote {
+            relevant: false,
+            ..liked.clone()
+        };
+        voted_page(&engine, 5, 10, &[flipped, other]);
+        assert_eq!(engine.vote_embeddings.lock().unwrap().len(), 2);
+        assert!(Arc::ptr_eq(&first_embedding, &embedding()));
+    }
+
+    #[test]
+    fn lexical_only_ignores_votes_without_embedding_or_refreshing_the_window() {
+        let _serial = serialized();
+        let (engine, _index, _semantic) = sabbath();
+        let search = |offset, votes: &[SemanticVote]| {
+            engine
+                .search_semantic_voted(
+                    "שבת".into(),
+                    Vec::new(),
+                    5,
+                    offset,
+                    SemanticLexicalMode::Exact,
+                    0,
+                    SemanticRetrievalMode::LexicalOnly,
+                    None,
+                    false,
+                    false,
+                    None,
+                    votes,
+                    &SemanticCancellationToken::new(),
+                )
+                .unwrap()
+        };
+        let first = search(0, &[]);
+        let marks = [vote(&first.results[0], true)];
+        let continued = search(5, &marks);
+        assert_eq!(continued.results.len(), 5);
+        assert_eq!(continued.timings.unwrap().expansions, 0);
+        assert_eq!(bits(&search(0, &marks)), bits(&first));
+        assert_eq!(expansions(&engine), 1);
+        assert!(engine.vote_embeddings.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn batched_votes_match_the_book_as_well_as_the_line_id() {
+        let (mut engine, _index) = make_engine();
+        for (path, text) in [(BASE, "הספר הראשון"), (OTHER, "הספר השני")] {
+            engine
+                .add_document_at(
+                    5, "title", "ref", "", text, 0, false, path, None, None, None,
+                )
+                .unwrap();
+        }
+        engine.commit().unwrap();
+        let lines = HashSet::from([(OTHER.to_owned(), 5), (UNRELATED.to_owned(), 5)]);
+        let texts = engine
+            .vote_passages(
+                &engine.index_reader.searcher(),
+                &lines,
+                &SearchCancellation::new(),
+            )
+            .unwrap();
+        assert_eq!(texts, [((OTHER.to_owned(), 5), "הספר השני".to_owned())]);
     }
 
     /// A mark moves the query toward its passage: two engines that agree on the first page

@@ -21,7 +21,7 @@ pub(crate) struct SessionKey {
     pub(crate) query: String,
     /// Sorted and deduplicated: the filter is a set.
     pub(crate) facets: Vec<String>,
-    /// The lexical mode, retrieval mode, grouping, marks and every ranking parameter.
+    /// The lexical mode, retrieval mode, grouping, match options and every ranking parameter.
     pub(crate) options: String,
     /// The index's segments and their deletes, in order: a reload that changed neither keeps
     /// the session, whose addresses then hold in the new searcher too.
@@ -82,6 +82,8 @@ pub(crate) struct Additions<E> {
     /// What the session's shown results and dropped lines hold, when the results nobody was
     /// shown are ranked again: the expansions admit lines by these instead of the session's.
     reopened: Option<(HashSet<LineKey>, HashSet<GroupKey>)>,
+    /// The ranking changed, so entries from the old window must not be shown later.
+    discard_unshown: bool,
 }
 
 impl<E> Default for Additions<E> {
@@ -93,6 +95,7 @@ impl<E> Default for Additions<E> {
             groups: HashSet::new(),
             dropped: HashSet::new(),
             reopened: None,
+            discard_unshown: false,
         }
     }
 }
@@ -148,6 +151,15 @@ impl<E, S> SemanticSession<E, S> {
     /// Where an expansion's results go: after the shown results, with the results nobody was
     /// shown taken back, so that the wider window ranks them with its own.
     pub(crate) fn reopen(&self) -> Additions<E> {
+        self.reopen_unshown(false)
+    }
+
+    /// Re-rank the unshown entries using another query vector.
+    pub(crate) fn replace_unshown(&self) -> Additions<E> {
+        self.reopen_unshown(true)
+    }
+
+    fn reopen_unshown(&self, discard_unshown: bool) -> Additions<E> {
         if self.shown == self.entries.len() {
             return Additions::default();
         }
@@ -160,6 +172,7 @@ impl<E, S> SemanticSession<E, S> {
         }
         Additions {
             reopened: Some((seen, groups)),
+            discard_unshown,
             ..Additions::default()
         }
     }
@@ -169,10 +182,14 @@ impl<E, S> SemanticSession<E, S> {
         if additions.reopened.is_none() {
             return self.entries.len() + additions.entries.len();
         }
-        let kept = self.holds[self.shown..]
-            .iter()
-            .filter(|holds| additions.leaves(holds))
-            .count();
+        let kept = if additions.discard_unshown {
+            0
+        } else {
+            self.holds[self.shown..]
+                .iter()
+                .filter(|holds| additions.leaves(holds))
+                .count()
+        };
         self.shown + additions.entries.len() + kept
     }
 
@@ -222,20 +239,25 @@ impl<E, S> SemanticSession<E, S> {
         }
     }
 
-    /// Append `additions`. Reopened, the results nobody was shown that the expansions did
-    /// not take again follow them: a result the session held is never lost.
+    /// Append `additions`. A wider window preserves unshown results it did not take again.
+    /// A changed ranking discards them.
     pub(crate) fn commit(&mut self, mut additions: Additions<E>) {
         let mut unshown = Vec::new();
         if let Some((seen, groups)) = additions.reopened.take() {
             self.seen = seen;
             self.seen_groups = groups;
-            let holds = self.holds.split_off(self.shown);
-            unshown = self
-                .entries
-                .split_off(self.shown)
-                .into_iter()
-                .zip(holds)
-                .collect();
+            if additions.discard_unshown {
+                self.holds.truncate(self.shown);
+                self.entries.truncate(self.shown);
+            } else {
+                let holds = self.holds.split_off(self.shown);
+                unshown = self
+                    .entries
+                    .split_off(self.shown)
+                    .into_iter()
+                    .zip(holds)
+                    .collect();
+            }
         }
         unshown.retain(|(_, holds)| additions.leaves(holds));
         self.entries.extend(additions.entries);
