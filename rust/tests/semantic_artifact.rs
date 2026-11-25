@@ -5487,6 +5487,67 @@ fn pooled_points_keep_each_line_once_and_rescore_it_against_every_point() {
     assert_eq!(placed(&response.hits), vec![best]);
 }
 
+#[test]
+fn pooled_score_includes_points_that_did_not_select_the_vector() {
+    use otzaria_semantic_search::semantic::segment_set::SegmentSet;
+
+    let books = [
+        ("בראשית", "/מקרא/תורה", GENESIS, 0, PROBE_LINE.to_string()),
+        (
+            "משנה ברכות",
+            "/משנה/זרעים",
+            BERACHOT,
+            1,
+            BERACHOT_TEXT.to_string(),
+        ),
+    ];
+    let library = build_library_of(&books, false);
+    let engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    let set = SegmentSet::open(&library.vectors).unwrap();
+    let vector_for = |book| {
+        let slots = set.book_slots(book);
+        assert_eq!(slots.len(), 1);
+        let mut vector = vec![0.0; set.codec().dim()];
+        assert!(set.decode_slot(&slots[0].slot, &mut vector));
+        vector
+    };
+    let (genesis, berachot) = (vector_for(GENESIS), vector_for(BERACHOT));
+    let first = genesis
+        .iter()
+        .zip(&berachot)
+        .map(|(&x, &y)| x - 2.0 * y)
+        .collect();
+    let second = genesis
+        .iter()
+        .zip(&berachot)
+        .map(|(&x, &y)| 0.8 * x + y)
+        .collect();
+    let mut input = nearest_input(
+        vec![vector_point(first), vector_point(second)],
+        SemanticPool::PerPoint,
+    );
+    input.top_k = 1;
+    let per_point = nearest(&engine, input.clone()).per_point;
+    assert_eq!(per_point[0].hits[0].file_path, GENESIS);
+    assert_eq!(per_point[1].hits[0].file_path, BERACHOT);
+
+    input.pool = SemanticPool::Best;
+    input.min_score = Some(per_point[0].hits[0].score + 0.05);
+    for rescore in [false, true] {
+        input.rescore = rescore;
+        let hits = nearest(&engine, input.clone()).hits;
+        let hit = hits.iter().find(|hit| hit.file_path == GENESIS).unwrap();
+        assert_eq!(hit.point, 1, "{hit:?}");
+        if rescore {
+            assert!((hit.score - hit.point_scores[1]).abs() < 1e-5, "{hit:?}");
+            assert!(hit.point_scores[1] > hit.point_scores[0] + 0.05, "{hit:?}");
+        } else {
+            assert!(hit.point_scores.is_empty());
+        }
+    }
+}
+
 /// Per point, each point has its own list, in the order the points were given.
 #[test]
 fn per_point_lists_follow_the_points() {
@@ -5589,6 +5650,40 @@ fn a_text_in_two_books_is_found_in_both_by_one_point() {
     );
 }
 
+#[test]
+fn nearest_finds_copies_added_after_the_vector_set_with_and_without_facets() {
+    let library = build_library();
+    let mut engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    let copy = "/books/nearest-copy.txt";
+    add_books(
+        &mut engine,
+        &[
+            ("עותק", "/עותקים", copy, 2, BERACHOT_TEXT.to_string()),
+            (
+                "מקור נוסף",
+                "/עותקים",
+                "/books/genesis-new-facet.txt",
+                3,
+                GENESIS_TEXT.to_string(),
+            ),
+        ],
+    );
+    let mut input = nearest_input(vec![text_point(BERACHOT_TEXT)], SemanticPool::Best);
+    input.top_k = 1;
+    assert_eq!(
+        placed(&nearest(&engine, input.clone()).hits)
+            .into_iter()
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([(BERACHOT.to_string(), 0), (copy.to_string(), 0)])
+    );
+    input.facets = vec!["/עותקים".to_string()];
+    assert_eq!(
+        placed(&nearest(&engine, input).hits),
+        [(copy.to_string(), 0)]
+    );
+}
+
 /// A vector point is scaled to unit length, so any multiple of it finds the same lines at
 /// the same scores; one of another width, all zeros or not finite is refused, and so is a
 /// point that is both a text and a vector, or neither. A passage point is embedded too.
@@ -5615,6 +5710,22 @@ fn vector_points_are_scaled_and_checked() {
     assert_eq!(placed(&once.hits), placed(&scaled.hits));
     for (a, b) in once.hits.iter().zip(&scaled.hits) {
         assert!((a.score - b.score).abs() < 1e-5);
+    }
+    let axis = |value| {
+        let mut vector = vec![0.0; dim];
+        vector[0] = value;
+        nearest(
+            &engine,
+            nearest_input(vec![vector_point(vector)], SemanticPool::Best),
+        )
+    };
+    let unit = axis(1.0);
+    for magnitude in [f32::MAX, f32::from_bits(1)] {
+        let scaled = axis(magnitude);
+        assert_eq!(placed(&unit.hits), placed(&scaled.hits));
+        for (a, b) in unit.hits.iter().zip(&scaled.hits) {
+            assert_eq!(a.score, b.score);
+        }
     }
 
     for bad in [

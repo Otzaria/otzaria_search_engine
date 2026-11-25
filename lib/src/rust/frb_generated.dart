@@ -19826,20 +19826,17 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   Future<SemanticIndexDiff> semanticIndexDiff() => RustLib.instance.api
       .crateApiSearchEngineSearchEngineSemanticIndexDiff(that: this);
 
-  /// The live lines nearest each of several points, in one pass over the installed vector
-  /// set: the passages a reader's tool shows beside a section, a group of sources, or a
-  /// vector the caller computed.
+  /// The live lines nearest each of several points in an installed vector set.
   ///
   /// Each point is embedded as `search_semantic` embeds a query (or, `as_passage`, as a
-  /// stored line), all of them are scanned together, and each vector found is resolved to
-  /// the live lines that hold its text in the books `facets` admits — the search screen's
-  /// resolution, under its window and alias penalties. No lexical half, no snippets: a
-  /// caller reads the text of the lines it shows.
+  /// stored line). The scan groups points to bound working memory. It resolves each
+  /// vector to the live lines in books admitted by `facets`, under the search screen's
+  /// window and alias penalties. Results carry line metadata for callers to read the text.
   ///
   /// Fails `NotConfigured` with no session open, or with one built on this device, which
   /// has no vector set; `InvalidInput` for a point that is neither one text nor one vector
-  /// of the set's width, or a limit out of range. Cancelling the token returns `Cancelled`
-  /// at the next checkpoint.
+  /// of the set's width, or a limit out of range. Returns `VectorsBusy` if an install or
+  /// compaction prevents a consistent read. Cancelling returns `Cancelled`.
   Future<SemanticNearestResponse> semanticNearest({
     required SemanticNearestInput input,
     required SemanticCancellationToken cancellation,

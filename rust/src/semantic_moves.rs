@@ -43,10 +43,12 @@
 
 use otzaria_semantic_search::cancellation::CancellationToken;
 use otzaria_semantic_search::distribution::gates::book_records;
+use otzaria_semantic_search::errors::VectorStoreError;
 use otzaria_semantic_search::semantic::chunk_key::ChunkKey;
 use otzaria_semantic_search::semantic::oxv::occurrence::ALIAS_WINDOW;
 use otzaria_semantic_search::semantic::oxv::reader::Segment;
-use otzaria_semantic_search::semantic::resolve::SlotRef;
+use otzaria_semantic_search::semantic::oxv::scan::ScanRequest;
+use otzaria_semantic_search::semantic::resolve::{BookSet, SlotRef, VectorHit};
 use otzaria_semantic_search::semantic::segment_set::{self, SegmentSet};
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -144,6 +146,67 @@ impl SetView {
 
     pub(crate) fn generation(&self) -> u64 {
         self.set.generation()
+    }
+
+    /// Weigh the slots that the filtered scan skipped. An empty book set gives
+    /// the sidecar no main scan work while it scores the supplied slots and
+    /// preserves their occurrence records for the resolver.
+    pub(crate) fn scan_unreached(
+        &self,
+        query: &[f32],
+        slots: &[SlotRef],
+        top_k: usize,
+        window_penalty: f32,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<VectorHit>, VectorStoreError> {
+        self.set.scan_with(
+            query,
+            &ScanRequest {
+                top_k,
+                books: Some(&BookSet::default()),
+                threads: 1,
+                window_penalty,
+            },
+            slots,
+            cancel,
+        )
+    }
+
+    /// Score slots against this exact generation even if a replacement is installed.
+    pub(crate) fn score_slots(
+        &self,
+        queries: &[&[f32]],
+        slots: &[SlotRef],
+        cancel: &CancellationToken,
+    ) -> Result<Vec<Vec<Option<f32>>>, VectorStoreError> {
+        let mut rows = self.set.score_slots_many(queries, slots, 0.0, cancel)?;
+        for (query, row) in queries.iter().zip(&mut rows) {
+            if row.iter().all(Option::is_some) {
+                continue;
+            }
+            // The sidecar picks a key's best live copy without a facet filter.
+            // Score the exact requested slots it skipped, one per key per pass.
+            let mut missing: HashMap<_, Vec<_>> = HashMap::new();
+            for (index, (&slot, score)) in slots.iter().zip(row.iter()).enumerate() {
+                if score.is_none() {
+                    missing.entry(slot.key).or_default().push((index, slot));
+                }
+            }
+            while !missing.is_empty() {
+                let mut wanted = Vec::with_capacity(missing.len());
+                let mut positions = HashMap::with_capacity(missing.len());
+                missing.retain(|_, entries| {
+                    let (index, slot) = entries.pop().expect("only nonempty groups are retained");
+                    wanted.push(slot);
+                    positions.insert((slot.seg, slot.slot), index);
+                    !entries.is_empty()
+                });
+                for hit in self.scan_unreached(query, &wanted, wanted.len(), 0.0, cancel)? {
+                    row[positions[&(hit.seg, hit.slot)]] = Some(hit.score);
+                }
+            }
+        }
+        Ok(rows)
     }
 
     pub(crate) fn book_source_hash(&self, book: &str) -> Option<u64> {

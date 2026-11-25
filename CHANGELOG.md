@@ -4,8 +4,8 @@
 
 ### Added
 
-- **`semanticNearest`** finds the live lines nearest several points in one pass
-  over the installed vector set: up to 64 texts (embedded as queries or as
+- **`semanticNearest`** scans an installed vector set in bounded groups to find
+  the live lines nearest up to 64 texts (embedded as queries or as
   stored passages) or vectors. Lines are resolved as `searchSemantic` resolves
   them, under its penalties, pooled into one list or returned per point, with
   an optional score of every line against every point. For tools beside the
