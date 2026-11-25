@@ -366,7 +366,9 @@ the line's `filePath`, `id`, `segment`, `title`, `reference` and
 is scaled to unit length. The response says which generation of the set it
 read, and how long embedding, scanning, resolving and rescoring took.
 
-`facets` restricts the live books as in `searchSemantic`. The same scan plan
+`facets` restricts the live books as in `searchSemantic`. An optional nonempty
+`bookPaths` list intersects that scope with exact index keys before selecting
+the nearest candidates. The same scan plan
 includes texts copied into an admitted book after the vectors were built when
 the index has the matching chunk-key column and the plan is available.
 `semanticQueryTokens` needs a backend with a tokenizer.

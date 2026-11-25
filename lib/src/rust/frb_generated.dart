@@ -68,7 +68,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => -1272712857;
+  int get rustContentHash => -1308997727;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -1088,7 +1088,7 @@ abstract class RustLibApi extends BaseApi {
   });
 
   Future<SemanticNearestResponse>
-  crateApiSearchEngineSearchEngineSemanticNearest({
+  crateApiSearchEngineSearchEngineSemanticNearestWithBookPaths({
     required SearchEngine that,
     required SemanticNearestInput input,
     required SemanticCancellationToken cancellation,
@@ -7815,7 +7815,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @override
   Future<SemanticNearestResponse>
-  crateApiSearchEngineSearchEngineSemanticNearest({
+  crateApiSearchEngineSearchEngineSemanticNearestWithBookPaths({
     required SearchEngine that,
     required SemanticNearestInput input,
     required SemanticCancellationToken cancellation,
@@ -7844,16 +7844,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeSuccessData: sse_decode_semantic_nearest_response,
           decodeErrorData: sse_decode_semantic_error,
         ),
-        constMeta: kCrateApiSearchEngineSearchEngineSemanticNearestConstMeta,
+        constMeta:
+            kCrateApiSearchEngineSearchEngineSemanticNearestWithBookPathsConstMeta,
         argValues: [that, input, cancellation],
         apiImpl: this,
       ),
     );
   }
 
-  TaskConstMeta get kCrateApiSearchEngineSearchEngineSemanticNearestConstMeta =>
+  TaskConstMeta
+  get kCrateApiSearchEngineSearchEngineSemanticNearestWithBookPathsConstMeta =>
       const TaskConstMeta(
-        debugName: "SearchEngine_semantic_nearest",
+        debugName:
+            "SearchEngine_semantic_nearest_with_book_paths(dart_style=semanticNearest)",
         argNames: ["that", "input", "cancellation"],
       );
 
@@ -11601,17 +11604,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SemanticNearestInput dco_decode_semantic_nearest_input(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 8)
-      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+    if (arr.length != 9)
+      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
     return SemanticNearestInput(
       points: dco_decode_list_semantic_point(arr[0]),
       topK: dco_decode_u_32(arr[1]),
       facets: dco_decode_list_String(arr[2]),
-      exclude: dco_decode_list_semantic_line_span(arr[3]),
-      minScore: dco_decode_opt_box_autoadd_f_32(arr[4]),
-      pool: dco_decode_semantic_pool(arr[5]),
-      maxCandidates: dco_decode_u_32(arr[6]),
-      rescore: dco_decode_bool(arr[7]),
+      bookPaths: dco_decode_opt_list_String(arr[3]),
+      exclude: dco_decode_list_semantic_line_span(arr[4]),
+      minScore: dco_decode_opt_box_autoadd_f_32(arr[5]),
+      pool: dco_decode_semantic_pool(arr[6]),
+      maxCandidates: dco_decode_u_32(arr[7]),
+      rescore: dco_decode_bool(arr[8]),
     );
   }
 
@@ -14443,6 +14447,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_points = sse_decode_list_semantic_point(deserializer);
     var var_topK = sse_decode_u_32(deserializer);
     var var_facets = sse_decode_list_String(deserializer);
+    var var_bookPaths = sse_decode_opt_list_String(deserializer);
     var var_exclude = sse_decode_list_semantic_line_span(deserializer);
     var var_minScore = sse_decode_opt_box_autoadd_f_32(deserializer);
     var var_pool = sse_decode_semantic_pool(deserializer);
@@ -14452,6 +14457,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       points: var_points,
       topK: var_topK,
       facets: var_facets,
+      bookPaths: var_bookPaths,
       exclude: var_exclude,
       minScore: var_minScore,
       pool: var_pool,
@@ -17256,6 +17262,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_list_semantic_point(self.points, serializer);
     sse_encode_u_32(self.topK, serializer);
     sse_encode_list_String(self.facets, serializer);
+    sse_encode_opt_list_String(self.bookPaths, serializer);
     sse_encode_list_semantic_line_span(self.exclude, serializer);
     sse_encode_opt_box_autoadd_f_32(self.minScore, serializer);
     sse_encode_semantic_pool(self.pool, serializer);
@@ -20027,8 +20034,8 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   ///
   /// Each point is embedded as `search_semantic` embeds a query (or, `as_passage`, as a
   /// stored line). The scan groups points to bound working memory. It resolves each
-  /// vector to the live lines in books admitted by `facets`, under the search screen's
-  /// window and alias penalties. Results carry line metadata for callers to read the text.
+  /// vector to the live lines in books admitted by `facets` and `book_paths`, under the
+  /// search screen's window and alias penalties. Results carry line metadata.
   ///
   /// Fails `NotConfigured` with no session open, or with one built on this device, which
   /// has no vector set; `InvalidInput` for a point that is neither one text nor one vector
@@ -20037,11 +20044,12 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   Future<SemanticNearestResponse> semanticNearest({
     required SemanticNearestInput input,
     required SemanticCancellationToken cancellation,
-  }) => RustLib.instance.api.crateApiSearchEngineSearchEngineSemanticNearest(
-    that: this,
-    input: input,
-    cancellation: cancellation,
-  );
+  }) => RustLib.instance.api
+      .crateApiSearchEngineSearchEngineSemanticNearestWithBookPaths(
+        that: this,
+        input: input,
+        cancellation: cancellation,
+      );
 
   /// Marks the clause of each target's line nearest `query`, one per target in order; a line
   /// that cannot be marked is not an error. Cancelled, it ends with a `Cancelled` error.

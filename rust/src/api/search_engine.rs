@@ -1001,6 +1001,9 @@ pub struct SemanticNearestInput {
     pub top_k: u32,
     /// As `search_semantic`'s facets: empty for the whole library.
     pub facets: Vec<String>,
+    /// Exact index keys to admit before selecting candidates, in addition to `facets`.
+    /// `None` does not restrict books. An explicitly empty list is invalid.
+    pub book_paths: Option<Vec<String>>,
     /// Lines never returned, such as the passage the points were taken from.
     pub exclude: Vec<SemanticLineSpan>,
     /// Lines scoring under it are dropped.
@@ -7282,13 +7285,25 @@ impl SearchEngine {
     ///
     /// Each point is embedded as `search_semantic` embeds a query (or, `as_passage`, as a
     /// stored line). The scan groups points to bound working memory. It resolves each
-    /// vector to the live lines in books admitted by `facets`, under the search screen's
-    /// window and alias penalties. Results carry line metadata for callers to read the text.
+    /// vector to the live lines in books admitted by `facets` and `book_paths`, under the
+    /// search screen's window and alias penalties. Results carry line metadata.
     ///
     /// Fails `NotConfigured` with no session open, or with one built on this device, which
     /// has no vector set; `InvalidInput` for a point that is neither one text nor one vector
     /// of the set's width, or a limit out of range. Returns `VectorsBusy` if an install or
     /// compaction prevents a consistent read. Cancelling returns `Cancelled`.
+    #[cfg(feature = "flutter-bridge")]
+    #[doc(hidden)]
+    #[frb(name = "semanticNearest")]
+    pub fn semantic_nearest_with_book_paths(
+        &self,
+        input: SemanticNearestInput,
+        cancellation: &SemanticCancellationToken,
+    ) -> Result<SemanticNearestResponse, SemanticError> {
+        self.semantic_nearest(input, cancellation)
+    }
+
+    #[frb(ignore)]
     pub fn semantic_nearest(
         &self,
         input: SemanticNearestInput,
@@ -7340,6 +7355,18 @@ impl SearchEngine {
                 input.max_candidates
             )));
         }
+        let book_paths = if let Some(mut paths) = input.book_paths {
+            if paths.is_empty() {
+                return Err(
+                    invalid("book_paths cannot be empty".to_string()).with_field("book_paths")
+                );
+            }
+            paths.sort_unstable();
+            paths.dedup();
+            Some(paths)
+        } else {
+            None
+        };
         let open = self.semantic_engine().ok_or_else(|| {
             SemanticError::new(
                 SemanticErrorKind::NotConfigured,
@@ -7457,7 +7484,7 @@ impl SearchEngine {
         // while planning, so retry once with the replacement.
         let searcher = self.index_reader.searcher();
         let filters = SidecarSearchFilters {
-            book_paths: None,
+            book_paths,
             facets: (!input.facets.is_empty()).then_some(input.facets),
             include_pdf: None,
         };

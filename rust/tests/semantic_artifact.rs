@@ -5375,6 +5375,7 @@ fn nearest_input(points: Vec<SemanticPoint>, pool: SemanticPool) -> SemanticNear
         points,
         top_k: 10,
         facets: Vec::new(),
+        book_paths: None,
         exclude: Vec::new(),
         min_score: None,
         pool,
@@ -5440,6 +5441,37 @@ fn nearest_from_one_text_finds_what_semantic_only_search_finds_first() {
         .hits
         .windows(2)
         .all(|pair| pair[0].score >= pair[1].score));
+}
+
+#[test]
+fn nearest_limits_exact_book_paths_before_top_k_and_intersects_facets() {
+    let books = [
+        ("בראשית", "/מקרא", GENESIS, 0, PROBE_LINE.to_string()),
+        ("משנה", "/מקרא/משנה", BERACHOT, 1, BERACHOT_TEXT.to_string()),
+    ];
+    let library = build_library_of(&books, false);
+    let engine = library.engine();
+    engine.open_semantic_artifact(library.input()).unwrap();
+    let mut input = nearest_input(vec![text_point(PROBE_LINE)], SemanticPool::Best);
+    input.top_k = 1;
+    input.facets = vec!["/מקרא".to_string()];
+    assert_eq!(
+        placed(&nearest(&engine, input.clone()).hits),
+        [(GENESIS.to_string(), 0)]
+    );
+    input.book_paths = Some(vec![BERACHOT.to_string(), BERACHOT.to_string()]);
+    assert_eq!(
+        placed(&nearest(&engine, input.clone()).hits),
+        [(BERACHOT.to_string(), 0)]
+    );
+    input.book_paths = Some(vec![GENESIS.to_string()]);
+    input.facets = vec!["/מקרא/משנה".to_string()];
+    assert!(nearest(&engine, input.clone()).hits.is_empty());
+    input.book_paths = Some(Vec::new());
+    assert_eq!(
+        nearest_refusal(&engine, input),
+        SemanticErrorKind::InvalidInput
+    );
 }
 
 /// Pooled, each line comes once, for the point it is nearest; rescored, each carries its

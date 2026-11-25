@@ -965,6 +965,33 @@ Future<void> main() async {
       );
     });
 
+    test('nearest respects exact book paths sent across the bridge', () async {
+      await engine.openSemanticArtifact(config: input(identity));
+      final token = SemanticCancellationToken();
+      addTearDown(token.dispose);
+      Future<SemanticNearestResponse> find(List<String> bookPaths) =>
+          engine.semanticNearest(
+            input: SemanticNearestInput(
+              points: const [SemanticPoint(text: probeLine, asPassage: false)],
+              topK: 1,
+              facets: const [],
+              bookPaths: bookPaths,
+              exclude: const [],
+              pool: SemanticPool.best,
+              maxCandidates: 1,
+              rescore: false,
+            ),
+            cancellation: token,
+          );
+
+      expect((await find([bookKey])).hits.first.filePath, bookKey);
+      expect((await find(['$bookKey/other'])).hits, isEmpty);
+      await expectLater(
+        find([]),
+        throwsA(isSemanticError(SemanticErrorKind.invalidInput)),
+      );
+    });
+
     test(
       'votes rerank an installed vector set without changing plain search',
       () async {

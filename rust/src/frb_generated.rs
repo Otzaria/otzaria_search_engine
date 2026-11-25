@@ -42,7 +42,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1272712857;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1308997727;
 
 // Section: executor
 
@@ -6494,7 +6494,7 @@ fn wire__crate__api__search_engine__SearchEngine_semantic_index_diff_impl(
         },
     )
 }
-fn wire__crate__api__search_engine__SearchEngine_semantic_nearest_impl(
+fn wire__crate__api__search_engine__SearchEngine_semantic_nearest_with_book_paths_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
@@ -6502,7 +6502,7 @@ fn wire__crate__api__search_engine__SearchEngine_semantic_nearest_impl(
 ) {
     FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
         flutter_rust_bridge::for_generated::TaskInfo {
-            debug_name: "SearchEngine_semantic_nearest",
+            debug_name: "SearchEngine_semantic_nearest_with_book_paths(dart_style=semanticNearest)",
             port: Some(port_),
             mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
         },
@@ -6552,11 +6552,12 @@ fn wire__crate__api__search_engine__SearchEngine_semantic_nearest_impl(
                     }
                     let api_that_guard = api_that_guard.unwrap();
                     let api_cancellation_guard = api_cancellation_guard.unwrap();
-                    let output_ok = crate::api::search_engine::SearchEngine::semantic_nearest(
-                        &*api_that_guard,
-                        api_input,
-                        &*api_cancellation_guard,
-                    )?;
+                    let output_ok =
+                        crate::api::search_engine::SearchEngine::semantic_nearest_with_book_paths(
+                            &*api_that_guard,
+                            api_input,
+                            &*api_cancellation_guard,
+                        )?;
                     std::result::Result::Ok(output_ok)
                 })(
                 ))
@@ -10982,6 +10983,7 @@ impl SseDecode for crate::api::search_engine::SemanticNearestInput {
             <Vec<crate::api::search_engine::SemanticPoint>>::sse_decode(deserializer);
         let mut var_topK = <u32>::sse_decode(deserializer);
         let mut var_facets = <Vec<String>>::sse_decode(deserializer);
+        let mut var_bookPaths = <Option<Vec<String>>>::sse_decode(deserializer);
         let mut var_exclude =
             <Vec<crate::api::search_engine::SemanticLineSpan>>::sse_decode(deserializer);
         let mut var_minScore = <Option<f32>>::sse_decode(deserializer);
@@ -10992,6 +10994,7 @@ impl SseDecode for crate::api::search_engine::SemanticNearestInput {
             points: var_points,
             top_k: var_topK,
             facets: var_facets,
+            book_paths: var_bookPaths,
             exclude: var_exclude,
             min_score: var_minScore,
             pool: var_pool,
@@ -11811,7 +11814,7 @@ fn pde_ffi_dispatcher_primary_impl(
 106 => wire__crate__api__search_engine__SearchEngine_semantic_covered_books_impl(port, ptr, rust_vec_len, data_len),
 107 => wire__crate__api__search_engine__SearchEngine_semantic_index_books_impl(port, ptr, rust_vec_len, data_len),
 108 => wire__crate__api__search_engine__SearchEngine_semantic_index_diff_impl(port, ptr, rust_vec_len, data_len),
-109 => wire__crate__api__search_engine__SearchEngine_semantic_nearest_impl(port, ptr, rust_vec_len, data_len),
+109 => wire__crate__api__search_engine__SearchEngine_semantic_nearest_with_book_paths_impl(port, ptr, rust_vec_len, data_len),
 110 => wire__crate__api__search_engine__SearchEngine_semantic_passage_highlights_impl(port, ptr, rust_vec_len, data_len),
 111 => wire__crate__api__search_engine__SearchEngine_semantic_query_tokens_impl(port, ptr, rust_vec_len, data_len),
 112 => wire__crate__api__search_engine__SearchEngine_semantic_status_impl(port, ptr, rust_vec_len, data_len),
@@ -13387,6 +13390,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::search_engine::SemanticNeares
             self.points.into_into_dart().into_dart(),
             self.top_k.into_into_dart().into_dart(),
             self.facets.into_into_dart().into_dart(),
+            self.book_paths.into_into_dart().into_dart(),
             self.exclude.into_into_dart().into_dart(),
             self.min_score.into_into_dart().into_dart(),
             self.pool.into_into_dart().into_dart(),
@@ -15863,6 +15867,7 @@ impl SseEncode for crate::api::search_engine::SemanticNearestInput {
         <Vec<crate::api::search_engine::SemanticPoint>>::sse_encode(self.points, serializer);
         <u32>::sse_encode(self.top_k, serializer);
         <Vec<String>>::sse_encode(self.facets, serializer);
+        <Option<Vec<String>>>::sse_encode(self.book_paths, serializer);
         <Vec<crate::api::search_engine::SemanticLineSpan>>::sse_encode(self.exclude, serializer);
         <Option<f32>>::sse_encode(self.min_score, serializer);
         <crate::api::search_engine::SemanticPool>::sse_encode(self.pool, serializer);
