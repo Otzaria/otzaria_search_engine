@@ -68,7 +68,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => -1695170080;
+  int get rustContentHash => -1467225963;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -994,7 +994,7 @@ abstract class RustLibApi extends BaseApi {
   });
 
   Future<SemanticSearchResponse>
-  crateApiSearchEngineSearchEngineSearchSemanticWithTimings({
+  crateApiSearchEngineSearchEngineSearchSemanticWithTimingsAndVotes({
     required SearchEngine that,
     required String query,
     required List<String> facets,
@@ -7192,7 +7192,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @override
   Future<SemanticSearchResponse>
-  crateApiSearchEngineSearchEngineSearchSemanticWithTimings({
+  crateApiSearchEngineSearchEngineSearchSemanticWithTimingsAndVotes({
     required SearchEngine that,
     required String query,
     required List<String> facets,
@@ -7250,7 +7250,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_semantic_error,
         ),
         constMeta:
-            kCrateApiSearchEngineSearchEngineSearchSemanticWithTimingsConstMeta,
+            kCrateApiSearchEngineSearchEngineSearchSemanticWithTimingsAndVotesConstMeta,
         argValues: [
           that,
           query,
@@ -7273,10 +7273,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   TaskConstMeta
-  get kCrateApiSearchEngineSearchEngineSearchSemanticWithTimingsConstMeta =>
+  get kCrateApiSearchEngineSearchEngineSearchSemanticWithTimingsAndVotesConstMeta =>
       const TaskConstMeta(
         debugName:
-            "SearchEngine_search_semantic_with_timings(dart_style=searchSemantic)",
+            "SearchEngine_search_semantic_with_timings_and_votes(dart_style=searchSemantic)",
         argNames: [
           "that",
           "query",
@@ -19751,7 +19751,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     List<SemanticVote>? votes,
     required SemanticCancellationToken cancellation,
   }) => RustLib.instance.api
-      .crateApiSearchEngineSearchEngineSearchSemanticWithTimings(
+      .crateApiSearchEngineSearchEngineSearchSemanticWithTimingsAndVotes(
         that: this,
         query: query,
         facets: facets,

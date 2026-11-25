@@ -964,6 +964,67 @@ Future<void> main() async {
       );
     });
 
+    test(
+      'votes rerank an installed vector set without changing plain search',
+      () async {
+        await engine.openSemanticArtifact(config: input(identity));
+        final token = SemanticCancellationToken();
+        addTearDown(token.dispose);
+
+        Future<SemanticSearchResponse> search({List<SemanticVote>? votes}) =>
+            engine.searchSemantic(
+              query: probeLine,
+              facets: const [],
+              limit: 10,
+              offset: 0,
+              lexicalMode: SemanticLexicalMode.exact,
+              fuzzyMaxDistance: 0,
+              retrievalMode: SemanticRetrievalMode.semanticOnly,
+              matchNikud: false,
+              matchTaamim: false,
+              votes: votes,
+              cancellation: token,
+            );
+
+        final plain = (await search()).results.first;
+        expect(plain.snippetHtml, probeLine);
+        final nearest = await engine.semanticNearest(
+          input: const SemanticNearestInput(
+            points: [SemanticPoint(text: probeLine, asPassage: true)],
+            topK: 2,
+            facets: [],
+            exclude: [],
+            pool: SemanticPool.best,
+            maxCandidates: 2,
+            rescore: false,
+          ),
+          cancellation: token,
+        );
+        final alternative = nearest.hits.singleWhere(
+          (hit) => hit.id != plain.id,
+        );
+
+        final voted = await search(
+          votes: [
+            SemanticVote(
+              filePath: plain.filePath,
+              id: plain.id,
+              relevant: false,
+            ),
+            SemanticVote(
+              filePath: alternative.filePath,
+              id: alternative.id,
+              relevant: true,
+            ),
+          ],
+        );
+        expect(voted.executedMode, SemanticExecutedMode.semanticOnly);
+        expect(voted.fallbackKind, isNull);
+        expect(voted.results.first.id, alternative.id);
+        expect((await search()).results.first.id, plain.id);
+      },
+    );
+
     test('a commit after opening leaves the vector set serving', () async {
       await engine.openSemanticArtifact(config: input(identity));
       await engine.addTextBook(

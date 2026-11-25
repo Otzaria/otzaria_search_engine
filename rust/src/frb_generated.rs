@@ -42,7 +42,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1695170080;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1467225963;
 
 // Section: executor
 
@@ -5854,107 +5854,45 @@ fn wire__crate__api__search_engine__SearchEngine_search_fuzzy_terms_impl(
         },
     )
 }
-fn wire__crate__api__search_engine__SearchEngine_search_semantic_with_timings_impl(
+fn wire__crate__api__search_engine__SearchEngine_search_semantic_with_timings_and_votes_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
     data_len_: i32,
 ) {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
-        flutter_rust_bridge::for_generated::TaskInfo {
-            debug_name: "SearchEngine_search_semantic_with_timings(dart_style=searchSemantic)",
-            port: Some(port_),
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
-        },
-        move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_that = <RustOpaqueMoi<
-                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>,
-            >>::sse_decode(&mut deserializer);
-            let api_query = <String>::sse_decode(&mut deserializer);
-            let api_facets = <Vec<String>>::sse_decode(&mut deserializer);
-            let api_limit = <u32>::sse_decode(&mut deserializer);
-            let api_offset = <u32>::sse_decode(&mut deserializer);
-            let api_lexical_mode =
-                <crate::api::search_engine::SemanticLexicalMode>::sse_decode(&mut deserializer);
-            let api_fuzzy_max_distance = <u8>::sse_decode(&mut deserializer);
-            let api_retrieval_mode =
-                <crate::api::search_engine::SemanticRetrievalMode>::sse_decode(&mut deserializer);
-            let api_grouping =
-                <Option<crate::api::search_engine::SemanticGroupingMode>>::sse_decode(
-                    &mut deserializer,
-                );
-            let api_match_nikud = <bool>::sse_decode(&mut deserializer);
-            let api_match_taamim = <bool>::sse_decode(&mut deserializer);
-            let api_ranking =
-                <Option<crate::api::search_engine::SemanticRankingOptions>>::sse_decode(
-                    &mut deserializer,
-                );
-            let api_votes = <Option<Vec<crate::api::search_engine::SemanticVote>>>::sse_decode(
-                &mut deserializer,
-            );
-            let api_cancellation = <RustOpaqueMoi<
-                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SemanticCancellationToken>,
-            >>::sse_decode(&mut deserializer);
-            deserializer.end();
-            move |context| {
-                transform_result_sse::<_, crate::api::search_engine::SemanticError>((move || {
-                    let mut api_that_guard = None;
-                    let mut api_cancellation_guard = None;
-                    let decode_indices_ =
-                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
-                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                                &api_that, 0, false,
-                            ),
-                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                                &api_cancellation,
-                                1,
-                                false,
-                            ),
-                        ]);
-                    for i in decode_indices_ {
-                        match i {
-                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
-                            1 => {
-                                api_cancellation_guard =
-                                    Some(api_cancellation.lockable_decode_sync_ref())
-                            }
-                            _ => unreachable!(),
-                        }
-                    }
-                    let api_that_guard = api_that_guard.unwrap();
-                    let api_cancellation_guard = api_cancellation_guard.unwrap();
-                    let output_ok =
-                        crate::api::search_engine::SearchEngine::search_semantic_with_timings(
-                            &*api_that_guard,
-                            api_query,
-                            api_facets,
-                            api_limit,
-                            api_offset,
-                            api_lexical_mode,
-                            api_fuzzy_max_distance,
-                            api_retrieval_mode,
-                            api_grouping,
-                            api_match_nikud,
-                            api_match_taamim,
-                            api_ranking,
-                            api_votes,
-                            &*api_cancellation_guard,
-                        )?;
-                    std::result::Result::Ok(output_ok)
-                })(
-                ))
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec,_,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "SearchEngine_search_semantic_with_timings_and_votes(dart_style=searchSemantic)", port: Some(port_), mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal }, move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>>>::sse_decode(&mut deserializer);
+let api_query = <String>::sse_decode(&mut deserializer);
+let api_facets = <Vec<String>>::sse_decode(&mut deserializer);
+let api_limit = <u32>::sse_decode(&mut deserializer);
+let api_offset = <u32>::sse_decode(&mut deserializer);
+let api_lexical_mode = <crate::api::search_engine::SemanticLexicalMode>::sse_decode(&mut deserializer);
+let api_fuzzy_max_distance = <u8>::sse_decode(&mut deserializer);
+let api_retrieval_mode = <crate::api::search_engine::SemanticRetrievalMode>::sse_decode(&mut deserializer);
+let api_grouping = <Option<crate::api::search_engine::SemanticGroupingMode>>::sse_decode(&mut deserializer);
+let api_match_nikud = <bool>::sse_decode(&mut deserializer);
+let api_match_taamim = <bool>::sse_decode(&mut deserializer);
+let api_ranking = <Option<crate::api::search_engine::SemanticRankingOptions>>::sse_decode(&mut deserializer);
+let api_votes = <Option<Vec<crate::api::search_engine::SemanticVote>>>::sse_decode(&mut deserializer);
+let api_cancellation = <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SemanticCancellationToken>>>::sse_decode(&mut deserializer);deserializer.end(); move |context|  {
+                    transform_result_sse::<_, crate::api::search_engine::SemanticError>((move ||  {
+                        let mut api_that_guard = None;
+let mut api_cancellation_guard = None;
+let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(&api_that, 0, false), flutter_rust_bridge::for_generated::LockableOrderInfo::new(&api_cancellation, 1, false)]);
+        for i in decode_indices_ {
+            match i {
+                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+1 => api_cancellation_guard = Some(api_cancellation.lockable_decode_sync_ref()),
+                _ => unreachable!(),
             }
-        },
-    )
+        }
+        let api_that_guard = api_that_guard.unwrap();
+let api_cancellation_guard = api_cancellation_guard.unwrap();
+ let output_ok = crate::api::search_engine::SearchEngine::search_semantic_with_timings_and_votes(&*api_that_guard, api_query, api_facets, api_limit, api_offset, api_lexical_mode, api_fuzzy_max_distance, api_retrieval_mode, api_grouping, api_match_nikud, api_match_taamim, api_ranking, api_votes, &*api_cancellation_guard)?;   std::result::Result::Ok(output_ok)
+                    })())
+                } })
 }
 fn wire__crate__api__search_engine__SearchEngine_search_smart_lexical_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
@@ -11804,7 +11742,7 @@ fn pde_ffi_dispatcher_primary_impl(
 96 => wire__crate__api__search_engine__SearchEngine_search_fuzzy_stream_impl(port, ptr, rust_vec_len, data_len),
 97 => wire__crate__api__search_engine__SearchEngine_search_fuzzy_stream_with_counts_impl(port, ptr, rust_vec_len, data_len),
 98 => wire__crate__api__search_engine__SearchEngine_search_fuzzy_terms_impl(port, ptr, rust_vec_len, data_len),
-99 => wire__crate__api__search_engine__SearchEngine_search_semantic_with_timings_impl(port, ptr, rust_vec_len, data_len),
+99 => wire__crate__api__search_engine__SearchEngine_search_semantic_with_timings_and_votes_impl(port, ptr, rust_vec_len, data_len),
 100 => wire__crate__api__search_engine__SearchEngine_search_smart_lexical_impl(port, ptr, rust_vec_len, data_len),
 101 => wire__crate__api__search_engine__SearchEngine_search_snapshot_impl(port, ptr, rust_vec_len, data_len),
 102 => wire__crate__api__search_engine__SearchEngine_search_stream_impl(port, ptr, rust_vec_len, data_len),
