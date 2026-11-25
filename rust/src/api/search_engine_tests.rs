@@ -3435,69 +3435,131 @@ fn background_reclaim_uses_absolute_savings_and_caps_document_count() {
 }
 
 #[test]
-fn normal_writer_reclaim_keeps_its_slot_across_commits_and_policy_changes() {
+fn normal_writer_reclaim_keeps_its_slot_across_policy_changes() {
+    let (engine, dir) = make_engine();
+    let (_, first) = with_deletes(&engine, 10, 10, 9);
+    let (_, second) = with_deletes(&engine, 10, 10, 9);
+    let first_path = dir.path().join(format!("{}.idx", first.id().uuid_string()));
+    fs::write(&first_path, b"held old segment").unwrap();
+    let policy = engine.size_aware_merge_policy();
+    let candidates = policy.compute_merge_candidates(std::slice::from_ref(&first));
+    assert_eq!(candidates[0].0, vec![first.id()]);
+
+    let new_policy = engine.size_aware_merge_policy();
+    let second_input = std::slice::from_ref(&second);
+    assert!(new_policy
+        .compute_merge_candidates_with_context(second_input, true, &HashSet::from([first.id()]))
+        .is_empty());
+    assert!(new_policy
+        .compute_merge_candidates_with_context(second_input, false, &HashSet::new())
+        .is_empty());
+
+    assert!(first_path.exists());
+    let candidates =
+        new_policy.compute_merge_candidates_with_context(second_input, true, &HashSet::new());
+    assert_eq!(candidates[0].0, vec![second.id()]);
+}
+
+#[test]
+fn normal_writer_reclaims_other_segments_after_its_input_is_fully_deleted() {
+    use crate::index_directory::{PauseMergeRead, PAUSE_MERGE_READ};
+    use std::sync::mpsc::channel;
+    use std::time::Duration;
+
     let (mut engine, dir) = make_engine();
     engine.set_economy_indexing(true).unwrap();
     engine.set_bulk_indexing(true).unwrap();
-    let mut first = None;
-    for index in 0..2u64 {
-        add(&mut engine, index * 2 + 1, "בראשית", "/books/gone.txt");
-        add(
-            &mut engine,
-            index * 2 + 2,
-            "תורה",
-            &format!("/books/kept-{index}.txt"),
-        );
-        engine.commit().unwrap();
-        if index == 0 {
-            first = Some(engine.index.searchable_segment_ids().unwrap()[0]);
-        }
+    let content = large_unique_text();
+    for id in 1..9 {
+        add(&mut engine, id, &content, "/books/delete-a.txt");
     }
-    let first = first.unwrap();
+    add(&mut engine, 9, "תורה", "/books/keep-a.txt");
+    engine.commit().unwrap();
+    // Keep the original file live through cancellation. Its presence must no
+    // longer prevent reclamation of the other segment.
+    let held_meta = engine.index.searchable_segment_metas().unwrap().remove(0);
+    let first = held_meta.id();
+    for id in 10..18 {
+        add(&mut engine, id, "בראשית", "/books/delete-b.txt");
+    }
+    add(&mut engine, 18, "שלום", "/books/keep-b.txt");
+    engine.commit().unwrap();
+    let original_ids = engine.index.searchable_segment_ids().unwrap();
+    assert_eq!(original_ids.len(), 2);
+
+    let (reached, at_read) = channel();
+    let (resume_merge, resume) = channel();
+    let first_file = PathBuf::from(format!("{}.idx", first.uuid_string()));
+    *PAUSE_MERGE_READ.lock().unwrap() = Some(PauseMergeRead {
+        root: std::path::absolute(dir.path()).unwrap(),
+        file: first_file.clone(),
+        reached,
+        resume,
+    });
+
+    engine.set_bulk_indexing(false).unwrap();
+    engine
+        .delete_documents_by_file_paths(vec![
+            "/books/delete-a.txt".into(),
+            "/books/delete-b.txt".into(),
+        ])
+        .unwrap();
+    engine.commit().unwrap();
+    at_read.recv_timeout(Duration::from_secs(10)).unwrap();
+    engine
+        .delete_documents_by_file_path("/books/keep-a.txt")
+        .unwrap();
+    engine.commit().unwrap();
+    assert_eq!(engine.get_document_count(), 1);
+    resume_merge.send(()).unwrap();
+    engine
+        .take_writer()
+        .unwrap()
+        .wait_merging_threads()
+        .unwrap();
+
+    assert!(dir.path().join(first_file).exists());
+    let remaining = engine.index.searchable_segment_ids().unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert!(!original_ids.contains(&remaining[0]));
+    assert_eq!(count_hits(&engine, "שלום"), 1);
+    assert_eq!(count_hits(&engine, "תורה"), 0);
+    drop(held_meta);
+}
+
+#[cfg(windows)]
+#[test]
+fn normal_writer_retries_deleting_a_segment_after_a_nonsharing_handle_closes() {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::time::Duration;
+
+    let (mut engine, dir) = make_engine();
+    engine.set_economy_indexing(true).unwrap();
+    add(&mut engine, 1, "תורה", "/books/gone.txt");
+    engine.commit().unwrap();
+    let id = engine.index.searchable_segment_ids().unwrap()[0];
+    let path = dir.path().join(format!("{}.idx", id.uuid_string()));
+    const FILE_SHARE_READ: u32 = 1;
+    const FILE_SHARE_WRITE: u32 = 2;
+    let handle = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .open(&path)
+        .unwrap();
+
     engine
         .delete_documents_by_file_path("/books/gone.txt")
         .unwrap();
     engine.commit().unwrap();
+    assert_eq!(engine.get_document_count(), 0);
+    assert!(path.exists());
+    drop(handle);
 
-    let metas = engine.index.searchable_segment_metas().unwrap();
-    let policy = engine.size_aware_merge_policy();
-    assert!(policy.claim_reclaim(&metas, first).unwrap());
-    let second = metas.iter().find(|meta| meta.id() != first).unwrap();
-    let second_id = second.id();
-    // Tantivy omits the in-flight input when it calls the policy again. Replacing the
-    // policy, such as after toggling bulk indexing, does not release its work slot.
-    let new_policy = engine.size_aware_merge_policy();
-    assert!(new_policy
-        .compute_merge_candidates(std::slice::from_ref(second))
-        .is_empty());
-
-    engine
-        .delete_documents_by_file_path("/books/kept-0.txt")
-        .unwrap();
-    engine.commit().unwrap();
-    let old_file = dir.path().join(format!("{}.idx", first.uuid_string()));
-    assert!(old_file.exists());
-    assert_eq!(
-        engine.index.searchable_segment_ids().unwrap(),
-        vec![second_id]
-    );
-    // The pinned metadata simulates a merge that still holds the input even after
-    // a commit removed its last live document.
-    assert!(new_policy
-        .compute_merge_candidates(std::slice::from_ref(second))
-        .is_empty());
-    drop(metas);
-    engine
-        .writer_mut()
-        .unwrap()
-        .garbage_collect_files()
-        .wait()
-        .unwrap();
-    assert!(!old_file.exists());
-    let metas = engine.index.searchable_segment_metas().unwrap();
-    let candidates = new_policy.compute_merge_candidates(&metas);
-    assert_eq!(candidates.len(), 1);
-    assert_eq!(candidates[0].0, vec![second_id]);
+    let timeout = Instant::now() + Duration::from_secs(10);
+    while path.exists() {
+        assert!(Instant::now() < timeout, "obsolete segment was not retried");
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 #[test]

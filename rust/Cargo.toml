@@ -168,7 +168,8 @@ tantivy-fst = { path = "vendor/tantivy-fst" }
 # #3134-#3138 and #3189-#3191. Otzaria/tantivy@otzaria-0.26 is 0.26.2 plus those PRs.
 # The pinned shutdown fix also drains merges before releasing the writer lock.
 # Also exposes SeekDangerResult for guarded, candidate-only negative probes.
-tantivy = { git = "https://github.com/Otzaria/tantivy", rev = "130b2682807d2a609d09ba432ba4d0ccc8faf7ed" }
+# Resume background reclamation after an overlapping commit removes its input.
+tantivy = { git = "https://github.com/Otzaria/tantivy", rev = "c62679aafb59005758a98faab236444b32379abb" }
 
 # Applies to the build hook's `--release` builds as well: it passes no profile overrides.
 [profile.release]

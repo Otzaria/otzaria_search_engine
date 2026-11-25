@@ -57,12 +57,45 @@ impl IndexDirectory {
     }
 }
 
+#[cfg(test)]
+pub(crate) struct PauseMergeRead {
+    pub root: PathBuf,
+    pub file: PathBuf,
+    pub reached: std::sync::mpsc::Sender<()>,
+    pub resume: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(test)]
+pub(crate) static PAUSE_MERGE_READ: std::sync::Mutex<Option<PauseMergeRead>> =
+    std::sync::Mutex::new(None);
+
 impl Directory for IndexDirectory {
     fn get_file_handle(&self, path: &Path) -> Result<Arc<dyn FileHandle>, OpenReadError> {
         self.inner.get_file_handle(path)
     }
 
     fn open_read(&self, path: &Path) -> Result<FileSlice, OpenReadError> {
+        #[cfg(test)]
+        if std::thread::current()
+            .name()
+            .is_some_and(|name| name.starts_with("merge_thread_"))
+        {
+            let pause = {
+                let mut pending = PAUSE_MERGE_READ.lock().unwrap();
+                if pending
+                    .as_ref()
+                    .is_some_and(|pause| self.root == pause.root && path == pause.file)
+                {
+                    pending.take()
+                } else {
+                    None
+                }
+            };
+            if let Some(pause) = pause {
+                let _ = pause.reached.send(());
+                let _ = pause.resume.recv();
+            }
+        }
         self.inner.open_read(path)
     }
 

@@ -4961,7 +4961,7 @@ pub struct SearchEngine {
     /// Bulk-indexing mode (see [`SearchEngine::set_bulk_indexing`]): while
     /// on, the live writer (and any lazily-reopened one) uses `NoMergePolicy`.
     bulk_indexing: bool,
-    background_reclaim: Arc<Mutex<Option<ActiveReclaim>>>,
+    background_reclaim: Arc<Mutex<Option<SegmentId>>>,
     /// Optional semantic sidecar. It owns vector retrieval, fusion, grouping
     /// and semantic-index lifecycle; Tantivy remains owned by this engine.
     #[cfg_attr(not(feature = "semantic-integration"), allow(dead_code))]
@@ -10354,8 +10354,9 @@ impl SearchEngine {
 
         let mut writer = self.take_writer()?;
         let maintenance_result = (|| -> Result<()> {
-            // Dropping the writer discards its RAM buffer; flush pending
-            // changes first so optimize never silently loses documents.
+            // Flush pending changes without starting background reclamation
+            // while optimize holds exclusive engine access.
+            writer.set_merge_policy(Box::new(NoMergePolicy));
             writer.commit()?;
             writer.wait_merging_threads()?;
             self.optimize_committed_segments()
@@ -12659,7 +12660,6 @@ impl SearchEngine {
     fn size_aware_merge_policy(&self) -> SizeAwareMergePolicy {
         SizeAwareMergePolicy {
             index_path: self.index_path.clone(),
-            index: self.index.clone(),
             reclaim: Arc::clone(&self.background_reclaim),
         }
     }
@@ -18964,57 +18964,30 @@ fn sized_segment_metas(
 #[derive(Debug)]
 struct SizeAwareMergePolicy {
     index_path: PathBuf,
-    index: Index,
-    reclaim: Arc<Mutex<Option<ActiveReclaim>>>,
-}
-
-#[derive(Debug)]
-struct ActiveReclaim {
-    id: SegmentId,
-    last_committed_opstamp: u64,
-}
-
-impl SizeAwareMergePolicy {
-    fn claim_reclaim(&self, metas: &[SegmentMeta], id: SegmentId) -> Result<bool> {
-        let mut reclaim = self.reclaim.lock().unwrap();
-        let committed = self.index.load_metas()?;
-        if !committed.segments.iter().any(|meta| meta.id() == id) {
-            return Ok(false);
-        }
-        if let Some(active) = reclaim.as_mut() {
-            // A running input is omitted from the policy's mergeable set. If it is
-            // back in the set, an unsuccessful merge has already released it.
-            if !metas.iter().any(|meta| meta.id() == active.id) {
-                if committed.segments.iter().any(|meta| meta.id() == active.id) {
-                    active.last_committed_opstamp = committed.opstamp;
-                    return Ok(false);
-                }
-                // A merge publishes at the existing opstamp. An intervening commit
-                // can instead remove a fully deleted input while the merge still
-                // needs it. In that case wait until Tantivy retires its files.
-                if committed.opstamp != active.last_committed_opstamp
-                    && self
-                        .index_path
-                        .join(format!("{}.idx", active.id.uuid_string()))
-                        .try_exists()?
-                {
-                    return Ok(false);
-                }
-            }
-        }
-        *reclaim = Some(ActiveReclaim {
-            id,
-            last_committed_opstamp: committed.opstamp,
-        });
-        Ok(true)
-    }
+    reclaim: Arc<Mutex<Option<SegmentId>>>,
 }
 
 impl MergePolicy for SizeAwareMergePolicy {
     fn compute_merge_candidates(&self, metas: &[SegmentMeta]) -> Vec<MergeCandidate> {
+        self.compute_merge_candidates_with_context(metas, true, &HashSet::new())
+    }
+
+    fn compute_merge_candidates_with_context(
+        &self,
+        metas: &[SegmentMeta],
+        committed: bool,
+        in_flight: &HashSet<SegmentId>,
+    ) -> Vec<MergeCandidate> {
+        let can_start_reclaim = committed
+            && !self
+                .reclaim
+                .lock()
+                .unwrap()
+                .is_some_and(|id| in_flight.contains(&id));
         let check_smallest_level = metas.len() > MAX_SEGMENTS_AFTER_OPTIMIZE;
         let candidates = metas.iter().filter(|meta| {
-            check_smallest_level || can_reclaim_segment(BACKGROUND_RECLAIM_MAX_BYTES, meta)
+            check_smallest_level
+                || (can_start_reclaim && can_reclaim_segment(BACKGROUND_RECLAIM_MAX_BYTES, meta))
         });
         let sized = match sized_segment_metas(&self.index_path, candidates.cloned()) {
             Ok(sized) => sized,
@@ -19026,15 +18999,14 @@ impl MergePolicy for SizeAwareMergePolicy {
         if sized.is_empty() {
             return Vec::new();
         }
-        if let Some(id) = select_deleted_to_reclaim(
-            &sized,
-            BACKGROUND_RECLAIM_MAX_BYTES,
-            u64::from(BACKGROUND_RECLAIM_MAX_DOCS),
-        ) {
-            match self.claim_reclaim(metas, id) {
-                Ok(true) => return vec![MergeCandidate(vec![id])],
-                Ok(false) => return Vec::new(),
-                Err(err) => warn!("background merge: cannot check committed segments: {err:#}"),
+        if can_start_reclaim {
+            if let Some(id) = select_deleted_to_reclaim(
+                &sized,
+                BACKGROUND_RECLAIM_MAX_BYTES,
+                u64::from(BACKGROUND_RECLAIM_MAX_DOCS),
+            ) {
+                *self.reclaim.lock().unwrap() = Some(id);
+                return vec![MergeCandidate(vec![id])];
             }
         }
         select_smallest_level(&sized)
