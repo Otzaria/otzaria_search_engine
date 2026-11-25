@@ -1,5 +1,14 @@
 # Changelog
 
+## 7.2.2 – 2026-11-25
+
+### Fixed
+
+- Reclaim disk space in the background after deleting books, including when a
+  second deletion removes a segment during a merge.
+- Retry Windows file cleanup after readers release their handles, and use
+  shorter Cargo paths when building Windows native assets.
+
 ## 7.2.1 – 2026-11-23
 
 - Expose semantic search stage timings on the 7.2 maintenance line for apps
