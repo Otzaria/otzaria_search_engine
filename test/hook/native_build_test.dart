@@ -255,6 +255,53 @@ void main() {
     });
   });
 
+  group('cargoTargetDirectory', () {
+    const shared =
+        r'D:\a\otzaria_search_engine\otzaria_search_engine\probe'
+        r'\.dart_tool\hooks_runner\shared\otzaria_search_engine\build\target';
+    const tempRoot = r'C:\Users\runneradmin\AppData\Local\Temp';
+
+    String windowsTarget(String requested) => cargoTargetDirectory(
+      requested,
+      hostIsWindows: true,
+      tempRoot: tempRoot,
+    );
+
+    test('keeps the failing Windows LTO archive below MAX_PATH', () {
+      const archive =
+          r'x86_64-pc-windows-msvc\release\build'
+          r'\unicode-normalization-alignments\a32c9ebf3cf5f0d2\out'
+          r'\libunicode_normalization_alignments-a32c9ebf3cf5f0d2.rlib';
+      expect(p.windows.join(shared, archive).length, greaterThan(260));
+      expect(
+        p.windows.join(windowsTarget(shared), archive).length,
+        lessThan(260),
+      );
+    });
+
+    test('reuses a cache but isolates different app output directories', () {
+      expect(windowsTarget(shared), windowsTarget(shared.toUpperCase()));
+      expect(
+        windowsTarget(shared),
+        windowsTarget(shared.replaceAll('\\', '/')),
+      );
+      expect(windowsTarget(shared), isNot(windowsTarget('${shared}_other')));
+    });
+
+    test('retains the hooks cache on other hosts', () {
+      expect(
+        cargoTargetDirectory(shared, hostIsWindows: false, tempRoot: tempRoot),
+        shared,
+      );
+    });
+
+    test('retains an already-short Windows publisher cache', () {
+      const requested =
+          r'D:\a\otzaria_search_engine\otzaria_search_engine\rust\target';
+      expect(windowsTarget(requested), requested);
+    });
+  });
+
   group('cargoEnvironment', () {
     test('links Android against the app minimum API, not a newer one', () {
       final env = cargoEnvironment(

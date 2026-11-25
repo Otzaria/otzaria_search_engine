@@ -3256,6 +3256,13 @@ const MAX_SEGMENTS_AFTER_OPTIMIZE: usize = 8;
 const MAX_COMPACT_SIZE_RATIO: u64 = 4;
 /// A segment whose deleted-doc share exceeds this is compacted regardless of size.
 const OPTIMIZE_COMPACT_DELETE_RATIO: f64 = 0.3;
+/// Limit both the on-disk input and the document bookkeeping of one automatic
+/// reclamation. Larger segments still qualify for explicit `optimize`.
+const BACKGROUND_RECLAIM_MAX_BYTES: u64 = 128 * 1024 * 1024;
+const BACKGROUND_RECLAIM_MAX_DOCS: u32 = 1_000_000;
+/// A sizeable absolute saving can justify work below the deleted-document share
+/// threshold. At the maximum input size this still caps estimated write amplification.
+const BACKGROUND_RECLAIM_MIN_ESTIMATED_BYTES: u64 = 16 * 1024 * 1024;
 const INDEX_METADATA_FILE_NAME: &str = "otzaria_index_meta.json";
 const INDEX_FORMAT: &str = "otzaria-search-index";
 // גרסה 3 (טרם פורסמה): המעבר ל-HebrewTokenizer (גרשיים/גרש נשמרים
@@ -4954,6 +4961,7 @@ pub struct SearchEngine {
     /// Bulk-indexing mode (see [`SearchEngine::set_bulk_indexing`]): while
     /// on, the live writer (and any lazily-reopened one) uses `NoMergePolicy`.
     bulk_indexing: bool,
+    background_reclaim: Arc<Mutex<Option<SegmentId>>>,
     /// Optional semantic sidecar. It owns vector retrieval, fusion, grouping
     /// and semantic-index lifecycle; Tantivy remains owned by this engine.
     #[cfg_attr(not(feature = "semantic-integration"), allow(dead_code))]
@@ -5163,6 +5171,7 @@ impl SearchEngine {
                 NonZeroUsize::new(TERM_CACHE_ENTRIES).expect("cache size is non-zero"),
             )),
             bulk_indexing: false,
+            background_reclaim: Arc::default(),
             #[cfg(feature = "semantic-integration")]
             semantic_runtime: RwLock::new(None),
             #[cfg(not(feature = "semantic-integration"))]
@@ -5280,6 +5289,7 @@ impl SearchEngine {
                 NonZeroUsize::new(TERM_CACHE_ENTRIES).expect("cache size is non-zero"),
             )),
             bulk_indexing: false,
+            background_reclaim: Arc::default(),
             #[cfg(feature = "semantic-integration")]
             semantic_runtime: RwLock::new(None),
             #[cfg(not(feature = "semantic-integration"))]
@@ -9817,13 +9827,8 @@ impl SearchEngine {
     pub fn set_bulk_indexing(&mut self, enabled: bool) -> Result<()> {
         self.ensure_write_access()?;
         self.bulk_indexing = enabled;
-        let index_path = self.index_path.clone();
-        let writer = self.writer_mut()?;
-        if enabled {
-            writer.set_merge_policy(Box::new(NoMergePolicy));
-        } else {
-            writer.set_merge_policy(Box::new(SizeAwareMergePolicy { index_path }));
-        }
+        let policy = self.writer_merge_policy();
+        self.writer_mut()?.set_merge_policy(policy);
         debug!("bulk_indexing={enabled}");
         Ok(())
     }
@@ -9862,7 +9867,11 @@ impl SearchEngine {
         };
         if target != self.writer_heap_size {
             if let Some(mut writer) = self.index_writer.take() {
+                // This call holds exclusive engine access. Drain accepted merges,
+                // but leave new background maintenance to the replacement writer.
+                writer.set_merge_policy(Box::new(NoMergePolicy));
                 if let Err(error) = writer.commit() {
+                    writer.set_merge_policy(self.writer_merge_policy());
                     self.index_writer = Some(writer);
                     return Err(error.into());
                 }
@@ -10345,8 +10354,9 @@ impl SearchEngine {
 
         let mut writer = self.take_writer()?;
         let maintenance_result = (|| -> Result<()> {
-            // Dropping the writer discards its RAM buffer; flush pending
-            // changes first so optimize never silently loses documents.
+            // Flush pending changes without starting background reclamation
+            // while optimize holds exclusive engine access.
+            writer.set_merge_policy(Box::new(NoMergePolicy));
             writer.commit()?;
             writer.wait_merging_threads()?;
             self.optimize_committed_segments()
@@ -12633,14 +12643,25 @@ impl SearchEngine {
             .index
             .writer_with_num_threads(threads, self.writer_heap_size)?;
         crate::indexing_buffers::cleanup_abandoned(&self.index_path);
-        if self.bulk_indexing {
-            writer.set_merge_policy(Box::new(NoMergePolicy));
-        } else {
-            writer.set_merge_policy(Box::new(SizeAwareMergePolicy {
-                index_path: self.index_path.clone(),
-            }));
-        }
+        #[cfg(windows)]
+        crate::index_directory::retry_retired_segments(&self.index_path);
+        writer.set_merge_policy(self.writer_merge_policy());
         Ok(writer)
+    }
+
+    fn writer_merge_policy(&self) -> Box<dyn MergePolicy> {
+        if self.bulk_indexing {
+            Box::new(NoMergePolicy)
+        } else {
+            Box::new(self.size_aware_merge_policy())
+        }
+    }
+
+    fn size_aware_merge_policy(&self) -> SizeAwareMergePolicy {
+        SizeAwareMergePolicy {
+            index_path: self.index_path.clone(),
+            reclaim: Arc::clone(&self.background_reclaim),
+        }
     }
 
     fn open_writer_no_merge(&self) -> Result<IndexWriter> {
@@ -18929,7 +18950,7 @@ fn segment_disk_bytes(index_path: &Path, meta: &SegmentMeta) -> Result<u64> {
 
 fn sized_segment_metas(
     index_path: &Path,
-    metas: Vec<SegmentMeta>,
+    metas: impl IntoIterator<Item = SegmentMeta>,
 ) -> Result<Vec<(u64, SegmentMeta)>> {
     metas
         .into_iter()
@@ -18943,24 +18964,92 @@ fn sized_segment_metas(
 #[derive(Debug)]
 struct SizeAwareMergePolicy {
     index_path: PathBuf,
+    reclaim: Arc<Mutex<Option<SegmentId>>>,
 }
 
 impl MergePolicy for SizeAwareMergePolicy {
     fn compute_merge_candidates(&self, metas: &[SegmentMeta]) -> Vec<MergeCandidate> {
-        if metas.len() <= MAX_SEGMENTS_AFTER_OPTIMIZE {
-            return Vec::new();
-        }
-        let sized = match sized_segment_metas(&self.index_path, metas.to_vec()) {
+        self.compute_merge_candidates_with_context(metas, true, &HashSet::new())
+    }
+
+    fn compute_merge_candidates_with_context(
+        &self,
+        metas: &[SegmentMeta],
+        committed: bool,
+        in_flight: &HashSet<SegmentId>,
+    ) -> Vec<MergeCandidate> {
+        let can_start_reclaim = committed
+            && !self
+                .reclaim
+                .lock()
+                .unwrap()
+                .is_some_and(|id| in_flight.contains(&id));
+        let check_smallest_level = metas.len() > MAX_SEGMENTS_AFTER_OPTIMIZE;
+        let candidates = metas.iter().filter(|meta| {
+            check_smallest_level
+                || (can_start_reclaim && can_reclaim_segment(BACKGROUND_RECLAIM_MAX_BYTES, meta))
+        });
+        let sized = match sized_segment_metas(&self.index_path, candidates.cloned()) {
             Ok(sized) => sized,
             Err(err) => {
                 warn!("background merge: cannot measure segment sizes: {err:#}");
                 return Vec::new();
             }
         };
+        if sized.is_empty() {
+            return Vec::new();
+        }
+        if can_start_reclaim {
+            if let Some(id) = select_deleted_to_reclaim(
+                &sized,
+                BACKGROUND_RECLAIM_MAX_BYTES,
+                u64::from(BACKGROUND_RECLAIM_MAX_DOCS),
+            ) {
+                *self.reclaim.lock().unwrap() = Some(id);
+                return vec![MergeCandidate(vec![id])];
+            }
+        }
         select_smallest_level(&sized)
             .map(|ids| vec![MergeCandidate(ids)])
             .unwrap_or_default()
     }
+}
+
+fn is_delete_heavy(meta: &SegmentMeta) -> bool {
+    meta.max_doc() > 0
+        && f64::from(meta.num_deleted_docs()) / f64::from(meta.max_doc())
+            > OPTIMIZE_COMPACT_DELETE_RATIO
+}
+
+fn estimated_deleted_bytes(bytes: u64, meta: &SegmentMeta) -> u128 {
+    u128::from(bytes) * u128::from(meta.num_deleted_docs()) / u128::from(meta.max_doc())
+}
+
+fn can_reclaim_segment(bytes: u64, meta: &SegmentMeta) -> bool {
+    bytes <= BACKGROUND_RECLAIM_MAX_BYTES
+        && meta.num_deleted_docs() > 0
+        && (1..=BACKGROUND_RECLAIM_MAX_DOCS).contains(&meta.max_doc())
+        && (is_delete_heavy(meta)
+            || estimated_deleted_bytes(bytes, meta)
+                >= u128::from(BACKGROUND_RECLAIM_MIN_ESTIMATED_BYTES))
+}
+
+/// Choose the eligible input with the largest estimated disk saving. Tantivy rewrites it
+/// separately on its merge pool while searches continue reading committed segments.
+fn select_deleted_to_reclaim(
+    sized_metas: &[(u64, SegmentMeta)],
+    max_bytes: u64,
+    max_docs: u64,
+) -> Option<SegmentId> {
+    sized_metas
+        .iter()
+        .filter(|(bytes, meta)| {
+            *bytes <= max_bytes
+                && u64::from(meta.max_doc()) <= max_docs
+                && can_reclaim_segment(*bytes, meta)
+        })
+        .max_by_key(|(bytes, meta)| estimated_deleted_bytes(*bytes, meta))
+        .map(|(_, meta)| meta.id())
 }
 
 /// Pick one merge at a time. Reclaim a delete-heavy segment on its own, then
@@ -18968,11 +19057,7 @@ impl MergePolicy for SizeAwareMergePolicy {
 fn select_segments_to_compact(sized_metas: &[(u64, SegmentMeta)]) -> Option<Vec<SegmentId>> {
     if let Some((_, meta)) = sized_metas
         .iter()
-        .filter(|(_, meta)| {
-            meta.max_doc() > 0
-                && f64::from(meta.num_deleted_docs()) / f64::from(meta.max_doc())
-                    > OPTIMIZE_COMPACT_DELETE_RATIO
-        })
+        .filter(|(_, meta)| is_delete_heavy(meta))
         .min_by_key(|(bytes, _)| *bytes)
     {
         return Some(vec![meta.id()]);

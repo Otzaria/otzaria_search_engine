@@ -134,8 +134,8 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-          # The app's Flutter, whose hooks runner ships the library.
-          flutter-version: 3.47.2
+          # Keep the native probe on the same Flutter version as analysis.
+          flutter-version: 3.47.7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -292,8 +292,8 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-          # The app's Flutter, whose hooks runner ships the library.
-          flutter-version: 3.47.2
+          # Keep the native probe on the same Flutter version as analysis.
+          flutter-version: 3.47.7
 
       - uses: dtolnay/rust-toolchain@stable
 

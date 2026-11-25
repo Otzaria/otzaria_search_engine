@@ -3222,9 +3222,7 @@ fn the_background_policy_leaves_nine_large_segments_behind_one_tiny_alone() {
         "the outlier is not small enough to leave the level above it alone: {sizes:?}"
     );
 
-    let policy = SizeAwareMergePolicy {
-        index_path: engine.index_path.clone(),
-    };
+    let policy = engine.size_aware_merge_policy();
     assert!(
         policy.compute_merge_candidates(&metas).is_empty(),
         "the writer would rewrite large segments in the background"
@@ -3234,6 +3232,360 @@ fn the_background_policy_leaves_nine_large_segments_behind_one_tiny_alone() {
         select_level_to_compact(&sized).map_or(0, |ids| ids.len()),
         3
     );
+}
+
+/// ספרים שהוסרו מהספרייה נמחקים ב-delete + commit בלבד, ובלי איחוד המסמכים
+/// המחוקים נשארים בדיסק. מדיניות הרקע של ה-writer צריכה להציע את הסגמנט
+/// שרובו נמחק, גם כשיש פחות משמונה סגמנטים — אחרת רק `optimize` (שמחזיק את
+/// המנוע בבלעדיות) יכול לפנות אותו.
+#[test]
+fn the_background_policy_reclaims_a_delete_heavy_segment() {
+    let (mut engine, _dir) = make_engine();
+    engine.set_bulk_indexing(true).unwrap();
+    for i in 0..20u64 {
+        add(&mut engine, i + 1, "בראשית ברא", "/books/gone.txt");
+    }
+    add(&mut engine, 100, "שלום עולם", "/books/kept.txt");
+    engine.commit().unwrap();
+    collapse_to_one_segment(&mut engine);
+    engine
+        .delete_documents_by_file_path("/books/gone.txt")
+        .unwrap();
+    engine.commit().unwrap();
+    let metas = engine.index.searchable_segment_metas().unwrap();
+    assert_eq!(metas.len(), 1);
+    assert_eq!(metas[0].num_deleted_docs(), 20);
+
+    let policy = engine.size_aware_merge_policy();
+    let candidates = policy.compute_merge_candidates(&metas);
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].0, vec![metas[0].id()]);
+}
+
+#[test]
+fn normal_writer_reclaims_segment_files_without_another_commit() {
+    use std::time::Duration;
+
+    fn disk_bytes(path: &Path) -> u64 {
+        let Ok(entries) = fs::read_dir(path) else {
+            return 0;
+        };
+        entries
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| Some((entry.path(), entry.metadata().ok()?)))
+            .map(|(path, meta)| {
+                if meta.is_dir() {
+                    disk_bytes(&path)
+                } else {
+                    meta.len()
+                }
+            })
+            .sum()
+    }
+
+    let (mut engine, dir) = make_engine();
+    engine.set_economy_indexing(true).unwrap();
+    engine.set_bulk_indexing(true).unwrap();
+    let content = large_unique_text();
+    for segment in 0..2u64 {
+        for doc in 0..12 {
+            add(
+                &mut engine,
+                segment * 100 + doc,
+                &content,
+                "/books/gone.txt",
+            );
+        }
+        add(&mut engine, segment * 100 + 99, "תורה", "/books/kept.txt");
+        engine.commit().unwrap();
+    }
+    let old_segments = engine.index.searchable_segment_ids().unwrap();
+    assert_eq!(old_segments.len(), 2);
+    let before = disk_bytes(dir.path());
+    // A search that started before the delete keeps the original mmaps alive on Windows.
+    let in_flight_search = engine.index_reader.searcher();
+    engine.set_bulk_indexing(false).unwrap();
+
+    engine
+        .delete_documents_by_file_path("/books/gone.txt")
+        .unwrap();
+    engine.commit().unwrap();
+    assert_eq!(count_hits(&engine, "תורה"), 2);
+    assert_eq!(count_hits(&engine, "שלום"), 0);
+    let timeout = Instant::now() + Duration::from_secs(10);
+    loop {
+        let searcher = engine.index_reader.searcher();
+        if searcher
+            .segment_readers()
+            .iter()
+            .all(|segment| !old_segments.contains(&segment.segment_id()))
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < timeout,
+            "reader did not adopt both replacements"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    drop(in_flight_search);
+    while disk_bytes(dir.path()) >= before / 2 {
+        assert!(
+            Instant::now() < timeout,
+            "idle writer kept old segment files: {} of the original {before} bytes",
+            disk_bytes(dir.path())
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    for id in old_segments {
+        assert!(!dir
+            .path()
+            .join(format!("{}.idx", id.uuid_string()))
+            .exists());
+    }
+    assert_eq!(count_hits(&engine, "תורה"), 2);
+    assert_eq!(engine.get_document_count(), 2);
+
+    add(&mut engine, 1_000, &content, "/books/gone.txt");
+    engine.commit().unwrap();
+    assert_eq!(count_hits(&engine, "שלום"), 1);
+    assert_eq!(engine.get_document_count(), 3);
+}
+
+fn with_deletes(
+    engine: &SearchEngine,
+    bytes: u64,
+    max_doc: u32,
+    deleted: u32,
+) -> (u64, SegmentMeta) {
+    let meta = engine
+        .index
+        .new_segment_meta(SegmentId::generate_random(), max_doc);
+    let meta = if deleted == 0 {
+        meta
+    } else {
+        meta.with_delete_meta(deleted, 0)
+    };
+    (bytes, meta)
+}
+
+/// הבחירה לפי נפח המחיקות: בגודל הסגמנט כפול חלק המחוקים, ולא לפי הקטן
+/// ביותר; סגמנט בריא או כזה שמעל התקרה אינו נבחר לעולם.
+#[test]
+fn background_reclaim_picks_the_most_deleted_bytes_under_the_cap() {
+    let (engine, _dir) = make_engine();
+    let healthy = with_deletes(&engine, 50, 10, 0);
+    let small = with_deletes(&engine, 100, 10, 9);
+    let larger = with_deletes(&engine, 1_000, 20, 10);
+    let small_id = small.1.id();
+    let over_cap = with_deletes(&engine, 10_000, 10, 9);
+    let barely = with_deletes(&engine, 5_000, 10, 3);
+    let metas = vec![healthy, small, larger.clone(), over_cap, barely];
+
+    assert_eq!(
+        select_deleted_to_reclaim(&metas, 5_000, u64::MAX),
+        Some(larger.1.id())
+    );
+    assert_eq!(select_deleted_to_reclaim(&metas, 5_000, 10), Some(small_id));
+    assert_eq!(select_deleted_to_reclaim(&metas, 99, u64::MAX), None);
+    assert_eq!(
+        select_deleted_to_reclaim(&metas[..1], u64::MAX, u64::MAX),
+        None,
+        "a healthy segment is never rewritten in the background"
+    );
+}
+
+/// מעל התקרה המדיניות לא כותבת מחדש סגמנט גדול ברקע, גם כשרובו נמחק —
+/// זה נשאר ל-`optimize` מפורש, כמו כל שכתוב של סגמנט גדול (#21).
+#[test]
+fn the_background_policy_leaves_a_delete_heavy_segment_over_the_cap_alone() {
+    let (engine, _dir) = make_engine();
+    let metas = [
+        with_deletes(&engine, BACKGROUND_RECLAIM_MAX_BYTES + 1, 10, 9),
+        with_deletes(&engine, 10, 10, 0),
+    ];
+    assert_eq!(
+        select_deleted_to_reclaim(&metas, BACKGROUND_RECLAIM_MAX_BYTES, u64::MAX),
+        None
+    );
+    assert_eq!(select_smallest_level(&metas), None);
+}
+
+#[test]
+fn background_reclaim_uses_absolute_savings_and_caps_document_count() {
+    let (engine, _dir) = make_engine();
+    let mib = 1024 * 1024;
+    let large_saving = with_deletes(&engine, 100 * mib, 10, 2);
+    let small_saving = with_deletes(&engine, 100 * mib, 10, 1);
+    let too_many_docs = with_deletes(
+        &engine,
+        100 * mib,
+        BACKGROUND_RECLAIM_MAX_DOCS + 1,
+        BACKGROUND_RECLAIM_MAX_DOCS,
+    );
+    let wanted_id = large_saving.1.id();
+    assert_eq!(
+        select_deleted_to_reclaim(
+            &[large_saving, small_saving, too_many_docs],
+            BACKGROUND_RECLAIM_MAX_BYTES,
+            u64::MAX
+        ),
+        Some(wanted_id)
+    );
+}
+
+#[test]
+fn normal_writer_reclaim_keeps_its_slot_across_policy_changes() {
+    let (engine, dir) = make_engine();
+    let (_, first) = with_deletes(&engine, 10, 10, 9);
+    let (_, second) = with_deletes(&engine, 10, 10, 9);
+    let first_path = dir.path().join(format!("{}.idx", first.id().uuid_string()));
+    fs::write(&first_path, b"held old segment").unwrap();
+    let policy = engine.size_aware_merge_policy();
+    let candidates = policy.compute_merge_candidates(std::slice::from_ref(&first));
+    assert_eq!(candidates[0].0, vec![first.id()]);
+
+    let new_policy = engine.size_aware_merge_policy();
+    let second_input = std::slice::from_ref(&second);
+    assert!(new_policy
+        .compute_merge_candidates_with_context(second_input, true, &HashSet::from([first.id()]))
+        .is_empty());
+    assert!(new_policy
+        .compute_merge_candidates_with_context(second_input, false, &HashSet::new())
+        .is_empty());
+
+    assert!(first_path.exists());
+    let candidates =
+        new_policy.compute_merge_candidates_with_context(second_input, true, &HashSet::new());
+    assert_eq!(candidates[0].0, vec![second.id()]);
+}
+
+#[test]
+fn normal_writer_reclaims_other_segments_after_its_input_is_fully_deleted() {
+    use crate::index_directory::{PauseMergeRead, PAUSE_MERGE_READ};
+    use std::sync::mpsc::channel;
+    use std::time::Duration;
+
+    let (mut engine, dir) = make_engine();
+    engine.set_economy_indexing(true).unwrap();
+    engine.set_bulk_indexing(true).unwrap();
+    let content = large_unique_text();
+    for id in 1..9 {
+        add(&mut engine, id, &content, "/books/delete-a.txt");
+    }
+    add(&mut engine, 9, "תורה", "/books/keep-a.txt");
+    engine.commit().unwrap();
+    // Keep the original file live through cancellation. Its presence must no
+    // longer prevent reclamation of the other segment.
+    let held_meta = engine.index.searchable_segment_metas().unwrap().remove(0);
+    let first = held_meta.id();
+    for id in 10..18 {
+        add(&mut engine, id, "בראשית", "/books/delete-b.txt");
+    }
+    add(&mut engine, 18, "שלום", "/books/keep-b.txt");
+    engine.commit().unwrap();
+    let original_ids = engine.index.searchable_segment_ids().unwrap();
+    assert_eq!(original_ids.len(), 2);
+
+    let (reached, at_read) = channel();
+    let (resume_merge, resume) = channel();
+    let first_file = PathBuf::from(format!("{}.idx", first.uuid_string()));
+    *PAUSE_MERGE_READ.lock().unwrap() = Some(PauseMergeRead {
+        root: std::path::absolute(dir.path()).unwrap(),
+        file: first_file.clone(),
+        reached,
+        resume,
+    });
+
+    engine.set_bulk_indexing(false).unwrap();
+    engine
+        .delete_documents_by_file_paths(vec![
+            "/books/delete-a.txt".into(),
+            "/books/delete-b.txt".into(),
+        ])
+        .unwrap();
+    engine.commit().unwrap();
+    at_read.recv_timeout(Duration::from_secs(10)).unwrap();
+    engine
+        .delete_documents_by_file_path("/books/keep-a.txt")
+        .unwrap();
+    engine.commit().unwrap();
+    assert_eq!(engine.get_document_count(), 1);
+    resume_merge.send(()).unwrap();
+    engine
+        .take_writer()
+        .unwrap()
+        .wait_merging_threads()
+        .unwrap();
+
+    assert!(dir.path().join(first_file).exists());
+    let remaining = engine.index.searchable_segment_ids().unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert!(!original_ids.contains(&remaining[0]));
+    assert_eq!(count_hits(&engine, "שלום"), 1);
+    assert_eq!(count_hits(&engine, "תורה"), 0);
+    drop(held_meta);
+}
+
+#[cfg(windows)]
+#[test]
+fn normal_writer_retries_deleting_a_segment_after_a_nonsharing_handle_closes() {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::time::Duration;
+
+    let (mut engine, dir) = make_engine();
+    engine.set_economy_indexing(true).unwrap();
+    add(&mut engine, 1, "תורה", "/books/gone.txt");
+    engine.commit().unwrap();
+    let id = engine.index.searchable_segment_ids().unwrap()[0];
+    let path = dir.path().join(format!("{}.idx", id.uuid_string()));
+    const FILE_SHARE_READ: u32 = 1;
+    const FILE_SHARE_WRITE: u32 = 2;
+    let handle = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .open(&path)
+        .unwrap();
+
+    engine
+        .delete_documents_by_file_path("/books/gone.txt")
+        .unwrap();
+    engine.commit().unwrap();
+    assert_eq!(engine.get_document_count(), 0);
+    assert!(path.exists());
+    drop(handle);
+
+    let timeout = Instant::now() + Duration::from_secs(10);
+    while path.exists() {
+        assert!(Instant::now() < timeout, "obsolete segment was not retried");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn normal_writer_reconfiguration_does_not_start_reclaim_work() {
+    if DEFAULT_WRITER_HEAP_SIZE == ECONOMY_WRITER_HEAP_SIZE {
+        return;
+    }
+    let (mut engine, _dir) = make_engine();
+    engine.set_bulk_indexing(true).unwrap();
+    for id in 1..10 {
+        add(&mut engine, id, "בראשית", "/books/gone.txt");
+    }
+    add(&mut engine, 10, "תורה", "/books/kept.txt");
+    engine.commit().unwrap();
+    collapse_to_one_segment(&mut engine);
+    engine
+        .delete_documents_by_file_path("/books/gone.txt")
+        .unwrap();
+    engine.commit().unwrap();
+    let before = engine.index.searchable_segment_ids().unwrap();
+
+    engine.set_bulk_indexing(false).unwrap();
+    engine.set_economy_indexing(true).unwrap();
+    assert_eq!(engine.index.searchable_segment_ids().unwrap(), before);
+    assert_eq!(count_hits(&engine, "תורה"), 1);
+    assert_eq!(count_hits(&engine, "בראשית"), 0);
 }
 
 #[test]
