@@ -1,5 +1,13 @@
 # Changelog
 
+## 7.5.2 – 2026-11-25
+
+### Fixed
+
+- Give each semantic result list an optional `paginationSessionId` so votes
+  and subsequent pages remain independent across identical searches.
+- Mark a page as shown only after painting and the final cancellation check.
+
 ## 7.5.1 – 2026-11-25
 
 ### Fixed
