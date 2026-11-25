@@ -548,7 +548,8 @@ marks of a continuation change, the results not yet shown are ranked again and
 the pages shown keep their order. A first page with marks, such as marks
 carried into an edited search, is ranked by them from the top. Send the full set
 of current marks on each request. Omit `votes` or pass an empty list to clear
-them. Lexical-only searches ignore marks.
+them. If the list marks a line more than once, its last mark wins.
+Lexical-only searches ignore marks.
 
 ```dart
 final next = await engine.searchSemantic(

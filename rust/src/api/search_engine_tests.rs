@@ -12440,9 +12440,13 @@ mod semantic_sessions {
             relevant: false,
             ..liked.clone()
         };
-        voted_page(&engine, 5, 10, &[flipped, other]);
+        let normalized = [flipped.clone(), other.clone()];
+        let page = voted_page(&engine, 5, 10, &[liked.clone(), flipped, other]);
         assert_eq!(engine.vote_embeddings.lock().unwrap().len(), 2);
         assert!(Arc::ptr_eq(&first_embedding, &embedding()));
+        let before = expansions(&engine);
+        assert_eq!(bits(&voted_page(&engine, 5, 10, &normalized)), bits(&page));
+        assert_eq!(expansions(&engine), before, "a duplicate's last mark wins");
     }
 
     #[test]

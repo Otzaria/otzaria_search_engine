@@ -20,8 +20,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-#[cfg(feature = "semantic-integration")]
-use tantivy::collector::DocSetCollector;
 use tantivy::collector::{Collector, Count, FacetCollector, SegmentCollector, TopDocs};
 use tantivy::directory::{Directory, Lock};
 use tantivy::index::{SegmentId, SegmentMeta};
@@ -8412,13 +8410,22 @@ impl SearchEngine {
                 self.semantic_sessions.epoch(),
                 limit,
             );
-            let mut votes = if retrieval_mode == SemanticRetrievalMode::LexicalOnly {
+            let votes = if retrieval_mode == SemanticRetrievalMode::LexicalOnly {
                 Vec::new()
             } else {
-                votes.to_vec()
+                let mut by_line = BTreeMap::new();
+                for vote in votes {
+                    by_line.insert((&vote.file_path, vote.id), vote.relevant);
+                }
+                by_line
+                    .into_iter()
+                    .map(|((file_path, id), relevant)| SemanticVote {
+                        file_path: file_path.clone(),
+                        id,
+                        relevant,
+                    })
+                    .collect()
             };
-            votes.sort_unstable();
-            votes.dedup();
             // A search whose semantic half failed is searched again, but its pages still page;
             // a first page with marks other than its session's is ranked by them afresh.
             let kept = self.semantic_sessions.get(&key).filter(|kept| {
@@ -9131,7 +9138,7 @@ impl SearchEngine {
         Ok(moved_query(&query, &relevant, &irrelevant).map(Arc::from))
     }
 
-    /// Fetch uncached votes in one index search and read their library text in one batch.
+    /// Find uncached votes together in the index and read their library text in one batch.
     /// The same id can belong to more than one book, so verify the full line identity.
     #[cfg(feature = "semantic-integration")]
     fn vote_passages(
@@ -9143,42 +9150,55 @@ impl SearchEngine {
         if cancel.is_cancelled() {
             return Err(SemanticError::cancelled());
         }
-        let ids = IdSetQuery::new(requested.iter().map(|(_, id)| *id));
-        let mut addresses: Vec<_> = searcher
-            .search(&ids, &DocSetCollector)
-            .map_err(anyhow::Error::from)?
-            .into_iter()
-            .collect();
-        addresses.sort_unstable();
-        let mut pending: HashSet<_> = requested
-            .iter()
-            .map(|(path, id)| (path.as_str(), *id))
-            .collect();
+        let mut books_by_id = HashMap::<_, HashSet<_>>::new();
+        for (path, id) in requested {
+            books_by_id.entry(*id).or_default().insert(path.as_str());
+        }
+        let mut ids: Vec<_> = books_by_id.keys().copied().collect();
+        ids.sort_unstable();
         let mut lines = Vec::with_capacity(requested.len());
         let mut documents = Vec::with_capacity(requested.len());
         let mut loader = DocumentLoader::new(searcher);
-        let id_field = self.schema.get_field("id").map_err(anyhow::Error::from)?;
-        let path_field = self
-            .schema
-            .get_field("filePath")
-            .map_err(anyhow::Error::from)?;
-        for address in addresses {
+        let mut path = String::new();
+        for (ordinal, reader) in searcher.segment_readers().iter().enumerate() {
             if cancel.is_cancelled() {
                 return Err(SemanticError::cancelled());
             }
-            let document = loader.load(address)?;
-            let id = document
-                .get_first(id_field)
-                .and_then(|value| value.as_u64());
-            let path = document
-                .get_first(path_field)
-                .and_then(|value| value.as_str());
-            if let Some((path, id)) = path.zip(id).and_then(|line| pending.take(&line)) {
-                lines.push((path.to_owned(), id));
-                documents.push((address, document));
-                if pending.is_empty() {
-                    break;
+            let docs =
+                crate::id_lookup::docs_with_ids(reader, &ids).map_err(anyhow::Error::from)?;
+            if docs.is_empty() {
+                continue;
+            }
+            let fields = reader.fast_fields();
+            let id_column = fields.u64("id").map_err(anyhow::Error::from)?;
+            let Some(paths) = fields.str("filePath").map_err(anyhow::Error::from)? else {
+                continue;
+            };
+            for doc in docs {
+                if cancel.is_cancelled() {
+                    return Err(SemanticError::cancelled());
                 }
+                let Some(id) = id_column.first(doc) else {
+                    continue;
+                };
+                let Some(books) = books_by_id.get_mut(&id) else {
+                    continue;
+                };
+                let Some(path_ord) = paths.term_ords(doc).next() else {
+                    continue;
+                };
+                if paths
+                    .ord_to_str(path_ord, &mut path)
+                    .map_err(anyhow::Error::from)?
+                    && books.remove(path.as_str())
+                {
+                    let address = DocAddress::new(ordinal as u32, doc);
+                    lines.push((path.clone(), id));
+                    documents.push((address, loader.load(address).map_err(anyhow::Error::from)?));
+                }
+            }
+            if lines.len() == requested.len() {
+                break;
             }
         }
         let texts =

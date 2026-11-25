@@ -105,7 +105,7 @@ fn runs_of(reader: &SegmentReader) -> tantivy::Result<Arc<IdRuns>> {
 }
 
 /// The live documents of one segment whose `id` is in `ids`, ascending.
-fn docs_with_ids(reader: &SegmentReader, ids: &[u64]) -> tantivy::Result<Vec<DocId>> {
+pub(crate) fn docs_with_ids(reader: &SegmentReader, ids: &[u64]) -> tantivy::Result<Vec<DocId>> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
