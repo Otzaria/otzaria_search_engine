@@ -940,6 +940,133 @@ pub struct SemanticCoveredBooks {
     pub recovered_from_previous: bool,
 }
 
+/// Most points one [`SearchEngine::semantic_nearest`] call starts from.
+pub const MAX_NEAREST_POINTS: usize = 64;
+/// Most vectors one point's scan returns in [`SearchEngine::semantic_nearest`].
+pub const MAX_NEAREST_TOP_K: u32 = 2_000;
+/// Most vectors [`SemanticPool::Best`] pools before resolving them.
+pub const MAX_NEAREST_CANDIDATES: u32 = 5_000;
+/// Most texts one [`SearchEngine::semantic_query_tokens`] call counts.
+pub const MAX_QUERY_TOKEN_TEXTS: usize = 5_000;
+
+/// How long texts are as queries, as [`SearchEngine::semantic_query_tokens`] counts them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SemanticQueryTokens {
+    /// Each text's count as the query sequence the model sees: normalized and marked as a
+    /// query, role prefix and special tokens included. 0 for a text with nothing to embed.
+    pub counts: Vec<u32>,
+    /// The cap a query is cut at. A text whose count is at most this is embedded whole.
+    pub query_max_tokens: u32,
+    /// What an empty query counts: the role prefix and the special tokens.
+    pub overhead_tokens: u32,
+}
+
+/// A point a [`SearchEngine::semantic_nearest`] search starts from: a text, or a vector of
+/// the set's width. Exactly one of `text` and `vector` is set.
+#[derive(Clone, Debug)]
+pub struct SemanticPoint {
+    /// A text to embed. Embedded as `search_semantic` embeds a query, unless `as_passage`.
+    pub text: Option<String>,
+    /// Embed `text` as a stored line is embedded, to compare a passage with passages.
+    pub as_passage: bool,
+    /// A vector of the set's width, such as a centroid the caller computed. Scaled to unit
+    /// length before the scan, so its scores are cosines like a text's.
+    pub vector: Option<Vec<f32>>,
+}
+
+/// How [`SearchEngine::semantic_nearest`] returns what its points found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SemanticPool {
+    /// One list: every line any point found, once, at its best score over the points.
+    Best,
+    /// One list per point, in the order the points were given.
+    PerPoint,
+}
+
+/// Lines of one book, from `from_segment` to `to_segment`, both included.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SemanticLineSpan {
+    pub file_path: String,
+    pub from_segment: u64,
+    pub to_segment: u64,
+}
+
+/// What [`SearchEngine::semantic_nearest`] searches for.
+#[derive(Clone, Debug)]
+pub struct SemanticNearestInput {
+    /// 1 to [`MAX_NEAREST_POINTS`].
+    pub points: Vec<SemanticPoint>,
+    /// How many vectors each point's scan returns, 1 to [`MAX_NEAREST_TOP_K`]. A vector can
+    /// resolve to several lines, and lines are dropped by `exclude` and `min_score` after.
+    pub top_k: u32,
+    /// As `search_semantic`'s facets: empty for the whole library.
+    pub facets: Vec<String>,
+    /// Lines never returned, such as the passage the points were taken from.
+    pub exclude: Vec<SemanticLineSpan>,
+    /// Lines scoring under it are dropped.
+    pub min_score: Option<f32>,
+    pub pool: SemanticPool,
+    /// [`SemanticPool::Best`] only: the most vectors pooled before they are resolved, 1 to
+    /// [`MAX_NEAREST_CANDIDATES`]. The best-scored are kept.
+    pub max_candidates: u32,
+    /// [`SemanticPool::Best`] only: score every line against every point, in
+    /// [`SemanticNearestHit::point_scores`].
+    pub rescore: bool,
+}
+
+/// One live line [`SearchEngine::semantic_nearest`] found.
+#[derive(Clone, Debug)]
+pub struct SemanticNearestHit {
+    /// The book's index key, as [`SemanticSearchResult::file_path`].
+    pub file_path: String,
+    /// The line's document id, for [`SearchEngine::get_document_by_id`].
+    pub id: u64,
+    pub title: String,
+    pub reference: String,
+    /// The line's ordinal in its book.
+    pub segment: u64,
+    pub is_pdf: bool,
+    /// As [`SemanticSearchResult::matched_window`].
+    pub matched_window: u8,
+    /// The line's similarity to the point that found it best, under the search screen's
+    /// window and alias penalties.
+    pub score: f32,
+    /// Which point that is, by its index in [`SemanticNearestInput::points`].
+    pub point: u32,
+    /// With `rescore`: the line's score for each point, in their order, under the same
+    /// penalties; NaN where the set no longer holds the line's vector. Empty otherwise.
+    pub point_scores: Vec<f32>,
+}
+
+/// One point's lines, for [`SemanticPool::PerPoint`].
+#[derive(Clone, Debug)]
+pub struct SemanticNearestList {
+    pub hits: Vec<SemanticNearestHit>,
+}
+
+/// What [`SearchEngine::semantic_nearest`] found, and what it read.
+#[derive(Clone, Debug)]
+pub struct SemanticNearestResponse {
+    /// [`SemanticPool::Best`]: every line found, best first. Empty for `PerPoint`.
+    pub hits: Vec<SemanticNearestHit>,
+    /// [`SemanticPool::PerPoint`]: one list per point, each best first. Empty for `Best`.
+    pub per_point: Vec<SemanticNearestList>,
+    /// The vector set's generation the scan read.
+    pub generation: u64,
+    /// The library version the set stands at.
+    pub vectors_library_version: u32,
+    /// Vectors found that no live line of the admitted books holds any more.
+    pub unresolved: u32,
+    /// Lines resolved but gone from the index by the time they were read.
+    pub stale_dropped: u32,
+    /// [`SemanticPool::Best`] pooled more vectors than `max_candidates` and kept the best.
+    pub truncated: bool,
+    pub embed_ms: u64,
+    pub scan_ms: u64,
+    pub resolve_ms: u64,
+    pub rescore_ms: u64,
+}
+
 /// What stopped the semantic path, as a value an application can switch on to choose a
 /// message and an action. A [`SemanticError`] carries one when a semantic call fails,
 /// [`SemanticStatus::error_kind`] when a session cannot serve, and
@@ -2698,6 +2825,12 @@ impl SemanticTimings {
             total_ms: self.total_ms + later.total_ms,
         }
     }
+}
+
+/// Whole milliseconds since `started`, for a timing field.
+#[cfg(feature = "semantic-integration")]
+fn started_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
 }
 
 #[cfg(feature = "semantic-integration")]
@@ -6996,6 +7129,549 @@ impl SearchEngine {
         }
     }
 
+    /// How long each of `texts` is as a query to the open vector set's model, with the cap a
+    /// query is cut at: for a caller that cuts a long passage into windows that each fit.
+    /// Up to [`MAX_QUERY_TOKEN_TEXTS`] texts.
+    ///
+    /// Fails `NotConfigured` with no session open, and as the session's model fails when its
+    /// backend has no tokenizer to count with.
+    pub fn semantic_query_tokens(
+        &self,
+        texts: Vec<String>,
+    ) -> Result<SemanticQueryTokens, SemanticError> {
+        #[cfg(feature = "semantic-integration")]
+        {
+            if texts.len() > MAX_QUERY_TOKEN_TEXTS {
+                return Err(SemanticError::new(
+                    SemanticErrorKind::InvalidInput,
+                    format!(
+                        "semantic_query_tokens counts at most {MAX_QUERY_TOKEN_TEXTS} texts, \
+                         not {}",
+                        texts.len()
+                    ),
+                ));
+            }
+            let open = self.semantic_engine().ok_or_else(|| {
+                SemanticError::new(
+                    SemanticErrorKind::NotConfigured,
+                    "semantic sidecar has not been configured",
+                )
+            })?;
+            let views: Vec<&str> = texts.iter().map(String::as_str).collect();
+            let counted = open
+                .coordinator
+                .query_token_counts(&views)
+                .map_err(|err| semantic_errors::search_error(&err, open.call()))?;
+            Ok(SemanticQueryTokens {
+                counts: counted.counts,
+                query_max_tokens: counted.query_max_tokens,
+                overhead_tokens: counted.overhead_tokens,
+            })
+        }
+
+        #[cfg(not(feature = "semantic-integration"))]
+        {
+            let _ = texts;
+            Err(Self::semantic_not_in_build())
+        }
+    }
+
+    /// The live lines nearest each of several points in an installed vector set.
+    ///
+    /// Each point is embedded as `search_semantic` embeds a query (or, `as_passage`, as a
+    /// stored line). The scan groups points to bound working memory. It resolves each
+    /// vector to the live lines in books admitted by `facets`, under the search screen's
+    /// window and alias penalties. Results carry line metadata for callers to read the text.
+    ///
+    /// Fails `NotConfigured` with no session open, or with one built on this device, which
+    /// has no vector set; `InvalidInput` for a point that is neither one text nor one vector
+    /// of the set's width, or a limit out of range. Returns `VectorsBusy` if an install or
+    /// compaction prevents a consistent read. Cancelling returns `Cancelled`.
+    pub fn semantic_nearest(
+        &self,
+        input: SemanticNearestInput,
+        cancellation: &SemanticCancellationToken,
+    ) -> Result<SemanticNearestResponse, SemanticError> {
+        let cancel = &cancellation.flag;
+        search_cancellation::look(cancel, SearchCheckpoint::Start)?;
+        #[cfg(feature = "semantic-integration")]
+        {
+            self.semantic_nearest_in_set(input, cancel)
+        }
+
+        #[cfg(not(feature = "semantic-integration"))]
+        {
+            let _ = input;
+            Err(Self::semantic_not_in_build())
+        }
+    }
+
+    #[cfg(feature = "semantic-integration")]
+    fn semantic_nearest_in_set(
+        &self,
+        input: SemanticNearestInput,
+        cancel: &SearchCancellation,
+    ) -> Result<SemanticNearestResponse, SemanticError> {
+        use otzaria_semantic_search::semantic::oxv::occurrence::ALIAS_WINDOW;
+        use otzaria_semantic_search::semantic::resolve::{
+            CandidateResolver, ResolveError, ResolvedLine, SlotRef, VectorHit,
+        };
+        let invalid =
+            |message: String| SemanticError::new(SemanticErrorKind::InvalidInput, message);
+        if input.points.is_empty() || input.points.len() > MAX_NEAREST_POINTS {
+            return Err(invalid(format!(
+                "semantic_nearest takes 1 to {MAX_NEAREST_POINTS} points, not {}",
+                input.points.len()
+            )));
+        }
+        if !(1..=MAX_NEAREST_TOP_K).contains(&input.top_k) {
+            return Err(invalid(format!(
+                "top_k is 1 to {MAX_NEAREST_TOP_K}, not {}",
+                input.top_k
+            )));
+        }
+        if input.pool == SemanticPool::Best
+            && !(1..=MAX_NEAREST_CANDIDATES).contains(&input.max_candidates)
+        {
+            return Err(invalid(format!(
+                "max_candidates is 1 to {MAX_NEAREST_CANDIDATES}, not {}",
+                input.max_candidates
+            )));
+        }
+        let open = self.semantic_engine().ok_or_else(|| {
+            SemanticError::new(
+                SemanticErrorKind::NotConfigured,
+                "semantic sidecar has not been configured",
+            )
+        })?;
+        let set_info = || {
+            open.coordinator.vector_set_info().ok_or_else(|| {
+                SemanticError::new(
+                    SemanticErrorKind::NotConfigured,
+                    "semantic_nearest reads an installed vector set, and the open session was \
+                 built on this device",
+                )
+            })
+        };
+        let mut info = set_info()?;
+        let changed = || {
+            SemanticError::new(
+                SemanticErrorKind::VectorsBusy,
+                "the vector generation changed during semantic_nearest; try again",
+            )
+            .with_field("vectors_dir")
+        };
+        let failed = |err: &otzaria_semantic_search::errors::SemanticSearchError| {
+            semantic_errors::search_error(err, open.call())
+        };
+        let unreadable = |err: ResolveError| {
+            if err == ResolveError::Cancelled {
+                return SemanticError::cancelled();
+            }
+            SemanticError::new(
+                SemanticErrorKind::Internal,
+                format!("the index could not be read to resolve semantic results: {err}"),
+            )
+        };
+        let ranking = ranking_profile(&SemanticRankingOptions::defaults())?;
+        let (window_penalty, alias_penalty) = (ranking.window_penalty, ranking.alias_penalty);
+        let line_penalty = |window: u8| match window {
+            0 => 0.0,
+            // A short line found through the neighbour whose vector it shares.
+            ALIAS_WINDOW => alias_penalty,
+            _ => window_penalty,
+        };
+
+        // The points' vectors: texts embedded by their role, vectors checked and scaled.
+        let embed_started = Instant::now();
+        let dim = info.identity.model.embedding_dim as usize;
+        let mut vectors: Vec<Vec<f32>> = vec![Vec::new(); input.points.len()];
+        let mut queries: (Vec<usize>, Vec<&str>) = (Vec::new(), Vec::new());
+        let mut passages: (Vec<usize>, Vec<&str>) = (Vec::new(), Vec::new());
+        for (index, point) in input.points.iter().enumerate() {
+            match (&point.text, &point.vector) {
+                (Some(text), None) => {
+                    let role = if point.as_passage {
+                        &mut passages
+                    } else {
+                        &mut queries
+                    };
+                    role.0.push(index);
+                    role.1.push(text.as_str());
+                }
+                (None, Some(vector)) => {
+                    if vector.len() != dim {
+                        return Err(invalid(format!(
+                            "point {index}: expected a {dim}-dimensional vector, got {}",
+                            vector.len()
+                        )));
+                    }
+                    let norm = vector
+                        .iter()
+                        .map(|&value| f64::from(value).powi(2))
+                        .sum::<f64>()
+                        .sqrt();
+                    if !norm.is_finite() || norm == 0.0 {
+                        return Err(invalid(format!(
+                            "point {index}: a vector must contain finite values with at least one nonzero value"
+                        )));
+                    }
+                    vectors[index] = vector
+                        .iter()
+                        .map(|&value| (f64::from(value) / norm) as f32)
+                        .collect();
+                }
+                _ => {
+                    return Err(invalid(format!(
+                        "point {index}: a point is a text or a vector, exactly one of them"
+                    )))
+                }
+            }
+        }
+        if !queries.1.is_empty() {
+            let embedded = open
+                .coordinator
+                .embed_queries(&queries.1, cancel)
+                .map_err(|err| failed(&err))?;
+            for (index, vector) in queries.0.iter().zip(embedded) {
+                vectors[*index] = vector;
+            }
+        }
+        if !passages.1.is_empty() {
+            let embedded = open
+                .coordinator
+                .embed_passages(&passages.1, cancel)
+                .map_err(|err| failed(&err))?;
+            for (index, vector) in passages.0.iter().zip(embedded) {
+                vectors[*index] = vector;
+            }
+        }
+        let embed_ms = started_ms(embed_started);
+        if cancel.is_cancelled() {
+            return Err(SemanticError::cancelled());
+        }
+
+        // Plan against the same generation as the scan. An install can change it
+        // while planning, so retry once with the replacement.
+        let searcher = self.index_reader.searcher();
+        let filters = SidecarSearchFilters {
+            book_paths: None,
+            facets: (!input.facets.is_empty()).then_some(input.facets),
+            include_pdf: None,
+        };
+        let filters_ref = Some(&filters);
+        let scan_started = Instant::now();
+        let views: Vec<&[f32]> = vectors.iter().map(Vec::as_slice).collect();
+        let top_k = input.top_k as usize;
+        let scan = |generation| -> Result<_, SemanticError> {
+            let mut resolver = crate::semantic_resolver::LiveResolver::for_chunking(
+                searcher.clone(),
+                self.chunk_key_field,
+                &self.semantic_resolver,
+                open.chunking.clone(),
+            )
+            .map_err(unreadable)?;
+            resolver.set_alias_penalty(alias_penalty);
+            resolver.share_keys(crate::line_source::query_cache_generation());
+            let view = open
+                .vectors_dir
+                .as_ref()
+                .and_then(|dir| self.semantic_set_view(dir, generation));
+            if let Some(view) = &view {
+                match resolver.plan(&filters, view, cancel) {
+                    Ok(_) => {}
+                    Err(ResolveError::Cancelled) => return Err(SemanticError::cancelled()),
+                    Err(error) => warn!("a nearest semantic search goes unplanned: {error}"),
+                }
+            }
+            let books = resolver.admissible_books(filters_ref).map_err(unreadable)?;
+            let many = open
+                .coordinator
+                .vector_hits_many(&views, top_k, books.as_ref(), window_penalty, cancel)
+                .map_err(|err| failed(&err))?;
+            Ok((resolver, view, many))
+        };
+        let (mut resolver, mut view, mut many) = scan(info.generation)?;
+        if many.generation != info.generation {
+            info = set_info()?;
+            (resolver, view, many) = scan(info.generation)?;
+            if many.generation != info.generation {
+                return Err(changed());
+            }
+        }
+        if let Some(view) = &view {
+            let slots = resolver
+                .unreached(filters_ref, info.generation, cancel)
+                .map_err(unreadable)?;
+            if !slots.is_empty() {
+                for (query, hits) in views.iter().zip(&mut many.per_query) {
+                    hits.extend(
+                        view.scan_unreached(query, &slots, top_k, window_penalty, cancel)
+                            .map_err(|err| failed(&err.into()))?,
+                    );
+                    hits.sort_unstable_by(|a, b| {
+                        b.score
+                            .total_cmp(&a.score)
+                            .then_with(|| a.key.cmp(&b.key))
+                            .then_with(|| (a.seg, a.slot).cmp(&(b.seg, b.slot)))
+                    });
+                    hits.truncate(top_k);
+                }
+            }
+        }
+        let scan_ms = started_ms(scan_started);
+
+        // A line, the vector that found it, and the point that vector is best for.
+        struct Found {
+            line: ResolvedLine,
+            hit: usize,
+            point: u32,
+            score: f32,
+        }
+        let resolve_started = Instant::now();
+        let mut unresolved = 0u32;
+        let mut exclusions: HashMap<&str, Vec<_>> = HashMap::new();
+        for span in &input.exclude {
+            exclusions
+                .entry(&span.file_path)
+                .or_default()
+                .push(span.from_segment..=span.to_segment);
+        }
+        let mut found_of =
+            |hits: &[VectorHit], point: &dyn Fn(usize) -> u32, lines: Vec<ResolvedLine>| {
+                let mut resolved = vec![false; hits.len()];
+                let mut found = Vec::new();
+                for line in lines {
+                    if cancel.is_cancelled() {
+                        return Err(SemanticError::cancelled());
+                    }
+                    let index = line.hit as usize;
+                    let hit = &hits[index];
+                    resolved[index] = true;
+                    let score = hit.score + hit.applied_penalty - line_penalty(line.window);
+                    let excluded = exclusions
+                        .get(line.file_path.as_str())
+                        .is_some_and(|spans| spans.iter().any(|span| span.contains(&line.segment)));
+                    if !excluded && input.min_score.is_none_or(|least| score >= least) {
+                        found.push(Found {
+                            line,
+                            hit: index,
+                            point: point(index),
+                            score,
+                        });
+                    }
+                }
+                unresolved += resolved.iter().filter(|resolved| !**resolved).count() as u32;
+                Ok(found)
+            };
+
+        // Open each segment's document metadata columns only once for the whole response.
+        let mut loader = DocumentLoader::new(&searcher);
+        let mut stale_dropped = 0u32;
+        let mut hydrate = |list: Vec<Found>, raw_scores: &[Vec<f32>]| -> Result<_, SemanticError> {
+            search_cancellation::look(cancel, SearchCheckpoint::Hydration)?;
+            let records = resolver.records();
+            let mut hits = Vec::with_capacity(list.len());
+            for found in list {
+                if cancel.is_cancelled() {
+                    return Err(SemanticError::cancelled());
+                }
+                let line = (found.line.file_path, found.line.line_id);
+                let address = match records.get(&line) {
+                    Some(record) => Some(record.address),
+                    None => self.address_in_book(&searcher, &line.0, line.1)?,
+                };
+                let Some(address) = address else {
+                    stale_dropped = stale_dropped.saturating_add(1);
+                    continue;
+                };
+                let stored = loader.load(address).map_err(anyhow::Error::from)?;
+                let document =
+                    self.result_for_document(&searcher, address, line.1, stored, false)?;
+                let penalty = line_penalty(found.line.window);
+                let point_scores = raw_scores.get(found.hit).map_or_else(Vec::new, |scores| {
+                    scores.iter().map(|raw| raw - penalty).collect()
+                });
+                hits.push(SemanticNearestHit {
+                    file_path: document.file_path,
+                    id: document.id,
+                    title: document.title,
+                    reference: document.reference,
+                    segment: document.segment,
+                    is_pdf: document.is_pdf,
+                    matched_window: found.line.window,
+                    score: found.score,
+                    point: found.point,
+                    point_scores,
+                });
+            }
+            Ok(hits)
+        };
+        let mut rescore_ms = 0;
+        let mut truncated = false;
+        let (hits, per_point) = match input.pool {
+            SemanticPool::Best => {
+                struct Candidate {
+                    point: u32,
+                    hit: VectorHit,
+                    raw_scores: Vec<f32>,
+                }
+                let mut best: HashMap<(u16, u32), Candidate> = HashMap::new();
+                for (point, hits) in many.per_query.into_iter().enumerate() {
+                    if cancel.is_cancelled() {
+                        return Err(SemanticError::cancelled());
+                    }
+                    for hit in hits {
+                        let candidate = Candidate {
+                            point: point as u32,
+                            hit,
+                            raw_scores: Vec::new(),
+                        };
+                        match best.entry((candidate.hit.seg, candidate.hit.slot)) {
+                            std::collections::hash_map::Entry::Vacant(entry) => {
+                                entry.insert(candidate);
+                            }
+                            std::collections::hash_map::Entry::Occupied(mut entry)
+                                if candidate.hit.score > entry.get().hit.score =>
+                            {
+                                entry.insert(candidate);
+                            }
+                            _ => {}
+                        };
+                    }
+                }
+                let mut pool: Vec<_> = best.into_values().collect();
+                let limit = input.max_candidates as usize;
+                truncated = pool.len() > limit;
+                let score_slots = |slots: &[SlotRef]| -> Result<_, SemanticError> {
+                    if let Some(view) = &view {
+                        return view
+                            .score_slots(&views, slots, cancel)
+                            .map_err(|err| failed(&err.into()));
+                    }
+                    let scores = open
+                        .coordinator
+                        .score_selected_slots_many(&views, slots, info.generation, cancel)
+                        .map_err(|err| failed(&err))?;
+                    if set_info()?.generation != info.generation {
+                        return Err(changed());
+                    }
+                    Ok(scores)
+                };
+                // A point that missed this vector's top-k can still score it best.
+                // Read the matrix in batches to keep scratch space bounded.
+                const SCORE_BATCH: usize = 4096;
+                let mut score_pool =
+                    |pool: &mut [Candidate], keep_scores| -> Result<(), SemanticError> {
+                        let rescore_started = Instant::now();
+                        for batch in pool.chunks_mut(SCORE_BATCH) {
+                            let slots: Vec<_> = batch
+                                .iter()
+                                .map(|candidate| SlotRef {
+                                    seg: candidate.hit.seg,
+                                    slot: candidate.hit.slot,
+                                    key: candidate.hit.key,
+                                })
+                                .collect();
+                            let rows = score_slots(&slots)?;
+                            for (index, candidate) in batch.iter_mut().enumerate() {
+                                let hit = &mut candidate.hit;
+                                let original = candidate.point as usize;
+                                let original_score = hit.score + hit.applied_penalty;
+                                let mut best_raw = f32::NEG_INFINITY;
+                                if keep_scores {
+                                    candidate.raw_scores.reserve_exact(rows.len());
+                                }
+                                for (point, row) in rows.iter().enumerate() {
+                                    let raw = row[index].unwrap_or(if point == original {
+                                        original_score
+                                    } else {
+                                        f32::NAN
+                                    });
+                                    if raw > best_raw {
+                                        best_raw = raw;
+                                        candidate.point = point as u32;
+                                    }
+                                    if keep_scores {
+                                        candidate.raw_scores.push(raw);
+                                    }
+                                }
+                                hit.score = best_raw - hit.applied_penalty;
+                            }
+                        }
+                        rescore_ms += started_ms(rescore_started);
+                        Ok(())
+                    };
+                if views.len() > 1 {
+                    score_pool(&mut pool, input.rescore && !truncated)?;
+                }
+                let compare = |a: &Candidate, b: &Candidate| {
+                    b.hit
+                        .score
+                        .total_cmp(&a.hit.score)
+                        .then_with(|| (a.hit.seg, a.hit.slot).cmp(&(b.hit.seg, b.hit.slot)))
+                };
+                if truncated {
+                    pool.select_nth_unstable_by(limit, compare);
+                    pool.truncate(limit);
+                }
+                pool.sort_unstable_by(compare);
+                if input.rescore {
+                    if views.len() == 1 {
+                        for candidate in &mut pool {
+                            let hit = &candidate.hit;
+                            candidate.raw_scores.push(hit.score + hit.applied_penalty);
+                        }
+                    } else if truncated {
+                        score_pool(&mut pool, true)?;
+                    }
+                }
+                drop(view);
+                let (hits, points): (Vec<_>, Vec<_>) = pool
+                    .into_iter()
+                    .map(|candidate| (candidate.hit, (candidate.point, candidate.raw_scores)))
+                    .unzip();
+                let (points, raw_scores): (Vec<_>, Vec<_>) = points.into_iter().unzip();
+                let lines = resolver
+                    .resolve(&hits, filters_ref, cancel)
+                    .map_err(unreadable)?;
+                (
+                    hydrate(found_of(&hits, &|index| points[index], lines)?, &raw_scores)?,
+                    Vec::new(),
+                )
+            }
+            SemanticPool::PerPoint => {
+                drop(view);
+                let mut per_point = Vec::with_capacity(many.per_query.len());
+                for (point, hits) in many.per_query.into_iter().enumerate() {
+                    let lines = resolver
+                        .resolve(&hits, filters_ref, cancel)
+                        .map_err(unreadable)?;
+                    let hits = hydrate(found_of(&hits, &|_| point as u32, lines)?, &[])?;
+                    per_point.push(SemanticNearestList { hits });
+                }
+                (Vec::new(), per_point)
+            }
+        };
+        if cancel.is_cancelled() {
+            return Err(SemanticError::cancelled());
+        }
+        let resolve_ms = started_ms(resolve_started).saturating_sub(rescore_ms);
+        Ok(SemanticNearestResponse {
+            hits,
+            per_point,
+            generation: many.generation,
+            vectors_library_version: info.library_version,
+            unresolved,
+            stale_dropped,
+            truncated,
+            embed_ms,
+            scan_ms,
+            resolve_ms,
+            rescore_ms,
+        })
+    }
+
     /// The set at `vectors_dir`, and what of the open index it covers.
     #[cfg(feature = "semantic-integration")]
     fn coverage_of_set(
@@ -11016,6 +11692,17 @@ impl SearchEngine {
         with_text: bool,
     ) -> Result<SearchResult> {
         let doc = load_document(searcher, address)?;
+        self.result_for_document(searcher, address, id, doc, with_text)
+    }
+
+    fn result_for_document(
+        &self,
+        searcher: &Searcher,
+        address: DocAddress,
+        id: u64,
+        doc: TantivyDocument,
+        with_text: bool,
+    ) -> Result<SearchResult> {
         let title_f = self.schema.get_field("title")?;
         let reference_f = self.schema.get_field("reference")?;
         let segment_f = self.schema.get_field("segment")?;

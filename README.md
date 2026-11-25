@@ -325,6 +325,52 @@ Keeping the set, all on `SearchEngine` and all cheap except where noted:
 `SemanticStatus` reports the open set's `vectorsLibraryVersion`,
 `vectorSegments` and `needsCompaction`.
 
+### Nearest passages for several points
+
+`searchSemantic` answers one query for the search screen. A tool beside the
+reader — the passages near the section being read, or near a group of sources —
+needs the vector set itself: the live lines nearest several texts at once,
+without a lexical half or snippets. Two calls on an opened set serve it:
+
+| call | does |
+| --- | --- |
+| `semanticQueryTokens` | how long each text is as a query (role prefix and special tokens included), the cap a query is cut at, and what an empty query counts: for cutting a long passage into windows that each fit. Up to 5,000 texts |
+| `semanticNearest` | up to 64 points — texts embedded as queries or passages, or vectors of the set's width — scanned in groups to bound memory. Each vector resolves to live lines under `searchSemantic`'s window and alias penalties |
+
+```dart
+final response = await engine.semanticNearest(
+  input: SemanticNearestInput(
+    points: windows
+        .map((text) => SemanticPoint(text: text, asPassage: false, vector: null))
+        .toList(),
+    topK: 60,
+    facets: const [],
+    exclude: [
+      SemanticLineSpan(filePath: book, fromSegment: from, toSegment: to),
+    ],
+    minScore: null,
+    pool: SemanticPool.best,
+    maxCandidates: 600,
+    rescore: true,
+  ),
+  cancellation: token,
+);
+```
+
+`SemanticPool.best` combines the top vectors from each point and keeps up to
+`maxCandidates` by their best score across all points. It returns each resolved
+line once, with the winning point. Set `rescore` to include each point's score
+for the line. `SemanticPool.perPoint` returns a list per point. A hit carries
+the line's `filePath`, `id`, `segment`, `title`, `reference` and
+`matchedWindow`, not its text: read that with `getDocumentById`. A vector point
+is scaled to unit length. The response says which generation of the set it
+read, and how long embedding, scanning, resolving and rescoring took.
+
+`facets` restricts the live books as in `searchSemantic`. The same scan plan
+includes texts copied into an admitted book after the vectors were built when
+the index has the matching chunk-key column and the plan is available.
+`semanticQueryTokens` needs a backend with a tokenizer.
+
 Every refusal names every field that disagreed, and leaves the set and the
 session as they were. It is a `SemanticError`, whose `kind` says which refusal
 it was (see "Telling failures apart" below). An opened set is read-only:
@@ -366,12 +412,12 @@ On the application's path:
 | `onnxRuntimeMissing`, `onnxRuntimeUnusable` | `openSemanticArtifact` | no ONNX Runtime where one is looked for, `onnxRuntimePath` first, or one that does not load (see "The ONNX Runtime library") |
 | `backendNotInBuild` | `openSemanticArtifact` | this build has no ONNX backend, as on Android and iOS |
 | `sessionConflict` | `openSemanticArtifact`, `configureSemantic` | another session is open: `disableSemantic` first |
-| `vectorsBusy` | installing, compacting, verifying | another install or compaction of the set is running, with `field` `vectors_dir`: nothing was changed, and an open session keeps serving; try again once it has finished. Verifying, an install replaced what the check read: nothing was condemned, verify again |
+| `vectorsBusy` | installing, compacting, verifying, `semanticNearest` | an install or compaction is running or replaced the generation being read. The affected call can be retried once it finishes |
 | `readOnlySession` | the calls that build vectors | refused on an opened set; nothing to fix |
-| `notConfigured`, `featureNotInBuild` | `state`, `fallbackKind` | no session is open, or the build has no semantic support |
+| `notConfigured`, `featureNotInBuild` | `state`, `fallbackKind`, `semanticNearest`, `semanticQueryTokens` | no session is open, or the build has no semantic support. `semanticNearest` also needs an installed set, not a session built on the device |
 | `queryFailed` | `fallbackKind` | the semantic half of that one search failed; its lexical results were served |
-| `cancelled` | `searchSemantic`, and the calls that install, compact, verify, count or list covered books | its `SemanticCancellationToken` was cancelled (see "Cancelling a search"): nothing failed, and nothing changed |
-| `invalidInput` | `openSemanticArtifact`, `configureSemantic`, `searchSemantic`, `compactSemanticVectors` | a value the call cannot take, a ranking option or a compaction threshold out of its range among them: fix the call |
+| `cancelled` | `searchSemantic`, `semanticNearest`, and the calls that install, compact, verify, count or list covered books | its `SemanticCancellationToken` was cancelled (see "Cancelling a search"): nothing failed, and nothing changed |
+| `invalidInput` | `openSemanticArtifact`, `configureSemantic`, `searchSemantic`, `semanticNearest`, `semanticQueryTokens`, `compactSemanticVectors` | a value the call cannot take, a point that is not one text or one vector of the set's width, a ranking option or a compaction threshold out of its range among them: fix the call |
 | `internal` | any call | a fault, including the lexical index failing under `searchSemantic`: report `message` |
 
 The development path adds `reindexRequired`, and the states `empty` (nothing

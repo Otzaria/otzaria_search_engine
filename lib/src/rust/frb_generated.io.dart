@@ -320,6 +320,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SemanticNearestInput dco_decode_box_autoadd_semantic_nearest_input(
+    dynamic raw,
+  );
+
+  @protected
   SemanticRankingOptions dco_decode_box_autoadd_semantic_ranking_options(
     dynamic raw,
   );
@@ -440,6 +445,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<PdfPageInput> dco_decode_list_pdf_page_input(dynamic raw);
 
   @protected
+  Float32List dco_decode_list_prim_f_32_strict(dynamic raw);
+
+  @protected
   List<int> dco_decode_list_prim_u_32_loose(dynamic raw);
 
   @protected
@@ -492,9 +500,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<SemanticLineSpan> dco_decode_list_semantic_line_span(dynamic raw);
+
+  @protected
+  List<SemanticNearestHit> dco_decode_list_semantic_nearest_hit(dynamic raw);
+
+  @protected
+  List<SemanticNearestList> dco_decode_list_semantic_nearest_list(dynamic raw);
+
+  @protected
   List<SemanticPassageHighlight> dco_decode_list_semantic_passage_highlight(
     dynamic raw,
   );
+
+  @protected
+  List<SemanticPoint> dco_decode_list_semantic_point(dynamic raw);
 
   @protected
   List<SemanticSearchResult> dco_decode_list_semantic_search_result(
@@ -593,6 +613,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<String>? dco_decode_opt_list_String(dynamic raw);
+
+  @protected
+  Float32List? dco_decode_opt_list_prim_f_32_strict(dynamic raw);
 
   @protected
   Uint32List? dco_decode_opt_list_prim_u_32_strict(dynamic raw);
@@ -701,7 +724,31 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SemanticLexicalMode dco_decode_semantic_lexical_mode(dynamic raw);
 
   @protected
+  SemanticLineSpan dco_decode_semantic_line_span(dynamic raw);
+
+  @protected
+  SemanticNearestHit dco_decode_semantic_nearest_hit(dynamic raw);
+
+  @protected
+  SemanticNearestInput dco_decode_semantic_nearest_input(dynamic raw);
+
+  @protected
+  SemanticNearestList dco_decode_semantic_nearest_list(dynamic raw);
+
+  @protected
+  SemanticNearestResponse dco_decode_semantic_nearest_response(dynamic raw);
+
+  @protected
   SemanticPassageHighlight dco_decode_semantic_passage_highlight(dynamic raw);
+
+  @protected
+  SemanticPoint dco_decode_semantic_point(dynamic raw);
+
+  @protected
+  SemanticPool dco_decode_semantic_pool(dynamic raw);
+
+  @protected
+  SemanticQueryTokens dco_decode_semantic_query_tokens(dynamic raw);
 
   @protected
   SemanticQueryTypeAlphas dco_decode_semantic_query_type_alphas(dynamic raw);
@@ -1095,6 +1142,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SemanticNearestInput sse_decode_box_autoadd_semantic_nearest_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SemanticRankingOptions sse_decode_box_autoadd_semantic_ranking_options(
     SseDeserializer deserializer,
   );
@@ -1251,6 +1303,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  Float32List sse_decode_list_prim_f_32_strict(SseDeserializer deserializer);
+
+  @protected
   List<int> sse_decode_list_prim_u_32_loose(SseDeserializer deserializer);
 
   @protected
@@ -1319,7 +1374,27 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<SemanticLineSpan> sse_decode_list_semantic_line_span(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<SemanticNearestHit> sse_decode_list_semantic_nearest_hit(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<SemanticNearestList> sse_decode_list_semantic_nearest_list(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<SemanticPassageHighlight> sse_decode_list_semantic_passage_highlight(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<SemanticPoint> sse_decode_list_semantic_point(
     SseDeserializer deserializer,
   );
 
@@ -1442,6 +1517,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<String>? sse_decode_opt_list_String(SseDeserializer deserializer);
+
+  @protected
+  Float32List? sse_decode_opt_list_prim_f_32_strict(
+    SseDeserializer deserializer,
+  );
 
   @protected
   Uint32List? sse_decode_opt_list_prim_u_32_strict(
@@ -1588,7 +1668,41 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SemanticLineSpan sse_decode_semantic_line_span(SseDeserializer deserializer);
+
+  @protected
+  SemanticNearestHit sse_decode_semantic_nearest_hit(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticNearestInput sse_decode_semantic_nearest_input(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticNearestList sse_decode_semantic_nearest_list(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticNearestResponse sse_decode_semantic_nearest_response(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SemanticPassageHighlight sse_decode_semantic_passage_highlight(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SemanticPoint sse_decode_semantic_point(SseDeserializer deserializer);
+
+  @protected
+  SemanticPool sse_decode_semantic_pool(SseDeserializer deserializer);
+
+  @protected
+  SemanticQueryTokens sse_decode_semantic_query_tokens(
     SseDeserializer deserializer,
   );
 
@@ -2072,6 +2186,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_semantic_nearest_input(
+    SemanticNearestInput self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_semantic_ranking_options(
     SemanticRankingOptions self,
     SseSerializer serializer,
@@ -2273,6 +2393,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_prim_f_32_strict(
+    Float32List self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_prim_u_32_loose(
     List<int> self,
     SseSerializer serializer,
@@ -2360,8 +2486,32 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_semantic_line_span(
+    List<SemanticLineSpan> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_semantic_nearest_hit(
+    List<SemanticNearestHit> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_semantic_nearest_list(
+    List<SemanticNearestList> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_semantic_passage_highlight(
     List<SemanticPassageHighlight> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_semantic_point(
+    List<SemanticPoint> self,
     SseSerializer serializer,
   );
 
@@ -2501,6 +2651,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_opt_list_String(List<String>? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_list_prim_f_32_strict(
+    Float32List? self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_opt_list_prim_u_32_strict(
@@ -2686,8 +2842,50 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_semantic_line_span(
+    SemanticLineSpan self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_nearest_hit(
+    SemanticNearestHit self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_nearest_input(
+    SemanticNearestInput self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_nearest_list(
+    SemanticNearestList self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_nearest_response(
+    SemanticNearestResponse self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_semantic_passage_highlight(
     SemanticPassageHighlight self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_semantic_point(SemanticPoint self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_semantic_pool(SemanticPool self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_semantic_query_tokens(
+    SemanticQueryTokens self,
     SseSerializer serializer,
   );
 

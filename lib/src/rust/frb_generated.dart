@@ -68,7 +68,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => 2073354395;
+  int get rustContentHash => -1695170080;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -1077,12 +1077,25 @@ abstract class RustLibApi extends BaseApi {
     required SearchEngine that,
   });
 
+  Future<SemanticNearestResponse>
+  crateApiSearchEngineSearchEngineSemanticNearest({
+    required SearchEngine that,
+    required SemanticNearestInput input,
+    required SemanticCancellationToken cancellation,
+  });
+
   Future<List<SemanticPassageHighlight>>
   crateApiSearchEngineSearchEngineSemanticPassageHighlights({
     required SearchEngine that,
     required String query,
     required List<SemanticHighlightTarget> targets,
     required SemanticCancellationToken cancellation,
+  });
+
+  Future<SemanticQueryTokens>
+  crateApiSearchEngineSearchEngineSemanticQueryTokens({
+    required SearchEngine that,
+    required List<String> texts,
   });
 
   Future<SemanticStatus> crateApiSearchEngineSearchEngineSemanticStatus({
@@ -7730,6 +7743,50 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<SemanticNearestResponse>
+  crateApiSearchEngineSearchEngineSemanticNearest({
+    required SearchEngine that,
+    required SemanticNearestInput input,
+    required SemanticCancellationToken cancellation,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+            that,
+            serializer,
+          );
+          sse_encode_box_autoadd_semantic_nearest_input(input, serializer);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken(
+            cancellation,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 108,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_semantic_nearest_response,
+          decodeErrorData: sse_decode_semantic_error,
+        ),
+        constMeta: kCrateApiSearchEngineSearchEngineSemanticNearestConstMeta,
+        argValues: [that, input, cancellation],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSearchEngineSearchEngineSemanticNearestConstMeta =>
+      const TaskConstMeta(
+        debugName: "SearchEngine_semantic_nearest",
+        argNames: ["that", "input", "cancellation"],
+      );
+
+  @override
   Future<List<SemanticPassageHighlight>>
   crateApiSearchEngineSearchEngineSemanticPassageHighlights({
     required SearchEngine that,
@@ -7754,7 +7811,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 108,
+            funcId: 109,
             port: port_,
           );
         },
@@ -7778,6 +7835,47 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<SemanticQueryTokens>
+  crateApiSearchEngineSearchEngineSemanticQueryTokens({
+    required SearchEngine that,
+    required List<String> texts,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSearchEngine(
+            that,
+            serializer,
+          );
+          sse_encode_list_String(texts, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 110,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_semantic_query_tokens,
+          decodeErrorData: sse_decode_semantic_error,
+        ),
+        constMeta:
+            kCrateApiSearchEngineSearchEngineSemanticQueryTokensConstMeta,
+        argValues: [that, texts],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiSearchEngineSearchEngineSemanticQueryTokensConstMeta =>
+      const TaskConstMeta(
+        debugName: "SearchEngine_semantic_query_tokens",
+        argNames: ["that", "texts"],
+      );
+
+  @override
   Future<SemanticStatus> crateApiSearchEngineSearchEngineSemanticStatus({
     required SearchEngine that,
   }) {
@@ -7792,7 +7890,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 109,
+            funcId: 111,
             port: port_,
           );
         },
@@ -7831,7 +7929,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 110,
+            funcId: 112,
             port: port_,
           );
         },
@@ -7871,7 +7969,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 111,
+            funcId: 113,
             port: port_,
           );
         },
@@ -7911,7 +8009,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 112,
+            funcId: 114,
             port: port_,
           );
         },
@@ -7949,7 +8047,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 113,
+            funcId: 115,
             port: port_,
           );
         },
@@ -7987,7 +8085,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 114,
+            funcId: 116,
             port: port_,
           );
         },
@@ -8026,7 +8124,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 115,
+            funcId: 117,
             port: port_,
           );
         },
@@ -8066,7 +8164,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 116,
+            funcId: 118,
             port: port_,
           );
         },
@@ -8124,7 +8222,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 117,
+            funcId: 119,
             port: port_,
           );
         },
@@ -8186,7 +8284,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 118,
+            funcId: 120,
             port: port_,
           );
         },
@@ -8232,7 +8330,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 119,
+            funcId: 121,
             port: port_,
           );
         },
@@ -8270,7 +8368,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 120,
+            funcId: 122,
             port: port_,
           );
         },
@@ -8306,7 +8404,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 121,
+            funcId: 123,
           )!;
         },
         codec: SseCodec(
@@ -8343,7 +8441,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 122,
+            funcId: 124,
           )!;
         },
         codec: SseCodec(
@@ -8374,7 +8472,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 123,
+            funcId: 125,
           )!;
         },
         codec: SseCodec(
@@ -8411,7 +8509,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 124,
+            funcId: 126,
           )!;
         },
         codec: SseCodec(
@@ -8448,7 +8546,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 125,
+            funcId: 127,
           )!;
         },
         codec: SseCodec(
@@ -8480,7 +8578,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 126,
+            funcId: 128,
           )!;
         },
         codec: SseCodec(
@@ -8519,7 +8617,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 127,
+            funcId: 129,
           )!;
         },
         codec: SseCodec(
@@ -8550,7 +8648,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 128,
+            funcId: 130,
             port: port_,
           );
         },
@@ -8583,7 +8681,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 129,
+            funcId: 131,
             port: port_,
           );
         },
@@ -8622,7 +8720,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 130,
+            funcId: 132,
           )!;
         },
         codec: SseCodec(
@@ -8658,7 +8756,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 131,
+            funcId: 133,
           )!;
         },
         codec: SseCodec(
@@ -8689,7 +8787,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 132,
+            funcId: 134,
           )!;
         },
         codec: SseCodec(
@@ -8721,7 +8819,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 133,
+            funcId: 135,
             port: port_,
           );
         },
@@ -8759,7 +8857,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 134,
+            funcId: 136,
             port: port_,
           );
         },
@@ -8792,7 +8890,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 135,
+            funcId: 137,
             port: port_,
           );
         },
@@ -8825,7 +8923,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 136,
+            funcId: 138,
             port: port_,
           );
         },
@@ -8872,7 +8970,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 137,
+            funcId: 139,
           )!;
         },
         codec: SseCodec(
@@ -8918,7 +9016,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 138,
+            funcId: 140,
           )!;
         },
         codec: SseCodec(
@@ -8954,7 +9052,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 139,
+            funcId: 141,
           )!;
         },
         codec: SseCodec(
@@ -8987,7 +9085,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 140,
+            funcId: 142,
           )!;
         },
         codec: SseCodec(
@@ -9025,7 +9123,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 141,
+            funcId: 143,
             port: port_,
           );
         },
@@ -9057,7 +9155,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 142,
+            funcId: 144,
             port: port_,
           );
         },
@@ -9087,7 +9185,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 143,
+            funcId: 145,
           )!;
         },
         codec: SseCodec(
@@ -9119,7 +9217,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 144,
+            funcId: 146,
           )!;
         },
         codec: SseCodec(
@@ -9150,7 +9248,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 145,
+            funcId: 147,
           )!;
         },
         codec: SseCodec(
@@ -9182,7 +9280,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 146,
+            funcId: 148,
           )!;
         },
         codec: SseCodec(
@@ -9212,7 +9310,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 147,
+            funcId: 149,
           )!;
         },
         codec: SseCodec(
@@ -9241,7 +9339,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 148,
+            funcId: 150,
           )!;
         },
         codec: SseCodec(
@@ -9274,7 +9372,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 149,
+            funcId: 151,
           )!;
         },
         codec: SseCodec(
@@ -9300,7 +9398,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 150,
+            funcId: 152,
             port: port_,
           );
         },
@@ -9330,7 +9428,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 151,
+            funcId: 153,
             port: port_,
           );
         },
@@ -9360,7 +9458,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 152,
+            funcId: 154,
             port: port_,
           );
         },
@@ -9387,7 +9485,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 153,
+            funcId: 155,
             port: port_,
           );
         },
@@ -9415,7 +9513,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 154,
+            funcId: 156,
           )!;
         },
         codec: SseCodec(
@@ -9442,7 +9540,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 155,
+            funcId: 157,
           )!;
         },
         codec: SseCodec(
@@ -9473,7 +9571,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 156,
+            funcId: 158,
           )!;
         },
         codec: SseCodec(
@@ -9504,7 +9602,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 157,
+            funcId: 159,
           )!;
         },
         codec: SseCodec(
@@ -9534,7 +9632,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 158,
+            funcId: 160,
           )!;
         },
         codec: SseCodec(
@@ -9560,7 +9658,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 159,
+            funcId: 161,
           )!;
         },
         codec: SseCodec(
@@ -9586,7 +9684,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 160,
+            funcId: 162,
             port: port_,
           );
         },
@@ -9616,7 +9714,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 161,
+            funcId: 163,
             port: port_,
           );
         },
@@ -10243,6 +10341,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SemanticNearestInput dco_decode_box_autoadd_semantic_nearest_input(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_semantic_nearest_input(raw);
+  }
+
+  @protected
   SemanticRankingOptions dco_decode_box_autoadd_semantic_ranking_options(
     dynamic raw,
   ) {
@@ -10601,6 +10707,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  Float32List dco_decode_list_prim_f_32_strict(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw as Float32List;
+  }
+
+  @protected
   List<int> dco_decode_list_prim_u_32_loose(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as List<int>;
@@ -10706,6 +10818,26 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<SemanticLineSpan> dco_decode_list_semantic_line_span(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_semantic_line_span).toList();
+  }
+
+  @protected
+  List<SemanticNearestHit> dco_decode_list_semantic_nearest_hit(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_semantic_nearest_hit).toList();
+  }
+
+  @protected
+  List<SemanticNearestList> dco_decode_list_semantic_nearest_list(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>)
+        .map(dco_decode_semantic_nearest_list)
+        .toList();
+  }
+
+  @protected
   List<SemanticPassageHighlight> dco_decode_list_semantic_passage_highlight(
     dynamic raw,
   ) {
@@ -10713,6 +10845,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return (raw as List<dynamic>)
         .map(dco_decode_semantic_passage_highlight)
         .toList();
+  }
+
+  @protected
+  List<SemanticPoint> dco_decode_list_semantic_point(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_semantic_point).toList();
   }
 
   @protected
@@ -10922,6 +11060,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   List<String>? dco_decode_opt_list_String(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_list_String(raw);
+  }
+
+  @protected
+  Float32List? dco_decode_opt_list_prim_f_32_strict(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_list_prim_f_32_strict(raw);
   }
 
   @protected
@@ -11338,6 +11482,89 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SemanticLineSpan dco_decode_semantic_line_span(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return SemanticLineSpan(
+      filePath: dco_decode_String(arr[0]),
+      fromSegment: dco_decode_u_64(arr[1]),
+      toSegment: dco_decode_u_64(arr[2]),
+    );
+  }
+
+  @protected
+  SemanticNearestHit dco_decode_semantic_nearest_hit(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 10)
+      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
+    return SemanticNearestHit(
+      filePath: dco_decode_String(arr[0]),
+      id: dco_decode_u_64(arr[1]),
+      title: dco_decode_String(arr[2]),
+      reference: dco_decode_String(arr[3]),
+      segment: dco_decode_u_64(arr[4]),
+      isPdf: dco_decode_bool(arr[5]),
+      matchedWindow: dco_decode_u_8(arr[6]),
+      score: dco_decode_f_32(arr[7]),
+      point: dco_decode_u_32(arr[8]),
+      pointScores: dco_decode_list_prim_f_32_strict(arr[9]),
+    );
+  }
+
+  @protected
+  SemanticNearestInput dco_decode_semantic_nearest_input(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+    return SemanticNearestInput(
+      points: dco_decode_list_semantic_point(arr[0]),
+      topK: dco_decode_u_32(arr[1]),
+      facets: dco_decode_list_String(arr[2]),
+      exclude: dco_decode_list_semantic_line_span(arr[3]),
+      minScore: dco_decode_opt_box_autoadd_f_32(arr[4]),
+      pool: dco_decode_semantic_pool(arr[5]),
+      maxCandidates: dco_decode_u_32(arr[6]),
+      rescore: dco_decode_bool(arr[7]),
+    );
+  }
+
+  @protected
+  SemanticNearestList dco_decode_semantic_nearest_list(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 1)
+      throw Exception('unexpected arr length: expect 1 but see ${arr.length}');
+    return SemanticNearestList(
+      hits: dco_decode_list_semantic_nearest_hit(arr[0]),
+    );
+  }
+
+  @protected
+  SemanticNearestResponse dco_decode_semantic_nearest_response(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 11)
+      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
+    return SemanticNearestResponse(
+      hits: dco_decode_list_semantic_nearest_hit(arr[0]),
+      perPoint: dco_decode_list_semantic_nearest_list(arr[1]),
+      generation: dco_decode_u_64(arr[2]),
+      vectorsLibraryVersion: dco_decode_u_32(arr[3]),
+      unresolved: dco_decode_u_32(arr[4]),
+      staleDropped: dco_decode_u_32(arr[5]),
+      truncated: dco_decode_bool(arr[6]),
+      embedMs: dco_decode_u_64(arr[7]),
+      scanMs: dco_decode_u_64(arr[8]),
+      resolveMs: dco_decode_u_64(arr[9]),
+      rescoreMs: dco_decode_u_64(arr[10]),
+    );
+  }
+
+  @protected
   SemanticPassageHighlight dco_decode_semantic_passage_highlight(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -11349,6 +11576,38 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       snippetHtml: dco_decode_String(arr[2]),
       isHighlighted: dco_decode_bool(arr[3]),
       spanScore: dco_decode_opt_box_autoadd_f_32(arr[4]),
+    );
+  }
+
+  @protected
+  SemanticPoint dco_decode_semantic_point(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return SemanticPoint(
+      text: dco_decode_opt_String(arr[0]),
+      asPassage: dco_decode_bool(arr[1]),
+      vector: dco_decode_opt_list_prim_f_32_strict(arr[2]),
+    );
+  }
+
+  @protected
+  SemanticPool dco_decode_semantic_pool(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return SemanticPool.values[raw as int];
+  }
+
+  @protected
+  SemanticQueryTokens dco_decode_semantic_query_tokens(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return SemanticQueryTokens(
+      counts: dco_decode_list_prim_u_32_strict(arr[0]),
+      queryMaxTokens: dco_decode_u_32(arr[1]),
+      overheadTokens: dco_decode_u_32(arr[2]),
     );
   }
 
@@ -12382,6 +12641,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SemanticNearestInput sse_decode_box_autoadd_semantic_nearest_input(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_semantic_nearest_input(deserializer));
+  }
+
+  @protected
   SemanticRankingOptions sse_decode_box_autoadd_semantic_ranking_options(
     SseDeserializer deserializer,
   ) {
@@ -12886,6 +13153,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  Float32List sse_decode_list_prim_f_32_strict(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var len_ = sse_decode_i_32(deserializer);
+    return deserializer.buffer.getFloat32List(len_);
+  }
+
+  @protected
   List<int> sse_decode_list_prim_u_32_loose(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var len_ = sse_decode_i_32(deserializer);
@@ -13069,6 +13343,48 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<SemanticLineSpan> sse_decode_list_semantic_line_span(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <SemanticLineSpan>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_semantic_line_span(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<SemanticNearestHit> sse_decode_list_semantic_nearest_hit(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <SemanticNearestHit>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_semantic_nearest_hit(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<SemanticNearestList> sse_decode_list_semantic_nearest_list(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <SemanticNearestList>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_semantic_nearest_list(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
   List<SemanticPassageHighlight> sse_decode_list_semantic_passage_highlight(
     SseDeserializer deserializer,
   ) {
@@ -13078,6 +13394,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var ans_ = <SemanticPassageHighlight>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
       ans_.add(sse_decode_semantic_passage_highlight(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<SemanticPoint> sse_decode_list_semantic_point(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <SemanticPoint>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_semantic_point(deserializer));
     }
     return ans_;
   }
@@ -13429,6 +13759,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
     if (sse_decode_bool(deserializer)) {
       return (sse_decode_list_String(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  Float32List? sse_decode_opt_list_prim_f_32_strict(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_list_prim_f_32_strict(deserializer));
     } else {
       return null;
     }
@@ -13928,6 +14271,113 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SemanticLineSpan sse_decode_semantic_line_span(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_filePath = sse_decode_String(deserializer);
+    var var_fromSegment = sse_decode_u_64(deserializer);
+    var var_toSegment = sse_decode_u_64(deserializer);
+    return SemanticLineSpan(
+      filePath: var_filePath,
+      fromSegment: var_fromSegment,
+      toSegment: var_toSegment,
+    );
+  }
+
+  @protected
+  SemanticNearestHit sse_decode_semantic_nearest_hit(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_filePath = sse_decode_String(deserializer);
+    var var_id = sse_decode_u_64(deserializer);
+    var var_title = sse_decode_String(deserializer);
+    var var_reference = sse_decode_String(deserializer);
+    var var_segment = sse_decode_u_64(deserializer);
+    var var_isPdf = sse_decode_bool(deserializer);
+    var var_matchedWindow = sse_decode_u_8(deserializer);
+    var var_score = sse_decode_f_32(deserializer);
+    var var_point = sse_decode_u_32(deserializer);
+    var var_pointScores = sse_decode_list_prim_f_32_strict(deserializer);
+    return SemanticNearestHit(
+      filePath: var_filePath,
+      id: var_id,
+      title: var_title,
+      reference: var_reference,
+      segment: var_segment,
+      isPdf: var_isPdf,
+      matchedWindow: var_matchedWindow,
+      score: var_score,
+      point: var_point,
+      pointScores: var_pointScores,
+    );
+  }
+
+  @protected
+  SemanticNearestInput sse_decode_semantic_nearest_input(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_points = sse_decode_list_semantic_point(deserializer);
+    var var_topK = sse_decode_u_32(deserializer);
+    var var_facets = sse_decode_list_String(deserializer);
+    var var_exclude = sse_decode_list_semantic_line_span(deserializer);
+    var var_minScore = sse_decode_opt_box_autoadd_f_32(deserializer);
+    var var_pool = sse_decode_semantic_pool(deserializer);
+    var var_maxCandidates = sse_decode_u_32(deserializer);
+    var var_rescore = sse_decode_bool(deserializer);
+    return SemanticNearestInput(
+      points: var_points,
+      topK: var_topK,
+      facets: var_facets,
+      exclude: var_exclude,
+      minScore: var_minScore,
+      pool: var_pool,
+      maxCandidates: var_maxCandidates,
+      rescore: var_rescore,
+    );
+  }
+
+  @protected
+  SemanticNearestList sse_decode_semantic_nearest_list(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_hits = sse_decode_list_semantic_nearest_hit(deserializer);
+    return SemanticNearestList(hits: var_hits);
+  }
+
+  @protected
+  SemanticNearestResponse sse_decode_semantic_nearest_response(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_hits = sse_decode_list_semantic_nearest_hit(deserializer);
+    var var_perPoint = sse_decode_list_semantic_nearest_list(deserializer);
+    var var_generation = sse_decode_u_64(deserializer);
+    var var_vectorsLibraryVersion = sse_decode_u_32(deserializer);
+    var var_unresolved = sse_decode_u_32(deserializer);
+    var var_staleDropped = sse_decode_u_32(deserializer);
+    var var_truncated = sse_decode_bool(deserializer);
+    var var_embedMs = sse_decode_u_64(deserializer);
+    var var_scanMs = sse_decode_u_64(deserializer);
+    var var_resolveMs = sse_decode_u_64(deserializer);
+    var var_rescoreMs = sse_decode_u_64(deserializer);
+    return SemanticNearestResponse(
+      hits: var_hits,
+      perPoint: var_perPoint,
+      generation: var_generation,
+      vectorsLibraryVersion: var_vectorsLibraryVersion,
+      unresolved: var_unresolved,
+      staleDropped: var_staleDropped,
+      truncated: var_truncated,
+      embedMs: var_embedMs,
+      scanMs: var_scanMs,
+      resolveMs: var_resolveMs,
+      rescoreMs: var_rescoreMs,
+    );
+  }
+
+  @protected
   SemanticPassageHighlight sse_decode_semantic_passage_highlight(
     SseDeserializer deserializer,
   ) {
@@ -13943,6 +14393,41 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       snippetHtml: var_snippetHtml,
       isHighlighted: var_isHighlighted,
       spanScore: var_spanScore,
+    );
+  }
+
+  @protected
+  SemanticPoint sse_decode_semantic_point(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_text = sse_decode_opt_String(deserializer);
+    var var_asPassage = sse_decode_bool(deserializer);
+    var var_vector = sse_decode_opt_list_prim_f_32_strict(deserializer);
+    return SemanticPoint(
+      text: var_text,
+      asPassage: var_asPassage,
+      vector: var_vector,
+    );
+  }
+
+  @protected
+  SemanticPool sse_decode_semantic_pool(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return SemanticPool.values[inner];
+  }
+
+  @protected
+  SemanticQueryTokens sse_decode_semantic_query_tokens(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_counts = sse_decode_list_prim_u_32_strict(deserializer);
+    var var_queryMaxTokens = sse_decode_u_32(deserializer);
+    var var_overheadTokens = sse_decode_u_32(deserializer);
+    return SemanticQueryTokens(
+      counts: var_counts,
+      queryMaxTokens: var_queryMaxTokens,
+      overheadTokens: var_overheadTokens,
     );
   }
 
@@ -15165,6 +15650,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_semantic_nearest_input(
+    SemanticNearestInput self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_semantic_nearest_input(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_semantic_ranking_options(
     SemanticRankingOptions self,
     SseSerializer serializer,
@@ -15586,6 +16080,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_prim_f_32_strict(
+    Float32List self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    serializer.buffer.putFloat32List(self);
+  }
+
+  @protected
   void sse_encode_list_prim_u_32_loose(
     List<int> self,
     SseSerializer serializer,
@@ -15762,6 +16266,42 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_semantic_line_span(
+    List<SemanticLineSpan> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_semantic_line_span(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_semantic_nearest_hit(
+    List<SemanticNearestHit> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_semantic_nearest_hit(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_semantic_nearest_list(
+    List<SemanticNearestList> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_semantic_nearest_list(item, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_list_semantic_passage_highlight(
     List<SemanticPassageHighlight> self,
     SseSerializer serializer,
@@ -15770,6 +16310,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
       sse_encode_semantic_passage_highlight(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_semantic_point(
+    List<SemanticPoint> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_semantic_point(item, serializer);
     }
   }
 
@@ -16105,6 +16657,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_list_String(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_list_prim_f_32_strict(
+    Float32List? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_list_prim_f_32_strict(self, serializer);
     }
   }
 
@@ -16493,6 +17058,79 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_semantic_line_span(
+    SemanticLineSpan self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.filePath, serializer);
+    sse_encode_u_64(self.fromSegment, serializer);
+    sse_encode_u_64(self.toSegment, serializer);
+  }
+
+  @protected
+  void sse_encode_semantic_nearest_hit(
+    SemanticNearestHit self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.filePath, serializer);
+    sse_encode_u_64(self.id, serializer);
+    sse_encode_String(self.title, serializer);
+    sse_encode_String(self.reference, serializer);
+    sse_encode_u_64(self.segment, serializer);
+    sse_encode_bool(self.isPdf, serializer);
+    sse_encode_u_8(self.matchedWindow, serializer);
+    sse_encode_f_32(self.score, serializer);
+    sse_encode_u_32(self.point, serializer);
+    sse_encode_list_prim_f_32_strict(self.pointScores, serializer);
+  }
+
+  @protected
+  void sse_encode_semantic_nearest_input(
+    SemanticNearestInput self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_list_semantic_point(self.points, serializer);
+    sse_encode_u_32(self.topK, serializer);
+    sse_encode_list_String(self.facets, serializer);
+    sse_encode_list_semantic_line_span(self.exclude, serializer);
+    sse_encode_opt_box_autoadd_f_32(self.minScore, serializer);
+    sse_encode_semantic_pool(self.pool, serializer);
+    sse_encode_u_32(self.maxCandidates, serializer);
+    sse_encode_bool(self.rescore, serializer);
+  }
+
+  @protected
+  void sse_encode_semantic_nearest_list(
+    SemanticNearestList self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_list_semantic_nearest_hit(self.hits, serializer);
+  }
+
+  @protected
+  void sse_encode_semantic_nearest_response(
+    SemanticNearestResponse self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_list_semantic_nearest_hit(self.hits, serializer);
+    sse_encode_list_semantic_nearest_list(self.perPoint, serializer);
+    sse_encode_u_64(self.generation, serializer);
+    sse_encode_u_32(self.vectorsLibraryVersion, serializer);
+    sse_encode_u_32(self.unresolved, serializer);
+    sse_encode_u_32(self.staleDropped, serializer);
+    sse_encode_bool(self.truncated, serializer);
+    sse_encode_u_64(self.embedMs, serializer);
+    sse_encode_u_64(self.scanMs, serializer);
+    sse_encode_u_64(self.resolveMs, serializer);
+    sse_encode_u_64(self.rescoreMs, serializer);
+  }
+
+  @protected
   void sse_encode_semantic_passage_highlight(
     SemanticPassageHighlight self,
     SseSerializer serializer,
@@ -16503,6 +17141,31 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.snippetHtml, serializer);
     sse_encode_bool(self.isHighlighted, serializer);
     sse_encode_opt_box_autoadd_f_32(self.spanScore, serializer);
+  }
+
+  @protected
+  void sse_encode_semantic_point(SemanticPoint self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_opt_String(self.text, serializer);
+    sse_encode_bool(self.asPassage, serializer);
+    sse_encode_opt_list_prim_f_32_strict(self.vector, serializer);
+  }
+
+  @protected
+  void sse_encode_semantic_pool(SemanticPool self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_semantic_query_tokens(
+    SemanticQueryTokens self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_list_prim_u_32_strict(self.counts, serializer);
+    sse_encode_u_32(self.queryMaxTokens, serializer);
+    sse_encode_u_32(self.overheadTokens, serializer);
   }
 
   @protected
@@ -19163,6 +19826,26 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   Future<SemanticIndexDiff> semanticIndexDiff() => RustLib.instance.api
       .crateApiSearchEngineSearchEngineSemanticIndexDiff(that: this);
 
+  /// The live lines nearest each of several points in an installed vector set.
+  ///
+  /// Each point is embedded as `search_semantic` embeds a query (or, `as_passage`, as a
+  /// stored line). The scan groups points to bound working memory. It resolves each
+  /// vector to the live lines in books admitted by `facets`, under the search screen's
+  /// window and alias penalties. Results carry line metadata for callers to read the text.
+  ///
+  /// Fails `NotConfigured` with no session open, or with one built on this device, which
+  /// has no vector set; `InvalidInput` for a point that is neither one text nor one vector
+  /// of the set's width, or a limit out of range. Returns `VectorsBusy` if an install or
+  /// compaction prevents a consistent read. Cancelling returns `Cancelled`.
+  Future<SemanticNearestResponse> semanticNearest({
+    required SemanticNearestInput input,
+    required SemanticCancellationToken cancellation,
+  }) => RustLib.instance.api.crateApiSearchEngineSearchEngineSemanticNearest(
+    that: this,
+    input: input,
+    cancellation: cancellation,
+  );
+
   /// Marks the clause of each target's line nearest `query`, one per target in order; a line
   /// that cannot be marked is not an error. Cancelled, it ends with a `Cancelled` error.
   Future<List<SemanticPassageHighlight>> semanticPassageHighlights({
@@ -19175,6 +19858,20 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         query: query,
         targets: targets,
         cancellation: cancellation,
+      );
+
+  /// How long each of `texts` is as a query to the open vector set's model, with the cap a
+  /// query is cut at: for a caller that cuts a long passage into windows that each fit.
+  /// Up to [`MAX_QUERY_TOKEN_TEXTS`] texts.
+  ///
+  /// Fails `NotConfigured` with no session open, and as the session's model fails when its
+  /// backend has no tokenizer to count with.
+  Future<SemanticQueryTokens> semanticQueryTokens({
+    required List<String> texts,
+  }) =>
+      RustLib.instance.api.crateApiSearchEngineSearchEngineSemanticQueryTokens(
+        that: this,
+        texts: texts,
       );
 
   /// Deliberately **not** `#[frb(sync)]`. Reading the status takes the

@@ -43,10 +43,12 @@
 
 use otzaria_semantic_search::cancellation::CancellationToken;
 use otzaria_semantic_search::distribution::gates::book_records;
+use otzaria_semantic_search::errors::VectorStoreError;
 use otzaria_semantic_search::semantic::chunk_key::ChunkKey;
 use otzaria_semantic_search::semantic::oxv::occurrence::ALIAS_WINDOW;
 use otzaria_semantic_search::semantic::oxv::reader::Segment;
-use otzaria_semantic_search::semantic::resolve::SlotRef;
+use otzaria_semantic_search::semantic::oxv::scan::ScanRequest;
+use otzaria_semantic_search::semantic::resolve::{BookSet, SlotRef, VectorHit};
 use otzaria_semantic_search::semantic::segment_set::{self, SegmentSet};
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -144,6 +146,40 @@ impl SetView {
 
     pub(crate) fn generation(&self) -> u64 {
         self.set.generation()
+    }
+
+    /// Weigh the slots that the filtered scan skipped. An empty book set gives
+    /// the sidecar no main scan work while it scores the supplied slots and
+    /// preserves their occurrence records for the resolver.
+    pub(crate) fn scan_unreached(
+        &self,
+        query: &[f32],
+        slots: &[SlotRef],
+        top_k: usize,
+        window_penalty: f32,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<VectorHit>, VectorStoreError> {
+        self.set.scan_with(
+            query,
+            &ScanRequest {
+                top_k,
+                books: Some(&BookSet::default()),
+                threads: 1,
+                window_penalty,
+            },
+            slots,
+            cancel,
+        )
+    }
+
+    /// Score slots against this exact generation even if a replacement is installed.
+    pub(crate) fn score_slots(
+        &self,
+        queries: &[&[f32]],
+        slots: &[SlotRef],
+        cancel: &CancellationToken,
+    ) -> Result<Vec<Vec<Option<f32>>>, VectorStoreError> {
+        self.set.score_selected_slots_many(queries, slots, cancel)
     }
 
     pub(crate) fn book_source_hash(&self, book: &str) -> Option<u64> {
