@@ -12302,6 +12302,277 @@ mod semantic_sessions {
         assert!(third.has_more);
     }
 
+    fn voted_page(
+        engine: &SearchEngine,
+        limit: u32,
+        offset: u32,
+        votes: &[SemanticVote],
+    ) -> SemanticSearchResponse {
+        engine
+            .search_semantic_voted(
+                "שבת".to_string(),
+                Vec::new(),
+                limit,
+                offset,
+                SemanticLexicalMode::Exact,
+                0,
+                SemanticRetrievalMode::Hybrid,
+                None,
+                false,
+                false,
+                None,
+                votes,
+                &SemanticCancellationToken::new(),
+            )
+            .unwrap()
+    }
+
+    fn vote(hit: &SemanticSearchResult, relevant: bool) -> SemanticVote {
+        SemanticVote {
+            file_path: hit.file_path.clone(),
+            id: hit.id,
+            relevant,
+        }
+    }
+
+    /// New marks rank again only the results not yet shown, once: the pages shown stand,
+    /// a page asked again with the same marks is the same page, and nothing is shown twice.
+    #[test]
+    fn marks_rank_again_only_what_was_not_shown() {
+        let _serial = serialized();
+        let (engine, _index, _semantic) = sabbath();
+        let first = page(&engine, 5, 0);
+        let liked = [vote(&first.results[0], true)];
+        let second = voted_page(&engine, 5, 5, &liked);
+        assert_eq!(expansions(&engine), 2, "new marks rank again");
+        assert_eq!(bits(&voted_page(&engine, 5, 5, &liked)), bits(&second));
+        assert_eq!(bits(&voted_page(&engine, 5, 0, &liked)), bits(&first));
+        assert_eq!(expansions(&engine), 2, "the same marks rank nothing again");
+
+        let mut both = liked.to_vec();
+        both.insert(0, vote(&first.results[1], false));
+        let third = voted_page(&engine, 5, 10, &both);
+        assert_eq!(
+            third.timings.unwrap().expansions,
+            2,
+            "try the previous depth first, then widen for the third page"
+        );
+        assert_eq!(expansions(&engine), 4);
+        assert_eq!(bits(&voted_page(&engine, 5, 5, &both)), bits(&second));
+        assert_eq!(bits(&page(&engine, 5, 0)), bits(&first));
+
+        let shown: Vec<_> = [&first, &second, &third]
+            .iter()
+            .flat_map(|response| lines(response))
+            .collect();
+        let unique: HashSet<_> = shown.iter().cloned().collect();
+        assert_eq!(unique.len(), shown.len(), "a result shown twice: {shown:?}");
+    }
+
+    #[test]
+    fn a_revote_discards_unshown_results_below_the_new_threshold() {
+        let _serial = serialized();
+        let books = [
+            (BASE, "/base", (3..9).map(|n| "שבת ".repeat(n)).collect()),
+            (OTHER, "/other", vec!["חנוכה ".repeat(8)]),
+        ];
+        let (engine, _index, _semantic) = engine_over(&books, &[BASE, OTHER]);
+        let (fresh, _fresh_index, _fresh_semantic) = engine_over(&books, &[BASE, OTHER]);
+        let search = |engine: &SearchEngine, offset, votes: &[SemanticVote]| {
+            let ranking = SemanticRankingOptions {
+                semantic_threshold: 0.9,
+                alpha_override: Some(0.5),
+                ..SemanticRankingOptions::defaults()
+            };
+            engine
+                .search_semantic_voted(
+                    "שבת מזכרת".into(),
+                    Vec::new(),
+                    1,
+                    offset,
+                    SemanticLexicalMode::Exact,
+                    0,
+                    SemanticRetrievalMode::Hybrid,
+                    None,
+                    false,
+                    false,
+                    Some(ranking),
+                    votes,
+                    &SemanticCancellationToken::new(),
+                )
+                .unwrap()
+        };
+        let first = search(&engine, 0, &[]);
+        assert_eq!(first.lexical_total_count, 0);
+        assert!(first.has_more);
+        let votes = [SemanticVote {
+            file_path: OTHER.into(),
+            id: 7,
+            relevant: true,
+        }];
+        assert!(search(&fresh, 0, &votes).results.is_empty());
+        let continued = search(&engine, 1, &votes);
+        assert_eq!(continued.total_count, 0);
+        assert!(continued.results.is_empty());
+        assert!(!continued.has_more);
+        assert_eq!(bits(&search(&engine, 0, &votes)), bits(&first));
+    }
+
+    #[test]
+    fn adding_a_vote_reuses_the_embedding_even_if_its_mark_changes() {
+        let _serial = serialized();
+        let (engine, _index, _semantic) = sabbath();
+        let first = page(&engine, 5, 0);
+        let liked = vote(&first.results[0], true);
+        let other = vote(&first.results[1], true);
+        voted_page(&engine, 5, 5, std::slice::from_ref(&liked));
+        let embedding = || {
+            let cache = engine.vote_embeddings.lock().unwrap();
+            cache
+                .iter()
+                .find_map(|((_, (path, id)), vector)| {
+                    (path == &liked.file_path && *id == liked.id).then(|| Arc::clone(vector))
+                })
+                .unwrap()
+        };
+        let first_embedding = embedding();
+        let flipped = SemanticVote {
+            relevant: false,
+            ..liked.clone()
+        };
+        let normalized = [flipped.clone(), other.clone()];
+        let page = voted_page(&engine, 5, 10, &[liked.clone(), flipped, other]);
+        assert_eq!(engine.vote_embeddings.lock().unwrap().len(), 2);
+        assert!(Arc::ptr_eq(&first_embedding, &embedding()));
+        let before = expansions(&engine);
+        assert_eq!(bits(&voted_page(&engine, 5, 10, &normalized)), bits(&page));
+        assert_eq!(expansions(&engine), before, "a duplicate's last mark wins");
+    }
+
+    #[test]
+    fn lexical_only_ignores_votes_without_embedding_or_refreshing_the_window() {
+        let _serial = serialized();
+        let (engine, _index, _semantic) = sabbath();
+        let search = |offset, votes: &[SemanticVote]| {
+            engine
+                .search_semantic_voted(
+                    "שבת".into(),
+                    Vec::new(),
+                    5,
+                    offset,
+                    SemanticLexicalMode::Exact,
+                    0,
+                    SemanticRetrievalMode::LexicalOnly,
+                    None,
+                    false,
+                    false,
+                    None,
+                    votes,
+                    &SemanticCancellationToken::new(),
+                )
+                .unwrap()
+        };
+        let first = search(0, &[]);
+        let marks = [vote(&first.results[0], true)];
+        let continued = search(5, &marks);
+        assert_eq!(continued.results.len(), 5);
+        assert_eq!(continued.timings.unwrap().expansions, 0);
+        assert_eq!(bits(&search(0, &marks)), bits(&first));
+        assert_eq!(expansions(&engine), 1);
+        assert!(engine.vote_embeddings.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn batched_votes_match_the_book_as_well_as_the_line_id() {
+        let (mut engine, _index) = make_engine();
+        for (path, text) in [(BASE, "הספר הראשון"), (OTHER, "הספר השני")] {
+            engine
+                .add_document_at(
+                    5, "title", "ref", "/book", text, 0, false, path, None, None, None,
+                )
+                .unwrap();
+        }
+        engine.commit().unwrap();
+        let lines = HashSet::from([(OTHER.to_owned(), 5), (UNRELATED.to_owned(), 5)]);
+        let texts = engine
+            .vote_passages(
+                &engine.index_reader.searcher(),
+                &lines,
+                &SearchCancellation::new(),
+            )
+            .unwrap();
+        assert_eq!(texts, [((OTHER.to_owned(), 5), "הספר השני".to_owned())]);
+    }
+
+    /// A mark moves the query toward its passage: two engines that agree on the first page
+    /// and rank the rest again at the same depth part where the passages marked differ.
+    #[test]
+    fn the_passage_marked_decides_the_next_page() {
+        let _serial = serialized();
+        let next_after = |marked: usize| {
+            let (engine, _index, _semantic) = sabbath();
+            let first = page(&engine, 5, 0);
+            let next = voted_page(&engine, 5, 5, &[vote(&first.results[marked], true)]);
+            (bits(&first), lines(&next))
+        };
+        let (first, after_top) = next_after(0);
+        let (same_first, after_last) = next_after(4);
+        assert_eq!(first, same_first);
+        assert_ne!(after_top, after_last);
+    }
+
+    /// Marks carried into a search rank its first page: it starts a session of its own, the
+    /// same marks again keep that session, and a page without them is the query's own again.
+    #[test]
+    fn marks_carried_into_a_search_rank_its_first_page() {
+        let _serial = serialized();
+        let (engine, _index, _semantic) = sabbath();
+        let plain = page(&engine, 5, 0);
+        let carried = [vote(&plain.results[4], true)];
+        let steered = voted_page(&engine, 5, 0, &carried);
+        assert_eq!(
+            expansions(&engine),
+            2,
+            "other marks start a session of their own"
+        );
+        assert_ne!(lines(&steered), lines(&plain));
+        assert_eq!(bits(&voted_page(&engine, 5, 0, &carried)), bits(&steered));
+        assert_eq!(expansions(&engine), 2, "the same marks keep it");
+        assert_eq!(bits(&page(&engine, 5, 0)), bits(&plain));
+    }
+
+    /// A mark on a line the library does not have moves nothing.
+    #[test]
+    fn a_mark_on_a_missing_line_is_ignored() {
+        let _serial = serialized();
+        let (engine, _index, _semantic) = sabbath();
+        let plain = page(&engine, 5, 0);
+        let missing = [SemanticVote {
+            file_path: "no such book".to_string(),
+            id: 1,
+            relevant: true,
+        }];
+        assert_eq!(lines(&voted_page(&engine, 5, 0, &missing)), lines(&plain));
+    }
+
+    /// The query moves toward the mean of the relevant passages and away from the mean of
+    /// the others, at the weights given, and stays a unit vector.
+    #[test]
+    fn the_moved_query_is_the_rocchio_sum_at_unit_length() {
+        assert_eq!(moved_query(&[1.0, 0.0], &[], &[]), None);
+        let moved = moved_query(&[1.0, 0.0], &[&[0.0, 2.0]], &[&[0.0, -1.0]]).unwrap();
+        let expected = [1.0, VOTE_RELEVANT_WEIGHT + VOTE_IRRELEVANT_WEIGHT];
+        let norm = (expected[0] * expected[0] + expected[1] * expected[1]).sqrt();
+        for (got, want) in moved.iter().zip(expected) {
+            assert!((got - want / norm).abs() < 1e-6, "{moved:?}");
+        }
+        let two = moved_query(&[1.0, 0.0], &[&[0.0, 1.0], &[0.0, -1.0]], &[]).unwrap();
+        assert!(
+            (two[0] - 1.0).abs() < 1e-6 && two[1].abs() < 1e-6,
+            "{two:?}"
+        );
+    }
+
     /// The counts keep their meaning: the lexical count is the corpus-wide count, and the
     /// candidate counts are a window's, the same on every page that window serves.
     #[test]

@@ -525,6 +525,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<SemanticSegmentInfo> dco_decode_list_semantic_segment_info(dynamic raw);
 
   @protected
+  List<SemanticVote> dco_decode_list_semantic_vote(dynamic raw);
+
+  @protected
   List<TestCase> dco_decode_list_test_case(dynamic raw);
 
   @protected
@@ -619,6 +622,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Uint32List? dco_decode_opt_list_prim_u_32_strict(dynamic raw);
+
+  @protected
+  List<SemanticVote>? dco_decode_opt_list_semantic_vote(dynamic raw);
 
   @protected
   PdfIndexLine dco_decode_pdf_index_line(dynamic raw);
@@ -808,6 +814,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SemanticVectorsVerification dco_decode_semantic_vectors_verification(
     dynamic raw,
   );
+
+  @protected
+  SemanticVote dco_decode_semantic_vote(dynamic raw);
 
   @protected
   TestCase dco_decode_test_case(dynamic raw);
@@ -1409,6 +1418,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<SemanticVote> sse_decode_list_semantic_vote(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<TestCase> sse_decode_list_test_case(SseDeserializer deserializer);
 
   @protected
@@ -1525,6 +1539,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Uint32List? sse_decode_opt_list_prim_u_32_strict(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<SemanticVote>? sse_decode_opt_list_semantic_vote(
     SseDeserializer deserializer,
   );
 
@@ -1784,6 +1803,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SemanticVectorsVerification sse_decode_semantic_vectors_verification(
     SseDeserializer deserializer,
   );
+
+  @protected
+  SemanticVote sse_decode_semantic_vote(SseDeserializer deserializer);
 
   @protected
   TestCase sse_decode_test_case(SseDeserializer deserializer);
@@ -2528,6 +2550,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_semantic_vote(
+    List<SemanticVote> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_test_case(List<TestCase> self, SseSerializer serializer);
 
   @protected
@@ -2661,6 +2689,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_list_prim_u_32_strict(
     Uint32List? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_list_semantic_vote(
+    List<SemanticVote>? self,
     SseSerializer serializer,
   );
 
@@ -2987,6 +3021,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     SemanticVectorsVerification self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_semantic_vote(SemanticVote self, SseSerializer serializer);
 
   @protected
   void sse_encode_test_case(TestCase self, SseSerializer serializer);
