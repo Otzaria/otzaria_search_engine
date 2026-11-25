@@ -1,5 +1,14 @@
 # Changelog
 
+## 7.5.1 – 2026-11-25
+
+### Fixed
+
+- Restored matching across line breaks for unanchored reader regexes, while
+  retaining line-based regex searches in the index.
+- Added `HighlightMatcher.findPdfWordMatches` to recover actual PDF word
+  positions from the page text, including queries that match across layout lines.
+
 ## 7.5.0 – 2026-11-25
 
 ### Added
