@@ -109,22 +109,28 @@ jobs:
         if: matrix.features == 'semantic-onnx'
         run: cargo test --manifest-path rust/Cargo.toml --locked --all-targets --features semantic-onnx
 
+  # On pull requests: compares base and head. On pushes to refactor it only
+  # builds head, to save the release dependency cache those comparisons restore.
   indexing-responsiveness:
     name: Indexing/search measurements (no timing gate)
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/refactor'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: head
       - uses: actions/checkout@v5
+        if: github.event_name == 'pull_request'
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           path: base
       - name: Select indexing-related changes
         id: changed
+        if: github.event_name == 'pull_request'
         run: |
           python3 - <<'PYCODE'
           import os
@@ -139,14 +145,26 @@ jobs:
               output.write(f"run={str(changed).lower()}\n")
           PYCODE
       - uses: dtolnay/rust-toolchain@stable
-        if: steps.changed.outputs.run == 'true'
+        if: github.event_name != 'pull_request' || steps.changed.outputs.run == 'true'
+      - uses: Swatinem/rust-cache@v2
+        if: github.event_name != 'pull_request' || steps.changed.outputs.run == 'true'
+        with:
+          workspaces: head/rust -> ../../target
+          save-if: ${{ github.ref == 'refs/heads/refactor' }}
+          key: indexing-release
+      # The same command the measurement script builds with.
+      - name: Build the benchmark to save the cache
+        if: github.event_name != 'pull_request'
+        run: >
+          cargo test --manifest-path head/rust/Cargo.toml --locked --release
+          --test indexing_throughput --no-run
       - name: Compare identical fixtures with two-core and available-core affinity
-        if: steps.changed.outputs.run == 'true'
+        if: github.event_name == 'pull_request' && steps.changed.outputs.run == 'true'
         run: >
           python3 head/tool/measure_indexing_responsiveness.py
           --base base --head head --out "${{ runner.temp }}/indexing-measurements"
       - uses: actions/upload-artifact@v4
-        if: always() && steps.changed.outputs.run == 'true'
+        if: always() && github.event_name == 'pull_request' && steps.changed.outputs.run == 'true'
         with:
           name: indexing-responsiveness
           path: |

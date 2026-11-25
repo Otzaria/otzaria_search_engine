@@ -13,12 +13,14 @@ import subprocess
 
 
 def build(root, label, output, env):
-    build_environment = env | {"CARGO_TARGET_DIR": str(output / "target" / label)}
+    # One target directory for both revisions, so their shared dependencies
+    # build once; each binary is copied out before the next build.
+    target = env.get("CARGO_TARGET_DIR") or str(output / "target")
     completed = subprocess.run(
         ["cargo", "test", "--manifest-path", str(root / "rust/Cargo.toml"),
          "--locked", "--release", "--test", "indexing_throughput", "--no-run",
          "--message-format=json"],
-        check=True, text=True, stdout=subprocess.PIPE, env=build_environment,
+        check=True, text=True, stdout=subprocess.PIPE, env=env | {"CARGO_TARGET_DIR": target},
     )
     executables = []
     for line in completed.stdout.splitlines():
@@ -54,9 +56,7 @@ def main():
     args.out.mkdir(parents=True, exist_ok=True)
     shutil.copy2(args.head / "rust/tests/indexing_throughput.rs", args.base / "rust/tests/indexing_throughput.rs")
     cpus = sorted(os.sched_getaffinity(0))
-    environment = os.environ | {
-        "CARGO_BUILD_JOBS": "1", "OTZARIA_BENCH_LINES": "12000",
-    }
+    environment = os.environ | {"OTZARIA_BENCH_LINES": "12000"}
     environment.pop("OTZARIA_BENCH_ECONOMY", None)
     binaries = {label: build(path, label, args.out, environment)
                 for label, path in [("before", args.base), ("after", args.head)]}

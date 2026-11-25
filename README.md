@@ -902,7 +902,8 @@ bytes separately. Neither buffers nor reservations are a process RSS limit.
 
 `python3 tool/measure_indexing_responsiveness.py --base <checkout> --head <checkout> --out <empty-output-directory>` runs the same synthetic fixture on two
 revisions, with two-core/full-affinity and economy/normal cases. It builds
-release binaries in separate target directories and alternates their order over
+release binaries in one shared target directory (`CARGO_TARGET_DIR` if set)
+and alternates their order over
 two repetitions, with 12,000 lines per book. The binary hashes are recorded and
 missing head diagnostics reject a stale-build comparison. The
 JSON artifacts report warm-cache search p95/p99 during indexing, throughput,
