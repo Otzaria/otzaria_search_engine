@@ -438,6 +438,7 @@ pub fn build_display_highlight(
     let mut word_patterns: Vec<String> = Vec::new();
     let mut word_boundary_eligible: Vec<bool> = Vec::new();
     let mut plans = Vec::new();
+    let mut word_keys = Vec::new();
     for (i, word) in words.iter().enumerate() {
         let flags = word_flags_at(&words, i, search_options);
         let alts = alternative_words
@@ -461,12 +462,14 @@ pub fn build_display_highlight(
         word_patterns.push(pattern);
         word_boundary_eligible.push(!has_expansion);
         plans.push(matcher_branches(word, &flags, alts));
+        word_keys.push(normalize_for_index(word));
     }
 
     assemble_display_highlight(
         word_patterns,
         word_boundary_eligible,
         plans,
+        word_keys,
         distance,
         custom_spacing,
         any_order,
@@ -480,6 +483,7 @@ fn assemble_display_highlight(
     word_patterns: Vec<String>,
     word_boundary_eligible: Vec<bool>,
     plans: Vec<Vec<(String, String, String)>>,
+    word_keys: Vec<String>,
     distance: u32,
     custom_spacing: &HashMap<String, String>,
     any_order: bool,
@@ -507,7 +511,8 @@ fn assemble_display_highlight(
         proximity,
         word_boundary_eligible.clone(),
     )
-    .ok()?;
+    .ok()?
+    .with_pdf_word_keys(word_keys);
     Some(DisplayHighlight {
         combined_pattern,
         word_patterns,
@@ -615,6 +620,7 @@ pub fn build_display_highlight_from_terms(
     let mut word_patterns: Vec<String> = Vec::new();
     let mut word_boundary_eligible: Vec<bool> = Vec::new();
     let mut plans = Vec::new();
+    let mut word_keys = Vec::new();
     for (i, word) in words.iter().enumerate() {
         let flags = word_flags_at(&words, i, search_options);
         let alts = alternative_words
@@ -673,12 +679,14 @@ pub fn build_display_highlight_from_terms(
         word_patterns.push(pattern);
         word_boundary_eligible.push(boundary_eligible);
         plans.push(plan);
+        word_keys.push(word.clone());
     }
 
     assemble_display_highlight(
         word_patterns,
         word_boundary_eligible,
         plans,
+        word_keys,
         distance,
         custom_spacing,
         any_order,

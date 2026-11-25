@@ -265,7 +265,8 @@ book's own topics path is a search in that book.
 
 **Book view.** `prepareUserRegexMatcher(raw).findMatches(line)` finds every match in one
 displayed line (HTML and nikud included), in UTF-16 units, one word range per word of a
-sequence.
+sequence. An unanchored reader search can pass several lines as one unit. To treat `^`
+and `$` as layout-line edges, pass each layout line separately.
 
 ---
 
@@ -791,6 +792,9 @@ Future<void> configureUserBooksLineSource({String? dbPath}); // personal books; 
   Stored text and regex input retain the original normalized markers and layout breaks;
   regex anchors and `.*` apply within each layout line. Snippets flatten layout breaks
   and show up to eight windows of matched words on a long page.
+  The reader can call `HighlightMatcher.findPdfWordMatches` on the full plain-text
+  page. It paints complete matching layout lines when present, or the matching
+  words across the page when only their combination meets the word threshold.
 - Existing PDF documents indexed line by line remain readable. Reindex those PDFs to
   enable page-wide matching: their `textHash` is 0; new PDF books have a fingerprint of
   their raw page text and indexes instead. When adopting this engine, the app must mark

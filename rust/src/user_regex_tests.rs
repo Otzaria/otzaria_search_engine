@@ -2631,6 +2631,20 @@ fn suppressing_an_anchor_keeps_an_independent_path_to_the_same_match() {
 }
 
 #[test]
+fn an_unanchored_display_regex_matches_whitespace_inside_the_supplied_text() {
+    let matcher = prepare_user_regex_matcher("/משה .* תיראו/".into()).unwrap();
+    let input = "😀 ויאמר מֹשֶׁה אל העם\r\nאל תיראו התיצבו";
+    let found = matcher.find_matches(input.into());
+    assert_eq!(found.len(), 1);
+    let found = &found[0];
+    let units: Vec<u16> = input.encode_utf16().collect();
+    assert_eq!(
+        String::from_utf16(&units[found.start as usize..found.end as usize]).unwrap(),
+        "מֹשֶׁה אל העם\r\nאל תיראו"
+    );
+}
+
+#[test]
 fn line_anchors_and_spans_hold_within_each_line_of_a_pdf_page() {
     let dir = TempDir::new().unwrap();
     let mut engine = SearchEngine::new(dir.path().to_str().unwrap());

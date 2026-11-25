@@ -326,6 +326,15 @@ abstract class HighlightMatcher implements RustOpaqueInterface {
     required List<bool> requireTokenBoundaries,
   });
 
+  /// On a plain-text PDF page, paints words on complete matching layout lines.
+  /// When the word threshold is met only across lines, paints the page's matches.
+  List<HighlightMatch> findPdfWordMatches({
+    required String data,
+    required List<bool> requireTokenBoundaries,
+    WordMatchMode? wordMatchMode,
+    int? wordMatchCount,
+  });
+
   List<HighlightMatch> findWordMatches({
     required String data,
     required List<bool> requireTokenBoundaries,

@@ -19,6 +19,7 @@ pub(crate) struct PreparedHighlightMatcher {
     independent_words: Vec<[Arc<Regex>; 3]>,
     proximity: Proximity,
     boundary_eligible: Vec<bool>,
+    pdf_word_slots: Vec<usize>,
     groups: Vec<Self>,
     cross_line: bool,
 }
@@ -111,6 +112,7 @@ impl PreparedHighlightMatcher {
             independent_words,
             proximity,
             boundary_eligible,
+            pdf_word_slots: (0..word_count).collect(),
             groups: Vec::new(),
             cross_line: true,
         })
@@ -126,6 +128,7 @@ impl PreparedHighlightMatcher {
                 .iter()
                 .flat_map(|group| group.boundary_eligible.iter().copied())
                 .collect(),
+            pdf_word_slots: Vec::new(),
             groups,
             cross_line,
         }
@@ -133,6 +136,18 @@ impl PreparedHighlightMatcher {
 
     pub(crate) fn allows_cross_line(&self) -> bool {
         self.cross_line
+    }
+
+    pub(crate) fn with_pdf_word_keys(mut self, words: Vec<String>) -> Self {
+        let mut slots = HashMap::new();
+        self.pdf_word_slots = words
+            .into_iter()
+            .map(|word| {
+                let next = slots.len();
+                *slots.entry(word).or_insert(next)
+            })
+            .collect();
+        self
     }
 
     fn find_group_matches(
@@ -251,12 +266,77 @@ impl PreparedHighlightMatcher {
             return self.find_group_matches(data, require_boundaries, false);
         }
         let text = MappedText::strip_markup(data);
+        let mut ranges = Vec::new();
+        self.visit_word_ranges(&text, require_boundaries, |_, range| ranges.push(range));
+        Self::word_matches(ranges)
+    }
+
+    pub(crate) fn find_pdf_word_matches(
+        &self,
+        data: &str,
+        require_boundaries: &[bool],
+        min_words: impl FnOnce(usize) -> usize,
+    ) -> Vec<Match> {
+        let mut text = MappedText::default();
+        let mut line_ends = Vec::new();
+        let mut end = 0;
+        for c in data.chars() {
+            let start = end;
+            end += c.len_utf16();
+            if c == '\n' {
+                line_ends.push(end);
+            }
+            text.push(c, start, end);
+        }
+        line_ends.push(end);
+
+        let Some(word_count) = self.pdf_word_slots.iter().max().map(|slot| slot + 1) else {
+            return Vec::new();
+        };
+        let required = min_words(word_count);
+        let mut page_words = vec![false; word_count];
+        let mut line_words = vec![false; word_count];
+        let mut page = Vec::new();
+        let mut matching_lines = Vec::new();
+        let mut line = 0;
+        let mut first = 0;
+        self.visit_word_ranges(&text, require_boundaries, |word, range| {
+            if range.start >= line_ends[line] {
+                if line_words.iter().filter(|&&seen| seen).count() >= required {
+                    matching_lines.extend_from_slice(&page[first..]);
+                }
+                first = page.len();
+                line += line_ends[line..].partition_point(|&end| end <= range.start);
+                line_words.fill(false);
+            }
+            let slot = self.pdf_word_slots[word];
+            line_words[slot] = true;
+            page_words[slot] = true;
+            page.push(range);
+        });
+        if line_words.iter().filter(|&&seen| seen).count() >= required {
+            matching_lines.extend_from_slice(&page[first..]);
+        }
+        if !matching_lines.is_empty() {
+            Self::word_matches(matching_lines)
+        } else if page_words.iter().filter(|&&seen| seen).count() >= required {
+            Self::word_matches(page)
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn visit_word_ranges(
+        &self,
+        text: &MappedText,
+        require_boundaries: &[bool],
+        mut visit: impl FnMut(usize, Range),
+    ) {
         let mut tokenizer = HebrewTokenizer {
             emit_quote_free: true,
             keep_marks: false,
         };
         let mut stream = tokenizer.token_stream(&text.text);
-        let mut ranges = Vec::new();
         let mut mapped = MappedText::default();
         let mut plans: Vec<(&Regex, usize, CaptureLocations)> = self
             .independent_words
@@ -275,7 +355,7 @@ impl PreparedHighlightMatcher {
                 !token.text.contains(['\'', '"']),
                 &mut mapped,
             );
-            for (regex, edge, locs) in &mut plans {
+            for (word, (regex, edge, locs)) in plans.iter_mut().enumerate() {
                 let haystack = mapped.text.as_str();
                 let mut at = 0;
                 let mut last_end = None;
@@ -297,10 +377,13 @@ impl PreparedHighlightMatcher {
                     if start == end {
                         break;
                     }
-                    ranges.push(Range {
-                        start: mapped.starts[start],
-                        end: mapped.ends[end - 1],
-                    });
+                    visit(
+                        word,
+                        Range {
+                            start: mapped.starts[start],
+                            end: mapped.ends[end - 1],
+                        },
+                    );
                     if *edge != Edge::ANY {
                         break;
                     }
@@ -309,6 +392,9 @@ impl PreparedHighlightMatcher {
                 }
             }
         }
+    }
+
+    fn word_matches(mut ranges: Vec<Range>) -> Vec<Match> {
         ranges.sort_by_key(|r| (r.start, r.end));
         let mut matches = Vec::new();
         let mut previous_end = 0;

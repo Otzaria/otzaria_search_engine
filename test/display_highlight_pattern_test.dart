@@ -44,6 +44,37 @@ class _PreparedPattern {
 Future<void> main() async {
   final skipReason = await initNativeEngine();
 
+  test('PDF selects complete lines before falling back to the page', () {
+    final pattern = _pattern('hello world');
+    List<String> words(String text) => [
+      for (final match in pattern.matcher!.findPdfWordMatches(
+        data: text,
+        requireTokenBoundaries: pattern.wordBoundaryEligible,
+      ))
+        text.substring(match.start, match.end),
+    ];
+
+    expect(words('😀 <Hello> world\r\nhello alone'), ['Hello', 'world']);
+    expect(words('😀 <Hello>\r\nworld'), ['Hello', 'world']);
+    expect(words('Hello alone\nhello again'), isEmpty);
+  }, skip: skipReason ?? false);
+
+  test('PDF word threshold counts distinct query words', () {
+    final pattern = _pattern('hello hello world');
+    const text = 'hello hello\nworld';
+    final matches = pattern.matcher!.findPdfWordMatches(
+      data: text,
+      requireTokenBoundaries: pattern.wordBoundaryEligible,
+      wordMatchMode: WordMatchMode.atLeast,
+      wordMatchCount: 2,
+    );
+    expect(matches.map((m) => text.substring(m.start, m.end)), [
+      'hello',
+      'hello',
+      'world',
+    ]);
+  }, skip: skipReason ?? false);
+
   group('generateHighlightPattern', () {
     test('מילה בודדת נתפסת בטקסט נקי ובטקסט מנוקד', () {
       final hl = _pattern('כל');

@@ -3406,6 +3406,24 @@ impl HighlightMatcher {
                 .find_word_matches(&data, &require_token_boundaries),
         )
     }
+
+    /// On a plain-text PDF page, paints words on complete matching layout lines.
+    /// When the word threshold is met only across lines, paints the page's matches.
+    #[frb(sync)]
+    pub fn find_pdf_word_matches(
+        &self,
+        data: String,
+        require_token_boundaries: Vec<bool>,
+        word_match_mode: Option<WordMatchMode>,
+        word_match_count: Option<u32>,
+    ) -> Vec<HighlightMatch> {
+        let mode = WordMatch::from_api(word_match_mode, word_match_count);
+        convert_highlight_matches(self.plan.find_pdf_word_matches(
+            &data,
+            &require_token_boundaries,
+            |word_count| mode.min_words(word_count),
+        ))
+    }
 }
 
 impl From<display_highlight::DisplayHighlight> for DisplayPattern {

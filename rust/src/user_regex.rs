@@ -1353,7 +1353,6 @@ pub(crate) struct LineView {
 }
 
 impl LineView {
-    #[cfg(test)]
     pub(crate) fn of(source: &str, map: bool) -> Self {
         let mut view = LineView::default();
         view.fill(source, map);
@@ -1510,21 +1509,25 @@ impl DisplayMatcher {
     pub(crate) fn find(&self, data: &str) -> Vec<Match> {
         match self {
             DisplayMatcher::Terms(matcher) => matcher.find_matches(data, &[]),
-            DisplayMatcher::Line(plan) => plan
-                .find_lines(data)
-                .into_iter()
-                .map(|(start, end)| {
-                    let (start, end) = (start as usize, end as usize);
-                    Match {
-                        start,
-                        end,
-                        word_ranges: vec![Range {
-                            start: 0,
-                            end: end - start,
-                        }],
-                    }
-                })
-                .collect(),
+            DisplayMatcher::Line(plan) => {
+                // The reader supplies its matching unit. Only the index splits a PDF page.
+                let view = LineView::of(data, true);
+                plan.find(&view.text)
+                    .iter()
+                    .map(|range| {
+                        let (start, end) = view.source_range(range);
+                        let (start, end) = (start as usize, end as usize);
+                        Match {
+                            start,
+                            end,
+                            word_ranges: vec![Range {
+                                start: 0,
+                                end: end - start,
+                            }],
+                        }
+                    })
+                    .collect()
+            }
         }
     }
 }
