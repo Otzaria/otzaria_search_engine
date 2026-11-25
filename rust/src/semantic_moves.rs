@@ -179,34 +179,7 @@ impl SetView {
         slots: &[SlotRef],
         cancel: &CancellationToken,
     ) -> Result<Vec<Vec<Option<f32>>>, VectorStoreError> {
-        let mut rows = self.set.score_slots_many(queries, slots, 0.0, cancel)?;
-        for (query, row) in queries.iter().zip(&mut rows) {
-            if row.iter().all(Option::is_some) {
-                continue;
-            }
-            // The sidecar picks a key's best live copy without a facet filter.
-            // Score the exact requested slots it skipped, one per key per pass.
-            let mut missing: HashMap<_, Vec<_>> = HashMap::new();
-            for (index, (&slot, score)) in slots.iter().zip(row.iter()).enumerate() {
-                if score.is_none() {
-                    missing.entry(slot.key).or_default().push((index, slot));
-                }
-            }
-            while !missing.is_empty() {
-                let mut wanted = Vec::with_capacity(missing.len());
-                let mut positions = HashMap::with_capacity(missing.len());
-                missing.retain(|_, entries| {
-                    let (index, slot) = entries.pop().expect("only nonempty groups are retained");
-                    wanted.push(slot);
-                    positions.insert((slot.seg, slot.slot), index);
-                    !entries.is_empty()
-                });
-                for hit in self.scan_unreached(query, &wanted, wanted.len(), 0.0, cancel)? {
-                    row[positions[&(hit.seg, hit.slot)]] = Some(hit.score);
-                }
-            }
-        }
-        Ok(rows)
+        self.set.score_selected_slots_many(queries, slots, cancel)
     }
 
     pub(crate) fn book_source_hash(&self, book: &str) -> Option<u64> {

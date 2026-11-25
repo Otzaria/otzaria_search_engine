@@ -7551,7 +7551,7 @@ impl SearchEngine {
                     }
                     let scores = open
                         .coordinator
-                        .score_slots_many(&views, slots, info.generation, 0.0, cancel)
+                        .score_selected_slots_many(&views, slots, info.generation, cancel)
                         .map_err(|err| failed(&err))?;
                     if set_info()?.generation != info.generation {
                         return Err(changed());

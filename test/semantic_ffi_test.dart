@@ -897,6 +897,44 @@ Future<void> main() async {
       expect(hit.filePath, bookKey);
     });
 
+    test('nearest scores and token count errors cross the bridge', () async {
+      await engine.openSemanticArtifact(config: input(identity));
+      final nearest = await engine.semanticNearest(
+        input: const SemanticNearestInput(
+          points: [
+            SemanticPoint(text: probeLine, asPassage: true),
+            SemanticPoint(
+              text: 'בראשית ברא אלהים את השמים ואת הארץ',
+              asPassage: true,
+            ),
+          ],
+          topK: 2,
+          facets: [],
+          exclude: [],
+          pool: SemanticPool.best,
+          maxCandidates: 2,
+          rescore: true,
+        ),
+        cancellation: SemanticCancellationToken(),
+      );
+
+      expect(nearest.generation, installed.generation);
+      expect(nearest.vectorsLibraryVersion, installed.libraryVersion);
+      expect(nearest.perPoint, isEmpty);
+      expect(nearest.hits, hasLength(2));
+      expect(nearest.hits.map((hit) => hit.point), unorderedEquals([0, 1]));
+      for (final hit in nearest.hits) {
+        expect(hit.filePath, bookKey);
+        expect(hit.pointScores, hasLength(2));
+        expect(hit.score, closeTo(hit.pointScores[hit.point], 0.00001));
+      }
+
+      await expectLater(
+        engine.semanticQueryTokens(texts: List.filled(5001, probeLine)),
+        throwsA(isSemanticError(SemanticErrorKind.invalidInput)),
+      );
+    });
+
     test('a commit after opening leaves the vector set serving', () async {
       await engine.openSemanticArtifact(config: input(identity));
       await engine.addTextBook(
