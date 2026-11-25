@@ -68,7 +68,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => -1219853454;
+  int get rustContentHash => -1272712857;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -1002,7 +1002,7 @@ abstract class RustLibApi extends BaseApi {
   });
 
   Future<SemanticSearchResponse>
-  crateApiSearchEngineSearchEngineSearchSemanticWithTimingsAndVotes({
+  crateApiSearchEngineSearchEngineSearchSemanticWithPaginationSession({
     required SearchEngine that,
     required String query,
     required List<String> facets,
@@ -1016,6 +1016,7 @@ abstract class RustLibApi extends BaseApi {
     required bool matchTaamim,
     SemanticRankingOptions? ranking,
     List<SemanticVote>? votes,
+    String? paginationSessionId,
     required SemanticCancellationToken cancellation,
   });
 
@@ -7253,7 +7254,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @override
   Future<SemanticSearchResponse>
-  crateApiSearchEngineSearchEngineSearchSemanticWithTimingsAndVotes({
+  crateApiSearchEngineSearchEngineSearchSemanticWithPaginationSession({
     required SearchEngine that,
     required String query,
     required List<String> facets,
@@ -7267,6 +7268,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required bool matchTaamim,
     SemanticRankingOptions? ranking,
     List<SemanticVote>? votes,
+    String? paginationSessionId,
     required SemanticCancellationToken cancellation,
   }) {
     return handler.executeNormal(
@@ -7295,6 +7297,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_opt_list_semantic_vote(votes, serializer);
+          sse_encode_opt_String(paginationSessionId, serializer);
           sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSemanticCancellationToken(
             cancellation,
             serializer,
@@ -7311,7 +7314,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_semantic_error,
         ),
         constMeta:
-            kCrateApiSearchEngineSearchEngineSearchSemanticWithTimingsAndVotesConstMeta,
+            kCrateApiSearchEngineSearchEngineSearchSemanticWithPaginationSessionConstMeta,
         argValues: [
           that,
           query,
@@ -7326,6 +7329,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           matchTaamim,
           ranking,
           votes,
+          paginationSessionId,
           cancellation,
         ],
         apiImpl: this,
@@ -7334,10 +7338,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   TaskConstMeta
-  get kCrateApiSearchEngineSearchEngineSearchSemanticWithTimingsAndVotesConstMeta =>
+  get kCrateApiSearchEngineSearchEngineSearchSemanticWithPaginationSessionConstMeta =>
       const TaskConstMeta(
         debugName:
-            "SearchEngine_search_semantic_with_timings_and_votes(dart_style=searchSemantic)",
+            "SearchEngine_search_semantic_with_pagination_session(dart_style=searchSemantic)",
         argNames: [
           "that",
           "query",
@@ -7352,6 +7356,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "matchTaamim",
           "ranking",
           "votes",
+          "paginationSessionId",
           "cancellation",
         ],
       );
@@ -19789,6 +19794,10 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
   /// runs with the query moved toward what was marked relevant; when they change, the next
   /// page ranks the results not yet shown again. `None` for none.
   ///
+  /// Pass a unique `pagination_session_id` for each independent result list, and reuse
+  /// it on every page of that list. This keeps identical searches with different marks
+  /// independent. Without an id, requests with the same search parameters share paging.
+  ///
   /// Quoted words are looked up verbatim, with adjacency inside each quoted phrase.
   /// A single quotation covering the whole query uses `Exact`; words outside a quotation
   /// keep the requested lexical mode. An acronym's gershayim (רמב"ם) quotes nothing.
@@ -19826,9 +19835,10 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
     required bool matchTaamim,
     SemanticRankingOptions? ranking,
     List<SemanticVote>? votes,
+    String? paginationSessionId,
     required SemanticCancellationToken cancellation,
   }) => RustLib.instance.api
-      .crateApiSearchEngineSearchEngineSearchSemanticWithTimingsAndVotes(
+      .crateApiSearchEngineSearchEngineSearchSemanticWithPaginationSession(
         that: this,
         query: query,
         facets: facets,
@@ -19842,6 +19852,7 @@ class SearchEngineImpl extends RustOpaque implements SearchEngine {
         matchTaamim: matchTaamim,
         ranking: ranking,
         votes: votes,
+        paginationSessionId: paginationSessionId,
         cancellation: cancellation,
       );
 

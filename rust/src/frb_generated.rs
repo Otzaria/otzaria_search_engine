@@ -42,7 +42,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1219853454;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1272712857;
 
 // Section: executor
 
@@ -5913,13 +5913,13 @@ fn wire__crate__api__search_engine__SearchEngine_search_fuzzy_terms_impl(
         },
     )
 }
-fn wire__crate__api__search_engine__SearchEngine_search_semantic_with_timings_and_votes_impl(
+fn wire__crate__api__search_engine__SearchEngine_search_semantic_with_pagination_session_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
     data_len_: i32,
 ) {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec,_,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "SearchEngine_search_semantic_with_timings_and_votes(dart_style=searchSemantic)", port: Some(port_), mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal }, move || {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec,_,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "SearchEngine_search_semantic_with_pagination_session(dart_style=searchSemantic)", port: Some(port_), mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal }, move || {
             let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
             let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_that = <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SearchEngine>>>::sse_decode(&mut deserializer);
@@ -5935,6 +5935,7 @@ let api_match_nikud = <bool>::sse_decode(&mut deserializer);
 let api_match_taamim = <bool>::sse_decode(&mut deserializer);
 let api_ranking = <Option<crate::api::search_engine::SemanticRankingOptions>>::sse_decode(&mut deserializer);
 let api_votes = <Option<Vec<crate::api::search_engine::SemanticVote>>>::sse_decode(&mut deserializer);
+let api_pagination_session_id = <Option<String>>::sse_decode(&mut deserializer);
 let api_cancellation = <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SemanticCancellationToken>>>::sse_decode(&mut deserializer);deserializer.end(); move |context|  {
                     transform_result_sse::<_, crate::api::search_engine::SemanticError>((move ||  {
                         let mut api_that_guard = None;
@@ -5949,7 +5950,7 @@ let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decod
         }
         let api_that_guard = api_that_guard.unwrap();
 let api_cancellation_guard = api_cancellation_guard.unwrap();
- let output_ok = crate::api::search_engine::SearchEngine::search_semantic_with_timings_and_votes(&*api_that_guard, api_query, api_facets, api_limit, api_offset, api_lexical_mode, api_fuzzy_max_distance, api_retrieval_mode, api_grouping, api_match_nikud, api_match_taamim, api_ranking, api_votes, &*api_cancellation_guard)?;   std::result::Result::Ok(output_ok)
+ let output_ok = crate::api::search_engine::SearchEngine::search_semantic_with_pagination_session(&*api_that_guard, api_query, api_facets, api_limit, api_offset, api_lexical_mode, api_fuzzy_max_distance, api_retrieval_mode, api_grouping, api_match_nikud, api_match_taamim, api_ranking, api_votes, api_pagination_session_id, &*api_cancellation_guard)?;   std::result::Result::Ok(output_ok)
                     })())
                 } })
 }
@@ -11801,7 +11802,7 @@ fn pde_ffi_dispatcher_primary_impl(
 97 => wire__crate__api__search_engine__SearchEngine_search_fuzzy_stream_impl(port, ptr, rust_vec_len, data_len),
 98 => wire__crate__api__search_engine__SearchEngine_search_fuzzy_stream_with_counts_impl(port, ptr, rust_vec_len, data_len),
 99 => wire__crate__api__search_engine__SearchEngine_search_fuzzy_terms_impl(port, ptr, rust_vec_len, data_len),
-100 => wire__crate__api__search_engine__SearchEngine_search_semantic_with_timings_and_votes_impl(port, ptr, rust_vec_len, data_len),
+100 => wire__crate__api__search_engine__SearchEngine_search_semantic_with_pagination_session_impl(port, ptr, rust_vec_len, data_len),
 101 => wire__crate__api__search_engine__SearchEngine_search_smart_lexical_impl(port, ptr, rust_vec_len, data_len),
 102 => wire__crate__api__search_engine__SearchEngine_search_snapshot_impl(port, ptr, rust_vec_len, data_len),
 103 => wire__crate__api__search_engine__SearchEngine_search_stream_impl(port, ptr, rust_vec_len, data_len),

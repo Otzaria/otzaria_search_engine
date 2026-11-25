@@ -11516,7 +11516,13 @@ mod semantic_cancellation {
         (3, "ויאמר אלהים יהי אור ויהי אור"),
     ];
     /// Every look a search that is served reaches, in order.
-    const SERVED: [At; 4] = [At::Start, At::Sidecar, At::Hydration, At::Painting];
+    const SERVED: [At; 5] = [
+        At::Start,
+        At::Sidecar,
+        At::Hydration,
+        At::Painting,
+        At::ReturnPage,
+    ];
 
     /// An engine over [`LINES`] with a development session on the stand-in that has
     /// embedded every one of them, and the directories that have to outlive it.
@@ -11621,18 +11627,25 @@ mod semantic_cancellation {
             assert_eq!(reached, SERVED, "{mode:?}");
             assert_eq!(served.fallback_kind, None, "{mode:?}");
             assert!(!served.results.is_empty(), "{mode:?}");
-            // Asked again, the page is the session's: nothing runs but the last look.
+            // Asked again, the page is the session's: only the painting stage runs.
             let (again, reached) =
                 cancelling_at(None, || search(mode, &SemanticCancellationToken::new()));
-            assert_eq!(reached, [At::Start, At::Painting], "{mode:?}");
+            assert_eq!(
+                reached,
+                [At::Start, At::Painting, At::ReturnPage],
+                "{mode:?}"
+            );
             assert_eq!(page(&again.unwrap()), page(&served), "{mode:?}");
 
             // Cancelled as the token is handed over, the search stops at the sidecar's
             // own look and never reaches hydration: had the token not been handed over,
             // it would have run on to this crate's next look.
-            for (cancel_at, stops_after) in
-                [(At::Sidecar, 2), (At::Hydration, 3), (At::Painting, 4)]
-            {
+            for (cancel_at, stops_after) in [
+                (At::Sidecar, 2),
+                (At::Hydration, 3),
+                (At::Painting, 4),
+                (At::ReturnPage, 5),
+            ] {
                 // Without its session, so that the search runs every look.
                 engine.semantic_sessions.invalidate();
                 let token = SemanticCancellationToken::new();
@@ -12138,7 +12151,7 @@ mod semantic_sessions {
     #[test]
     fn cancelled_expired_restart_does_not_publish_a_partial_session() {
         let _serial = serialized();
-        for at in [At::Sidecar, At::Hydration, At::Painting] {
+        for at in [At::Sidecar, At::Hydration, At::Painting, At::ReturnPage] {
             let (engine, _index, _semantic) = sabbath();
             let first = page(&engine, 6, 0);
             engine.semantic_sessions.expire_for_test();
@@ -12333,6 +12346,55 @@ mod semantic_sessions {
             id: hit.id,
             relevant,
         }
+    }
+
+    #[test]
+    fn named_sessions_isolate_voted_pages_of_identical_queries() {
+        let _serial = serialized();
+        let (engine, _index, _semantic) = sabbath();
+        let page = |id: &str, offset, votes: &[SemanticVote], token: &SemanticCancellationToken| {
+            engine.search_semantic_in_session(
+                "שבת".to_string(),
+                Vec::new(),
+                5,
+                offset,
+                SemanticLexicalMode::Exact,
+                0,
+                SemanticRetrievalMode::Hybrid,
+                None,
+                false,
+                false,
+                None,
+                votes,
+                Some(id.to_string()),
+                token,
+            )
+        };
+        let token = SemanticCancellationToken::new();
+        let a_first = page("a", 0, &[], &token).unwrap();
+        let liked = [vote(&a_first.results[0], true)];
+        let b_first = page("b", 0, &liked, &token).unwrap();
+        assert_ne!(bits(&b_first), bits(&a_first));
+
+        let a_second = page("a", 5, &[], &token).unwrap();
+        let (_, reached) = cancelling_at(Some(At::ReturnPage), || {
+            let cancelled = page("b", 5, &liked, &SemanticCancellationToken::new());
+            assert_eq!(cancelled.err(), Some(SemanticError::cancelled()));
+        });
+        assert_eq!(reached.last(), Some(&At::ReturnPage));
+        let b_second = page("b", 5, &[], &token).unwrap();
+        assert!(!a_second.session_restarted);
+        assert!(!b_second.session_restarted);
+        assert_eq!(b_second.timings.unwrap().expansions, 1);
+        for (first, second) in [(&a_first, &a_second), (&b_first, &b_second)] {
+            let shown: HashSet<_> = lines(first).into_iter().collect();
+            assert!(lines(second).iter().all(|line| !shown.contains(line)));
+        }
+        let replay = page("b", 0, &liked, &token).unwrap();
+        assert_eq!(bits(&replay), bits(&b_first));
+        assert_eq!(replay.timings.unwrap().expansions, 0);
+        assert_eq!(bits(&page("a", 5, &[], &token).unwrap()), bits(&a_second));
+        assert!(page("new", 5, &[], &token).unwrap().session_restarted);
     }
 
     /// New marks rank again only the results not yet shown, once: the pages shown stand,

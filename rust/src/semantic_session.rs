@@ -18,6 +18,8 @@ pub(crate) const SESSION_TTL: Duration = Duration::from_secs(10 * 60);
 /// Everything that decides what a session's pages are.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct SessionKey {
+    /// An optional caller-owned identifier for one result list.
+    pub(crate) pagination_session_id: Option<String>,
     pub(crate) query: String,
     /// Sorted and deduplicated: the filter is a set.
     pub(crate) facets: Vec<String>,
@@ -71,8 +73,7 @@ pub(crate) struct SemanticSession<E, S> {
     pub(crate) state: S,
 }
 
-/// The results expansions found, appended to the session only once the search is served: a
-/// search cancelled on the way leaves the session as it was.
+/// The results expansions found. Only a successfully painted page freezes its entries as shown.
 pub(crate) struct Additions<E> {
     entries: Vec<E>,
     holds: Vec<Holds>,
@@ -137,6 +138,12 @@ impl<E, S> SemanticSession<E, S> {
         let start = (offset as usize).min(self.entries.len());
         let end = start.saturating_add(limit as usize).min(self.entries.len());
         &self.entries[start..end]
+    }
+
+    pub(crate) fn has_shown_page(&self, offset: u32, limit: u32) -> bool {
+        let start = offset as usize;
+        let end = start.saturating_add(limit as usize).min(self.entries.len());
+        start < end && end <= self.shown
     }
 
     /// Mark the page from `offset` shown: it, and every result before it, keep their places.
@@ -398,6 +405,7 @@ mod tests {
 
     fn key(index_content: u64) -> SessionKey {
         SessionKey {
+            pagination_session_id: None,
             query: "שבת".to_string(),
             facets: Vec::new(),
             options: String::new(),

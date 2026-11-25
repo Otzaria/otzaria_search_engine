@@ -380,7 +380,7 @@ Future<SemanticCoveredBooks> semanticCoveredBooks({required String vectorsDir, r
 Future<SemanticStatus> openSemanticArtifact({required SemanticArtifactInput config})
 Future<void> disableSemantic()
 Future<SemanticStatus> semanticStatus()
-Future<SemanticSearchResponse> searchSemantic({..., SemanticRankingOptions? ranking, List<SemanticVote>? votes, required SemanticCancellationToken cancellation})
+Future<SemanticSearchResponse> searchSemantic({..., SemanticRankingOptions? ranking, List<SemanticVote>? votes, String? paginationSessionId, required SemanticCancellationToken cancellation})
 
 // Development and testing: vectors built on this device.
 Future<SemanticStatus> configureSemantic({required SemanticConfigInput config})
@@ -389,6 +389,11 @@ Future<SemanticIndexingSummary> semanticIndexBooks({required List<SemanticBookIn
 Future<SemanticRemoveResult> removeSemanticBooks({required List<String> sourceBookKeys})
 Future<SemanticResetResult> resetSemanticIndex()
 ```
+
+Give each independent list its own `paginationSessionId`. Reuse that ID on
+continuation requests and pass the current votes to rank results still unseen.
+If the session expires, `sessionRestarted` signals that the returned page
+replaces the displayed list.
 
 These reach the semantic sidecar only in a library built with a semantic
 feature; any other build reports an explicit `notInBuild` state and serves

@@ -2645,6 +2645,7 @@ impl SemanticRequest<'_> {
         vectors_generation: Option<u64>,
         epoch: u64,
         page_size: u32,
+        pagination_session_id: Option<String>,
     ) -> SessionKey {
         let mut facets = self.facets.to_vec();
         facets.sort();
@@ -2654,6 +2655,7 @@ impl SemanticRequest<'_> {
         // The user-books part of the key does not change when that store opens.
         let _ = crate::line_source::with_store(crate::line_source::Source::Library, |_| Ok(()));
         SessionKey {
+            pagination_session_id,
             query: self.query.to_string(),
             facets,
             options: format!(
@@ -8236,6 +8238,10 @@ impl SearchEngine {
     /// runs with the query moved toward what was marked relevant; when they change, the next
     /// page ranks the results not yet shown again. `None` for none.
     ///
+    /// Pass a unique `pagination_session_id` for each independent result list, and reuse
+    /// it on every page of that list. This keeps identical searches with different marks
+    /// independent. Without an id, requests with the same search parameters share paging.
+    ///
     /// Quoted words are looked up verbatim, with adjacency inside each quoted phrase.
     /// A single quotation covering the whole query uses `Exact`; words outside a quotation
     /// keep the requested lexical mode. An acronym's gershayim (רמב"ם) quotes nothing.
@@ -8264,7 +8270,7 @@ impl SearchEngine {
     #[doc(hidden)]
     #[frb(name = "searchSemantic")]
     #[allow(clippy::too_many_arguments)]
-    pub fn search_semantic_with_timings_and_votes(
+    pub fn search_semantic_with_pagination_session(
         &self,
         query: String,
         facets: Vec<String>,
@@ -8278,11 +8284,12 @@ impl SearchEngine {
         match_taamim: bool,
         ranking: Option<SemanticRankingOptions>,
         votes: Option<Vec<SemanticVote>>,
+        pagination_session_id: Option<String>,
         cancellation: &SemanticCancellationToken,
     ) -> Result<SemanticSearchResponse, SemanticError> {
         // FRB 2.13 hashes exported Rust function names, so the wire name changes when the
         // arguments or response change. Dart's public name remains searchSemantic.
-        self.search_semantic_voted(
+        self.search_semantic_in_session(
             query,
             facets,
             limit,
@@ -8295,6 +8302,7 @@ impl SearchEngine {
             match_taamim,
             ranking,
             votes.as_deref().unwrap_or_default(),
+            pagination_session_id,
             cancellation,
         )
     }
@@ -8366,8 +8374,45 @@ impl SearchEngine {
         votes: &[SemanticVote],
         cancellation: &SemanticCancellationToken,
     ) -> Result<SemanticSearchResponse, SemanticError> {
+        self.search_semantic_in_session(
+            query,
+            facets,
+            limit,
+            offset,
+            lexical_mode,
+            fuzzy_max_distance,
+            retrieval_mode,
+            grouping,
+            match_nikud,
+            match_taamim,
+            ranking,
+            votes,
+            None,
+            cancellation,
+        )
+    }
+
+    #[frb(ignore)]
+    #[allow(clippy::too_many_arguments)]
+    fn search_semantic_in_session(
+        &self,
+        query: String,
+        facets: Vec<String>,
+        limit: u32,
+        offset: u32,
+        lexical_mode: SemanticLexicalMode,
+        fuzzy_max_distance: u8,
+        retrieval_mode: SemanticRetrievalMode,
+        grouping: Option<SemanticGroupingMode>,
+        match_nikud: bool,
+        match_taamim: bool,
+        ranking: Option<SemanticRankingOptions>,
+        votes: &[SemanticVote],
+        pagination_session_id: Option<String>,
+        cancellation: &SemanticCancellationToken,
+    ) -> Result<SemanticSearchResponse, SemanticError> {
         #[cfg(not(feature = "semantic-integration"))]
-        let _ = votes;
+        let _ = (votes, pagination_session_id);
         let started = Instant::now();
         let cancel = &cancellation.flag;
         // Before anything, the sidecar's own first look included: a search cancelled before
@@ -8427,6 +8472,7 @@ impl SearchEngine {
                     .map(|info| info.generation),
                 self.semantic_sessions.epoch(),
                 limit,
+                pagination_session_id,
             );
             let votes = if retrieval_mode == SemanticRetrievalMode::LexicalOnly {
                 Vec::new()
@@ -8451,7 +8497,8 @@ impl SearchEngine {
                     return true;
                 }
                 let kept = kept.lock().unwrap_or_else(PoisonError::into_inner);
-                kept.state.fallback_reason.is_none() && kept.state.votes == votes
+                kept.state.fallback_reason.is_none()
+                    && (key.pagination_session_id.is_some() || kept.state.votes == votes)
             });
             let session_restarted = offset > 0 && kept.is_none();
             let offset = if session_restarted { 0 } else { offset };
@@ -8470,6 +8517,12 @@ impl SearchEngine {
             // resolver's caches follow, reads every address the session holds alike.
             session.searcher = searcher;
 
+            let votes =
+                if key.pagination_session_id.is_some() && session.has_shown_page(offset, limit) {
+                    session.state.votes.clone()
+                } else {
+                    votes
+                };
             let mut votes_applied = true;
             let same_votes = votes == session.state.votes && session.state.votes_applied;
             let query_vector = if same_votes {
@@ -8566,9 +8619,7 @@ impl SearchEngine {
             if let Some(expanded) = expanded {
                 session.state.absorb(expanded);
             }
-            self.semantic_sessions.put(key, Arc::clone(&shared));
             let has_more = session.len() > (offset as usize).saturating_add(limit as usize);
-            session.show(offset, limit);
 
             // Built once a session, the first time it has a page to paint.
             if session.state.painter.is_none() && session.len() > offset as usize {
@@ -8780,7 +8831,7 @@ impl SearchEngine {
             timings.page_ms = elapsed_ms(page_started);
             timings.total_ms = elapsed_ms(started);
             debug!("semantic page at {offset} of {limit}: {timings:?}");
-            Ok(SemanticSearchResponse {
+            let response = SemanticSearchResponse {
                 results,
                 // The last expansion's candidate-set counts: stable across the pages it
                 // serves, and never the number of results a session will show.
@@ -8799,7 +8850,11 @@ impl SearchEngine {
                 has_more,
                 session_restarted,
                 timings: Some(timings),
-            })
+            };
+            search_cancellation::look(cancel, SearchCheckpoint::ReturnPage)?;
+            guard.show(offset, limit);
+            self.semantic_sessions.put(key, Arc::clone(&shared));
+            Ok(response)
         }
 
         #[cfg(not(feature = "semantic-integration"))]

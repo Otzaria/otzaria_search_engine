@@ -407,9 +407,9 @@ Future<void> main() async {
 
         Future<SemanticSearchResponse> page(
           int offset, {
-          String query = 'בראשית ברא',
+          String paginationSessionId = 'reader',
         }) => engine.searchSemantic(
-          query: query,
+          query: 'בראשית ברא',
           facets: const [],
           limit: 2,
           offset: offset,
@@ -418,6 +418,7 @@ Future<void> main() async {
           retrievalMode: SemanticRetrievalMode.hybrid,
           matchNikud: false,
           matchTaamim: false,
+          paginationSessionId: paginationSessionId,
           cancellation: SemanticCancellationToken(),
         );
         Object contents(SemanticSearchResponse response) => [
@@ -444,10 +445,10 @@ Future<void> main() async {
           everyElement(isNot(isIn(first.results.map((hit) => hit.id)))),
         );
 
-        // The LRU holds four sessions; five distinct queries necessarily evict
-        // the original. Query, generation, grouping and page size stay unchanged.
-        for (final query in ['תפילין', 'שבת', 'תשובה', 'מלך', 'גמרא']) {
-          final other = await page(0, query: query);
+        // The LRU holds four sessions. The query stays the same across lists,
+        // so only the wire session ID can make the other lists evict this one.
+        for (var list = 0; list < 5; list++) {
+          final other = await page(0, paginationSessionId: 'other-$list');
           expect(other.semanticAvailable, isTrue);
         }
         final restarted = await page(2);
