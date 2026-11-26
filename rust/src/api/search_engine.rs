@@ -6976,8 +6976,8 @@ impl SearchEngine {
     /// falling back ([`SemanticVectorsInfo::recovered_from_previous`] `false`), such as after
     /// an install and a successful [`Self::open_semantic_artifact`].
     ///
-    /// Under the set's lock, as an install: the live generation is opened first, and only
-    /// then is the fallback's pointer removed and the garbage collected. A crash at any point
+    /// Under the set's lock, the live generation is opened and its block checksums verified
+    /// before the fallback's pointer is removed and the garbage collected. A crash at any point
     /// leaves the live generation as it was, so the set opens. With no fallback it changes
     /// nothing and reports `retired` `false`. An open session on the live generation keeps
     /// serving, and its open result pages stay valid; one that serves the fallback moves onto
@@ -7043,6 +7043,67 @@ impl SearchEngine {
         #[cfg(not(feature = "semantic-integration"))]
         {
             let _ = vectors_dir;
+            Err(Self::semantic_not_in_build())
+        }
+    }
+
+    /// Give up the fallback only if this engine's open artifact serves `CURRENT` at `vectors_dir`.
+    /// The generation comparison, checksum verification and retirement share the set's lock.
+    /// A different `CURRENT` leaves the fallback intact and returns `retired` `false`.
+    /// With no matching artifact session this returns `NotConfigured`. Cancellation before
+    /// removing the fallback leaves it intact. An open session's result pages stay valid.
+    pub fn retire_previous_opened_semantic_generation(
+        &self,
+        vectors_dir: String,
+        cancellation: &SemanticCancellationToken,
+    ) -> Result<SemanticGenerationRetireReport, SemanticError> {
+        if self.read_only {
+            return Err(SemanticError::new(
+                SemanticErrorKind::ReadOnlySession,
+                "index was opened read-only",
+            ));
+        }
+        #[cfg(feature = "semantic-integration")]
+        {
+            use otzaria_semantic_search::semantic::segment_set;
+            let vectors_dir = PathBuf::from(vectors_dir);
+            let doing = "retiring the previous vectors";
+            let _work = VectorSetWork::take(&vectors_dir, doing)?;
+            let generation = self
+                .open_vectors_coordinator(&vectors_dir)
+                .and_then(|coordinator| coordinator.opened_vector_generation())
+                .ok_or_else(|| {
+                    SemanticError::new(
+                        SemanticErrorKind::NotConfigured,
+                        "no open artifact session for the vector set",
+                    )
+                })?;
+            let report = waiting_for_set_lock(&cancellation.flag, SET_LOCK_WAIT, || {
+                segment_set::retire_previous_for_open_generation(
+                    &vectors_dir,
+                    &generation,
+                    &cancellation.flag,
+                )
+            })
+            .map_err(|err| {
+                vector_set_error(
+                    &err,
+                    &vectors_dir,
+                    format!("failed to retire the previous semantic vectors: {err}"),
+                    doing,
+                )
+            })?;
+            Ok(SemanticGenerationRetireReport {
+                generation: report.generation,
+                retired: report.retired,
+                retired_generation: report.retired_generation,
+                bytes_freed: report.bytes_freed,
+            })
+        }
+
+        #[cfg(not(feature = "semantic-integration"))]
+        {
+            let _ = (vectors_dir, cancellation);
             Err(Self::semantic_not_in_build())
         }
     }
@@ -7179,6 +7240,13 @@ impl SearchEngine {
     /// The generation the open session serves of the set at `vectors_dir`, if one does.
     #[cfg(feature = "semantic-integration")]
     fn open_vectors_generation(&self, vectors_dir: &Path) -> Option<u64> {
+        self.open_vectors_coordinator(vectors_dir)?
+            .vector_set_info()
+            .map(|info| info.generation)
+    }
+
+    #[cfg(feature = "semantic-integration")]
+    fn open_vectors_coordinator(&self, vectors_dir: &Path) -> Option<Arc<HybridCoordinator>> {
         let active = self
             .semantic_runtime
             .read()
@@ -7188,7 +7256,7 @@ impl SearchEngine {
                 coordinator,
                 source: SemanticSource::Artifact(opened),
             }) if same_directory(&opened.key.vectors_dir, vectors_dir) => {
-                coordinator.vector_set_info().map(|info| info.generation)
+                Some(Arc::clone(coordinator))
             }
             _ => None,
         }
