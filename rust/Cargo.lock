@@ -1433,7 +1433,7 @@ dependencies = [
 [[package]]
 name = "otzaria-semantic-search"
 version = "0.1.0"
-source = "git+https://github.com/Otzaria/otzaria-semantic-search?rev=9cea26deef422017f2b3a24584c3c15410be5b2a#9cea26deef422017f2b3a24584c3c15410be5b2a"
+source = "git+https://github.com/Otzaria/otzaria-semantic-search?rev=74bfa5a34c33355d75ef3be2eb09c9154b1a2b88#74bfa5a34c33355d75ef3be2eb09c9154b1a2b88"
 dependencies = [
  "crc32fast",
  "libloading",
@@ -1445,6 +1445,7 @@ dependencies = [
  "sha2",
  "thiserror",
  "tokenizers",
+ "unicode-normalization",
 ]
 
 [[package]]
@@ -2098,6 +2099,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "tinyvec"
+version = "1.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
+
+[[package]]
 name = "tokenizers"
 version = "0.23.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2199,6 +2206,15 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "unicode-normalization"
+version = "0.1.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75cd3fb03d5288b3ba9a1ee103ac7e9cbb59f0b03d64f8ddfcc04dd42758a85d"
+dependencies = [
+ "tinyvec",
+]
 
 [[package]]
 name = "unicode-normalization-alignments"
