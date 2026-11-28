@@ -14,7 +14,6 @@
 
 #![cfg(all(feature = "semantic-mock", not(feature = "semantic-onnx")))]
 
-use otzaria_semantic_search::semantic::embedding::mock::write_stub_onnx_package;
 use search_engine::api::search_engine::{
     ResultsOrder, SearchEngine, SemanticBookInput, SemanticBookLineInput,
     SemanticCancellationToken, SemanticConfigInput, SemanticError, SemanticErrorKind,
@@ -23,6 +22,10 @@ use search_engine::api::search_engine::{
     SemanticRetrievalMode, SemanticSearchResponse, SemanticState,
 };
 use tempfile::TempDir;
+
+#[path = "support/semantic_mock.rs"]
+mod semantic_mock;
+use semantic_mock::*;
 
 const BOOK_KEY: &str = "/library/bereshit.json";
 const TOPICS: &str = "/תורה";
@@ -82,51 +85,8 @@ fn lexical_engine(lines: &[Line]) -> (SearchEngine, TempDir) {
     (engine, root)
 }
 
-/// The folder [`write_stub_model`] writes the stub ONNX package into.
-fn model_dir(root: &TempDir) -> std::path::PathBuf {
-    root.path().join("model")
-}
-
-/// The stub ONNX package under `root`: a graph that passes the sidecar's structural
-/// checks, and its `tokenizer.json`. Its path is the one [`mock_config`] names.
-fn write_stub_model(root: &TempDir) {
-    write_stub_onnx_package(&model_dir(root));
-}
-
-/// What every test opens the sidecar with: the stub ONNX graph under `root`, and
-/// the pooling the stand-in claims for that format. Text recipe 1, so that a
-/// query that is a line's exact text embeds exactly as the line does.
-fn mock_config(root: &TempDir, model_id: &str) -> SemanticConfigInput {
-    SemanticConfigInput {
-        root_dir: root.path().join("semantic").to_string_lossy().into_owned(),
-        model_path: model_dir(root)
-            .join("model.onnx")
-            .to_string_lossy()
-            .into_owned(),
-        model_id: model_id.to_owned(),
-        embedding_dim: 64,
-        pooling: "in-graph".to_owned(),
-        max_tokens: 512,
-        model_quantization: "int8".to_owned(),
-        embedding_text_version: 1,
-        onnx_runtime_path: None,
-    }
-}
-
 /// A field's name, and one edit of that field alone.
 type FieldEdit = (&'static str, fn(&mut SemanticConfigInput));
-
-/// Open the sidecar against `root`, writing the stub model it needs.
-fn configure(engine: &mut SearchEngine, root: &TempDir) {
-    write_stub_model(root);
-    let status = engine
-        .configure_semantic(mock_config(root, "test-mock"))
-        .unwrap();
-    assert!(
-        status.enabled,
-        "the sidecar should report itself configured"
-    );
-}
 
 fn index_books(engine: &SearchEngine, lines: &[Line]) -> SemanticIndexingSummary {
     try_index_books(engine, lines).unwrap()
@@ -174,52 +134,6 @@ fn fixture(lines: &[Line]) -> (SearchEngine, TempDir) {
     assert!(indexed.enabled);
     assert_eq!(indexed.books_indexed, 1);
     (engine, root)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn search(
-    engine: &SearchEngine,
-    query: &str,
-    limit: u32,
-    offset: u32,
-    lexical_mode: SemanticLexicalMode,
-    fuzzy_distance: u8,
-    retrieval_mode: SemanticRetrievalMode,
-    grouping: Option<SemanticGroupingMode>,
-) -> SemanticSearchResponse {
-    engine
-        .search_semantic(
-            query.to_owned(),
-            Vec::new(),
-            limit,
-            offset,
-            lexical_mode,
-            fuzzy_distance,
-            retrieval_mode,
-            grouping,
-            false,
-            false,
-            None,
-            &SemanticCancellationToken::new(),
-        )
-        .unwrap()
-}
-
-fn exact(
-    engine: &SearchEngine,
-    query: &str,
-    retrieval_mode: SemanticRetrievalMode,
-) -> SemanticSearchResponse {
-    search(
-        engine,
-        query,
-        10,
-        0,
-        SemanticLexicalMode::Exact,
-        0,
-        retrieval_mode,
-        None,
-    )
 }
 
 fn one_line_corpus() -> Vec<Line> {
@@ -537,6 +451,7 @@ fn stale_primaries_and_grouped_siblings_are_dropped_and_reported_apart() {
         None,
     );
     assert_eq!(first_page.results.len(), 1);
+    assert!(!second_page.session_restarted);
     assert!(second_page.results.is_empty());
     assert_eq!(first_page.total_count, second_page.total_count);
     assert!(!first_page.counts_are_exact);
@@ -1248,153 +1163,4 @@ fn a_configuration_the_sidecar_cannot_serve_is_invalid_input() {
         assert_eq!(error.field.as_deref(), field, "{named}");
         assert!(!engine.semantic_status().enabled, "{named}");
     }
-}
-
-// ── Library-database text through the sidecar ────────────────────────────────
-
-/// The same lines kept in the library database instead of the index: candidates,
-/// hydration and painting must produce what the stored-text index produces, and a
-/// suspended source must surface as `Unavailable` rather than as a failure.
-#[test]
-fn library_text_reaches_the_sidecar_path_like_stored_text() {
-    use search_engine::api::search_engine::{
-        configure_line_source, resume_line_source, suspend_line_source, TextStatus, TextStorage,
-    };
-    let rows = [
-        "<h1>בראשית</h1>",
-        "בראשית ברא אלהים את השמים ואת הארץ",
-        "והארץ היתה תהו ובהו וחשך על פני תהום",
-        "ויאמר אלהים יהי אור ויהי אור",
-    ];
-    let root = TempDir::new().unwrap();
-    let db = root.path().join("seforim.db");
-    {
-        let conn = rusqlite::Connection::open(&db).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE line (id INTEGER PRIMARY KEY, bookId INTEGER NOT NULL,
-                                lineIndex INTEGER NOT NULL);
-             CREATE INDEX idx_line_book_index ON line(bookId, lineIndex);
-             CREATE TABLE line_content (id INTEGER PRIMARY KEY, content TEXT NOT NULL);",
-        )
-        .unwrap();
-        for (index, row) in rows.iter().enumerate() {
-            conn.execute(
-                "INSERT INTO line (id, bookId, lineIndex) VALUES (?1, 1, ?2)",
-                rusqlite::params![index as i64 + 10, index as i64],
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO line_content (id, content) VALUES (?1, ?2)",
-                rusqlite::params![index as i64 + 10, row],
-            )
-            .unwrap();
-        }
-    }
-    configure_line_source(db.to_string_lossy().into_owned()).unwrap();
-
-    let build = |name: &str, storage: TextStorage, stored_lines: Option<Vec<u32>>| {
-        let dir = root.path().join(name);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::create_dir_all(dir.join("tantivy")).unwrap();
-        let mut engine = SearchEngine::new(dir.join("tantivy").to_str().unwrap());
-        // Only a whole book can keep its text in the library database.
-        let added = engine
-            .add_text_book(
-                "בראשית".to_string(),
-                TOPICS.to_string(),
-                "id:1".to_string(),
-                rows.join("\n"),
-                None,
-                storage,
-                stored_lines,
-                None,
-            )
-            .unwrap();
-        assert_eq!(added as usize, rows.len());
-        engine.commit().unwrap();
-        let semantic_root = TempDir::new_in(&dir).unwrap();
-        configure(&mut engine, &semantic_root);
-        engine
-            .semantic_index_books(vec![SemanticBookInput {
-                source_book_key: "id:1".to_owned(),
-                title: "בראשית".to_owned(),
-                content_fingerprint: 1,
-                is_pdf: false,
-                topics: TOPICS.to_owned(),
-                extra_facets: Vec::new(),
-                lines: rows
-                    .iter()
-                    .enumerate()
-                    .map(|(segment, row)| SemanticBookLineInput {
-                        line_id: (1u64 << 32) + segment as u64 + 1,
-                        // What add_text_book gives every line under the book's heading.
-                        section_id: (1u64 << 32) + 1,
-                        text: row.to_string(),
-                        line_hash: 7,
-                        reference: "בראשית".to_owned(),
-                        segment: segment as u64,
-                    })
-                    .collect(),
-            }])
-            .unwrap();
-        (engine, semantic_root)
-    };
-    let (stored, _a) = build("stored", TextStorage::InIndex, None);
-    let (external, _b) = build("external", TextStorage::LibraryDb, None);
-    // Row 1 keeps its text in the index, as an image row of an official book does.
-    let kept_id = (1u64 << 32) + 2;
-    let (mixed, _c) = build("mixed", TextStorage::LibraryDb, Some(vec![1]));
-
-    let flatten = |response: &SemanticSearchResponse| -> Vec<String> {
-        let mut out: Vec<String> = response
-            .results
-            .iter()
-            .map(|r| {
-                format!(
-                    "{}|{}|{}|{:?}",
-                    r.id, r.snippet_html, r.is_highlighted, r.text_status
-                )
-            })
-            .collect();
-        out.sort();
-        out
-    };
-    for mode in [
-        SemanticRetrievalMode::Hybrid,
-        SemanticRetrievalMode::SemanticOnly,
-        SemanticRetrievalMode::LexicalOnly,
-    ] {
-        for query in ["בראשית ברא", "אלהים", "אור"] {
-            let (a, b) = (exact(&stored, query, mode), exact(&external, query, mode));
-            assert_eq!(flatten(&a), flatten(&b), "{query} {mode:?}");
-            let c = exact(&mixed, query, mode);
-            assert_eq!(flatten(&a), flatten(&c), "{query} {mode:?}");
-            assert!(!b.results.is_empty(), "{query} {mode:?}");
-            assert!(b.results.iter().all(|r| r.text_status == TextStatus::Ok));
-        }
-    }
-
-    suspend_line_source().unwrap();
-    for mode in [
-        SemanticRetrievalMode::Hybrid,
-        SemanticRetrievalMode::SemanticOnly,
-    ] {
-        let response = exact(&external, "אלהים", mode);
-        assert!(!response.results.is_empty());
-        for r in &response.results {
-            assert_eq!(r.text_status, TextStatus::Unavailable, "{mode:?}");
-            assert!(r.snippet_html.is_empty());
-            assert!(!r.is_highlighted);
-        }
-        // The stored row never touches the suspended source; the others still need it.
-        let response = exact(&mixed, "אלהים", mode);
-        let kept = response.results.iter().find(|r| r.id == kept_id).unwrap();
-        assert_eq!(kept.text_status, TextStatus::Ok, "{mode:?}");
-        assert!(kept.snippet_html.contains("אלהים"), "{mode:?}");
-        assert!(response
-            .results
-            .iter()
-            .any(|r| r.id != kept_id && r.text_status == TextStatus::Unavailable));
-    }
-    resume_line_source().unwrap();
 }
