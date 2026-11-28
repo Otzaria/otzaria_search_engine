@@ -5214,6 +5214,12 @@ fn the_previous_generation_is_retired_once_the_live_one_opens() {
     let previous = vectors.join("PREVIOUS");
     let first_generation = vectors.join(format!("gen-{:06}", first.generation));
     assert!(previous.exists() && first_generation.exists());
+    let error = engine
+        .retire_previous_opened_semantic_generation(dir.clone(), &token)
+        .err()
+        .expect("no artifact session is open");
+    assert_eq!(error.kind, SemanticErrorKind::NotConfigured);
+    assert!(previous.exists());
 
     // The fallback is all the set serves while the live generation does not open.
     let current = vectors.join("CURRENT");
@@ -5264,7 +5270,7 @@ fn the_previous_generation_is_retired_once_the_live_one_opens() {
         None,
     );
     let report = engine
-        .retire_previous_semantic_generation(dir.clone())
+        .retire_previous_opened_semantic_generation(dir.clone(), &token)
         .unwrap();
     assert_eq!(
         (report.generation, report.retired, report.retired_generation),
@@ -5313,6 +5319,12 @@ fn retiring_the_generation_a_session_serves_moves_it_onto_the_live_one() {
         })
         .unwrap();
     std::fs::write(&current, pointer).unwrap();
+    let report = engine
+        .retire_previous_opened_semantic_generation(dir.clone(), &token)
+        .unwrap();
+    assert_eq!(report.generation, second.generation);
+    assert!(!report.retired);
+    assert!(vectors.join("PREVIOUS").exists());
     search_page(
         &engine,
         PROBE_LINE,

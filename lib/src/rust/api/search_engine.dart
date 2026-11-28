@@ -1244,14 +1244,25 @@ abstract class SearchEngine implements RustOpaqueInterface {
   /// `&self` for the same reason as [`Self::semantic_index_books`].
   Future<SemanticResetResult> resetSemanticIndex();
 
+  /// Give up the fallback only if this engine's open artifact serves `CURRENT` at `vectors_dir`.
+  /// The generation comparison, checksum verification and retirement share the set's lock.
+  /// A different `CURRENT` leaves the fallback intact and returns `retired` `false`.
+  /// With no matching artifact session this returns `NotConfigured`. Cancellation before
+  /// removing the fallback leaves it intact. An open session's result pages stay valid.
+  Future<SemanticGenerationRetireReport>
+  retirePreviousOpenedSemanticGeneration({
+    required String vectorsDir,
+    required SemanticCancellationToken cancellation,
+  });
+
   /// Give up the generation the set at `vectors_dir` keeps as a fallback beside the live
   /// one, and remove what only it kept. After a base that is a whole second set on disk,
   /// kept until the next install; call this once the live generation has opened without
   /// falling back ([`SemanticVectorsInfo::recovered_from_previous`] `false`), such as after
   /// an install and a successful [`Self::open_semantic_artifact`].
   ///
-  /// Under the set's lock, as an install: the live generation is opened first, and only
-  /// then is the fallback's pointer removed and the garbage collected. A crash at any point
+  /// Under the set's lock, the live generation is opened and its block checksums verified
+  /// before the fallback's pointer is removed and the garbage collected. A crash at any point
   /// leaves the live generation as it was, so the set opens. With no fallback it changes
   /// nothing and reports `retired` `false`. An open session on the live generation keeps
   /// serving, and its open result pages stay valid; one that serves the fallback moves onto

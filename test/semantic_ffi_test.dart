@@ -1207,6 +1207,33 @@ Future<void> main() async {
       },
     );
 
+    test('opened vector retirement borrows its cancellation token', () async {
+      final vectorsDir = '${root.path}/vectors';
+      await engine.openSemanticArtifact(config: input(identity));
+      final token = SemanticCancellationToken();
+      final report = await engine.retirePreviousOpenedSemanticGeneration(
+        vectorsDir: vectorsDir,
+        cancellation: token,
+      );
+      expect(report.generation, installed.generation);
+      expect(report.retired, isFalse);
+
+      token.cancel();
+      await expectLater(
+        engine.retirePreviousOpenedSemanticGeneration(
+          vectorsDir: vectorsDir,
+          cancellation: token,
+        ),
+        throwsA(
+          isA<SemanticError>().having(
+            (error) => error.kind,
+            'kind',
+            SemanticErrorKind.cancelled,
+          ),
+        ),
+      );
+    });
+
     test(
       'a compaction follows its policy, whose defaults are the engine\'s',
       () async {
